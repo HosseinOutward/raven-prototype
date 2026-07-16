@@ -1,0 +1,12 @@
+.git
+.env
+.release
+**/.env
+**/data
+**/dist
+**/node_modules
+**/target
+*.dpapi
+*.log
+*.secret
+arvan.secret

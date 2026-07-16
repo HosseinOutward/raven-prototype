@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "targets": [
+      "nsis"
+    ],
+    "createUpdaterArtifacts": false
+  }
+}
+

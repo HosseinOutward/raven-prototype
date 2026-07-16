@@ -1,0 +1,8 @@
+$ vite --host 127.0.0.1
+The request url "C:\Users\Soroush Taheri\code\raven\apps\desktop\src\assets\fonts\Monda-VariableFont_wght.ttf" is outside of Vite serving allow list.
+
+- C:/Users/Soroush Taheri/code/raven/apps/operations
+
+Refer to docs https://vite.dev/config/server-options.html#server-fs-allow for configurations and more details.
+
+error: script "dev" exited with code 255

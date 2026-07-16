@@ -1,0 +1,141 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "Monda";
+  src: url("../../desktop/src/assets/fonts/Monda-VariableFont_wght.ttf")
+    format("truetype");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: hsl(var(--border));
+  }
+}
+
+:root {
+  font-family:
+    "Monda", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+  --background: 30 9% 5%;
+  --foreground: 40 18% 92%;
+  --card: 28 9% 9%;
+  --card-foreground: 40 18% 92%;
+  --primary: 184 62% 51%;
+  --primary-foreground: 30 15% 6%;
+  --secondary: 30 7% 15%;
+  --secondary-foreground: 40 14% 82%;
+  --muted: 30 7% 13%;
+  --muted-foreground: 36 9% 63%;
+  --accent: 30 8% 15%;
+  --accent-foreground: 40 14% 84%;
+  --destructive: 356 60% 56%;
+  --border: 32 9% 15%;
+  --input: 30 8% 13%;
+  --ring: 184 62% 51%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 760px;
+  min-height: 100vh;
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+code,
+pre,
+.rv-mono,
+.rv-hash {
+  font-family:
+    "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+.rv-kicker {
+  margin: 0;
+  color: hsl(var(--primary));
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.rv-section {
+  border-radius: 1rem;
+  background: hsl(var(--card));
+  padding: 1.5rem;
+}
+
+.rv-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.rv-section-heading h2,
+.rv-section-heading h3 {
+  margin: 0.3rem 0 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.82rem;
+}
+
+th {
+  padding: 0.7rem 0.8rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.67rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+td {
+  border-top: 1px solid hsl(var(--border) / 0.8);
+  padding: 0.85rem 0.8rem;
+  vertical-align: top;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: hsl(var(--border));
+}

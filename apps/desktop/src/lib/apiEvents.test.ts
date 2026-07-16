@@ -1,0 +1,101 @@
+import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+
+const storage = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  },
+});
+
+let ApiClient: typeof import("./api").ApiClient;
+let parseNestLiveUpdateEvent: typeof import("./api").parseNestLiveUpdateEvent;
+let originalFetch: typeof fetch;
+
+beforeAll(async () => {
+  ({ ApiClient, parseNestLiveUpdateEvent } = await import("./api"));
+  originalFetch = globalThis.fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+async function waitFor(predicate: () => boolean, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for realtime subscription state");
+    await Bun.sleep(5);
+  }
+}
+
+describe("nest event subscriptions", () => {
+  test("delivers nest updates and aborts the active stream on unsubscribe", async () => {
+    let requestSignal: AbortSignal | undefined;
+    let updates = 0;
+    let lastUpdate: import("./api").NestLiveUpdate | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      requestSignal = init?.signal as AbortSignal;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('event: nest-update\ndata: {"type":"session.changed","nestId":"nest-1"}\n\n'));
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof fetch;
+
+    const unsubscribe = new ApiClient().subscribeNestEvents((update) => {
+      updates += 1;
+      lastUpdate = update;
+    });
+    await waitFor(() => updates === 1);
+    unsubscribe();
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(updates).toBe(1);
+    expect(lastUpdate).toEqual({ type: "session.changed", nestId: "nest-1", sessionId: undefined, at: undefined });
+  });
+
+  test("parses scoped nest updates and rejects malformed events", () => {
+    expect(parseNestLiveUpdateEvent('event: nest-update\ndata: {"type":"session.changed","nestId":"nest-1","sessionId":"session-1"}')).toEqual({
+      type: "session.changed",
+      nestId: "nest-1",
+      sessionId: "session-1",
+      at: undefined,
+    });
+    expect(parseNestLiveUpdateEvent("event: other\ndata: {}" )).toBeNull();
+    expect(parseNestLiveUpdateEvent("event: nest-update\ndata: not-json" )).toBeNull();
+  });
+
+  test("refreshes after reconnect and stops reconnecting after unsubscribe", async () => {
+    let calls = 0;
+    let updates = 0;
+    let secondSignal: AbortSignal | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        }), { status: 200 });
+      }
+      secondSignal = init?.signal as AbortSignal;
+      return new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 });
+    }) as typeof fetch;
+
+    const unsubscribe = new ApiClient().subscribeNestEvents(() => updates += 1, {
+      initialReconnectDelayMs: 1,
+      maxReconnectDelayMs: 2,
+    });
+    await waitFor(() => calls === 2 && updates === 1);
+    unsubscribe();
+    await Bun.sleep(10);
+
+    expect(secondSignal?.aborted).toBe(true);
+    expect(calls).toBe(2);
+    expect(updates).toBe(1);
+  });
+});
