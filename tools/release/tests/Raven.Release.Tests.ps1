@@ -101,7 +101,16 @@ try {
   Assert-True -Condition ($draft.artifacts[0].checksumObjectKey -and $draft.artifacts[0].checksumSha256) -Message "Draft omitted checksum metadata."
   Assert-True -Condition ($draft.localDataSchemaVersion -eq 2 -and $draft.localMigrationReversible -and $draft.rollbackSafe) -Message "Draft omitted rollback metadata."
 
+  $fixtureState.minimumServerVersion = ""
+  $fixtureState.maximumServerVersion = ""
+  $fixtureState.graceEndsAt = ""
+  $draft = New-RavenDraftRequest -State $fixtureState
+  Assert-True -Condition ($null -eq $draft.minimumServerVersion -and $null -eq $draft.maximumServerVersion -and $null -eq $draft.graceEndsAt) -Message "Empty optional release metadata was not normalized to null."
+
   $recovered = $draft | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+  $recovered.PSObject.Properties.Remove("minimumServerVersion")
+  $recovered.PSObject.Properties.Remove("maximumServerVersion")
+  $recovered.PSObject.Properties.Remove("graceEndsAt")
   $recovered | Add-Member -NotePropertyName id -NotePropertyValue "release-fixture"
   $recovered | Add-Member -NotePropertyName state -NotePropertyValue "draft"
   Assert-RavenRecoveredDraft -Release $recovered -Request $draft

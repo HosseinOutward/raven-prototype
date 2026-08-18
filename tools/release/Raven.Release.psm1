@@ -850,6 +850,9 @@ function New-RavenOpsSession {
 
 function New-RavenDraftRequest {
   param([object]$State)
+  $minimumServerVersion = if ([string]::IsNullOrWhiteSpace([string]$State.minimumServerVersion)) { $null } else { [string]$State.minimumServerVersion }
+  $maximumServerVersion = if ([string]::IsNullOrWhiteSpace([string]$State.maximumServerVersion)) { $null } else { [string]$State.maximumServerVersion }
+  $graceEndsAt = if ([string]::IsNullOrWhiteSpace([string]$State.graceEndsAt)) { $null } else { [string]$State.graceEndsAt }
   $artifacts = @()
   foreach ($record in @($State.artifacts)) {
     foreach ($name in @("platform", "architecture", "format", "objectKey", "signaturePath", "sha256", "size", "checksumObjectKey", "checksumSha256", "sbomObjectKey", "sbomSha256", "provenanceObjectKey", "provenanceSha256")) {
@@ -883,10 +886,10 @@ function New-RavenDraftRequest {
     notes = $State.notes
     gitCommit = $State.commit
     clientProtocolVersion = [int]$State.clientProtocolVersion
-    minimumServerVersion = $State.minimumServerVersion
-    maximumServerVersion = $State.maximumServerVersion
+    minimumServerVersion = $minimumServerVersion
+    maximumServerVersion = $maximumServerVersion
     requiredCapabilities = @($State.requiredCapabilities)
-    graceEndsAt = $State.graceEndsAt
+    graceEndsAt = $graceEndsAt
     localDataSchemaVersion = [int]$State.localDataSchemaVersion
     localMigrationReversible = [bool]$State.localMigrationReversible
     rollbackSafe = [bool]$State.rollbackSafe
@@ -900,8 +903,17 @@ function Assert-RavenRecoveredDraft {
     throw "The existing release is not the expected inactive draft."
   }
   foreach ($field in @("classification", "notes", "clientProtocolVersion", "minimumServerVersion", "maximumServerVersion", "graceEndsAt", "localDataSchemaVersion", "localMigrationReversible", "rollbackSafe")) {
-    if ([string]$Release.$field -cne [string]$Request.$field) {
-      throw "The existing draft has different release metadata."
+    $releaseProperty = $Release.PSObject.Properties[$field]
+    $releaseValue = if ($null -eq $releaseProperty) { $null } else { $releaseProperty.Value }
+    $requestValue = if ($Request -is [System.Collections.IDictionary]) {
+      if ($Request.Contains($field)) { $Request[$field] } else { $null }
+    }
+    else {
+      $requestProperty = $Request.PSObject.Properties[$field]
+      if ($null -eq $requestProperty) { $null } else { $requestProperty.Value }
+    }
+    if ([string]$releaseValue -cne [string]$requestValue) {
+      throw "The existing draft has different release metadata: $field."
     }
   }
   $releasedCapabilities = @($Release.requiredCapabilities | ForEach-Object { [string]$_ } | Sort-Object -Unique)
