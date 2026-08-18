@@ -400,28 +400,23 @@ function Invoke-RavenLinuxBuild {
     $SshTarget = if ($env:RAVEN_RELEASE_SSH_TARGET) { $env:RAVEN_RELEASE_SSH_TARGET } else { "soroush@homelab" }
   }
   $root = Get-RavenRepoRoot
-  $source = Join-Path $context.Stage "source"
-  Remove-RavenSafeDirectory -Path $source -AllowedParent $context.Stage
-  New-Item -ItemType Directory -Force -Path $source | Out-Null
   $gitArchive = Join-Path $context.Stage "source-git.tar"
   Invoke-RavenNative -FilePath "git" -Arguments @("archive", "--format=tar", "--output=$gitArchive", $state.commit) -WorkingDirectory $root
-  Invoke-RavenNative -FilePath "tar.exe" -Arguments @("-xf", $gitArchive, "-C", $source) -WorkingDirectory $root
   $dist = Join-Path $root "apps\desktop\dist"
   if (-not (Test-Path -LiteralPath (Join-Path $dist "index.html") -PathType Leaf)) {
     throw "The tested desktop frontend output is missing."
   }
-  $distDestination = Join-Path $source "apps\desktop\dist"
-  New-Item -ItemType Directory -Force -Path $distDestination | Out-Null
-  Copy-Item -Path (Join-Path $dist "*") -Destination $distDestination -Recurse -Force
-  $archive = Join-Path $context.Stage "source-linux.tar"
-  if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-  Invoke-RavenNative -FilePath "tar.exe" -Arguments @("-cf", $archive, "-C", $source, ".") -WorkingDirectory $root
-  $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+  $distArchive = Join-Path $context.Stage "frontend-dist.tar"
+  if (Test-Path -LiteralPath $distArchive) { Remove-Item -LiteralPath $distArchive -Force }
+  Invoke-RavenNative -FilePath "tar.exe" -Arguments @("-cf", $distArchive, "-C", $root, "apps/desktop/dist") -WorkingDirectory $root
+  $gitArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $gitArchive).Hash.ToLowerInvariant()
+  $distArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $distArchive).Hash.ToLowerInvariant()
   $remote = "/home/soroush/services/raven/builds/$($state.commit)"
-  $prepare = "set -eu; base='$remote'; case `$base in /home/soroush/services/raven/builds/*) ;; *) exit 2 ;; esac; mkdir -p `$base; rm -rf `$base/source `$base/out; rm -f `$base/source-linux.tar; mkdir -p `$base/source `$base/out"
+  $prepare = "set -eu; base='$remote'; case `$base in /home/soroush/services/raven/builds/*) ;; *) exit 2 ;; esac; mkdir -p `$base; rm -rf `$base/source `$base/out; rm -f `$base/source-git.tar `$base/frontend-dist.tar; mkdir -p `$base/source `$base/out"
   Invoke-RavenNative -FilePath "ssh" -Arguments @("-o", "BatchMode=yes", $SshTarget, $prepare) -WorkingDirectory $root
-  Invoke-RavenNative -FilePath "scp" -Arguments @($archive, "${SshTarget}:$remote/source-linux.tar") -WorkingDirectory $root
-  $build = "set -eu; cd '$remote'; printf '%s  %s\n' '$archiveHash' 'source-linux.tar' | sha256sum -c -; tar -xf source-linux.tar -C source; bash source/infra/release/build-linux-appimage.sh source '$Version' '$($state.commit)'"
+  Invoke-RavenNative -FilePath "scp" -Arguments @($gitArchive, "${SshTarget}:$remote/source-git.tar") -WorkingDirectory $root
+  Invoke-RavenNative -FilePath "scp" -Arguments @($distArchive, "${SshTarget}:$remote/frontend-dist.tar") -WorkingDirectory $root
+  $build = "set -eu; cd '$remote'; printf '%s  %s\n' '$gitArchiveHash' 'source-git.tar' '$distArchiveHash' 'frontend-dist.tar' | sha256sum -c -; tar -xf source-git.tar -C source; tar -xf frontend-dist.tar -C source; bash source/infra/release/build-linux-appimage.sh source '$Version' '$($state.commit)'"
   Invoke-RavenNative -FilePath "ssh" -Arguments @("-o", "BatchMode=yes", $SshTarget, $build) -WorkingDirectory $root
   $linuxDirectory = Join-Path $context.Stage "artifacts\linux"
   New-Item -ItemType Directory -Force -Path $linuxDirectory | Out-Null
