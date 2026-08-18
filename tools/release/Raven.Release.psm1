@@ -483,10 +483,13 @@ function New-RavenSbom {
       Add-RavenSbomComponent -Components $components -Type "library" -Name $parts[0] -Version $parts[1] -License ""
     }
   }
-  $cargoJson = Get-RavenNativeOutput -FilePath "cargo" -Arguments @("metadata", "--locked", "--format-version", "1") -WorkingDirectory (Join-Path $root "apps\desktop\src-tauri")
-  $cargo = $cargoJson | ConvertFrom-Json
-  foreach ($package in @($cargo.packages)) {
-    Add-RavenSbomComponent -Components $components -Type "library" -Name ([string]$package.name) -Version ([string]$package.version) -License ([string]$package.license)
+  $cargoTree = Get-RavenNativeOutput -FilePath "cargo" -Arguments @("tree", "--locked", "--target", "all", "--prefix", "none", "--format", "{p}|{l}") -WorkingDirectory (Join-Path $root "apps\desktop\src-tauri")
+  foreach ($line in ($cargoTree -split "`r?`n")) {
+    $match = [regex]::Match($line, '^(\S+) v(\S+)(?: \(.+\))?\|(.*?)(?: \(\*\))?$')
+    if (-not $match.Success) {
+      continue
+    }
+    Add-RavenSbomComponent -Components $components -Type "library" -Name $match.Groups[1].Value -Version $match.Groups[2].Value -License $match.Groups[3].Value
   }
   foreach ($line in Get-Content -LiteralPath (Join-Path $root "apps\desktop\bun.lock")) {
     $match = [regex]::Match($line, '^\s{4}"[^"]+": \["([^"]+)"')
