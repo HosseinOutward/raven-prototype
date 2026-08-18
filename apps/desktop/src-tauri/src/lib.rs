@@ -57,6 +57,7 @@ struct ApiProcess(Mutex<Option<Child>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let video_frames =
         VideoFrameService::start().expect("failed to start native video frame service");
     let video_state = new_shared_video_engine_state(video_frames.hub());
