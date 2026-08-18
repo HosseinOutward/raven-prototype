@@ -2748,7 +2748,7 @@ pub mod platform {
                 let Some(props) = props else {
                     continue;
                 };
-                if json_str(props, "media.class") != Some("Audio/Sink") {
+                if json_str(props, "media.class").as_deref() != Some("Audio/Sink") {
                     continue;
                 }
                 let node_name = json_str(props, "node.name")
