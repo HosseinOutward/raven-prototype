@@ -50,7 +50,7 @@ services:
         log_level: info
         rtc:
           tcp_port: 7881
-          port_range_start: 50000
+          port_range_start: 50002
           port_range_end: 50100
           use_external_ip: false
           node_ip: ${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP is required}
@@ -64,7 +64,7 @@ services:
         condition: service_healthy
     ports:
       - "7881:7881/tcp"
-      - "50000-50100:50000-50100/udp"
+      - "50002-50100:50002-50100/udp"
     healthcheck:
       test:
         - CMD

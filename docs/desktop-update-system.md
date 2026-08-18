@@ -1604,7 +1604,7 @@ ArvanCloud TLS edge
     -> operations and tokenized artifact routes blocked
 ```
 
-The homelab Compose project contains PostgreSQL, Redis, the production-configured LiveKit server, the Go API, and the Operations frontend. The API and LiveKit use the internal Raven network and the shared `proxy` network; the Operations frontend only needs the proxy network. LiveKit signaling reaches the shared edge through `raven-livekit:7880`, while WebRTC media uses router-forwarded `7881/TCP` and `50000-50100/UDP` ports advertised through the fixed `LIVEKIT_NODE_IP`.
+The homelab Compose project contains PostgreSQL, Redis, the production-configured LiveKit server, the Go API, and the Operations frontend. The API and LiveKit use the internal Raven network and the shared `proxy` network; the Operations frontend only needs the proxy network. LiveKit signaling reaches the shared edge through `raven-livekit:7880`, while WebRTC media uses router-forwarded `7881/TCP` and `50002-50100/UDP` ports advertised through the fixed `LIVEKIT_NODE_IP`.
 
 Why separate hostnames exist: public discovery, token-bearing downloads, private operations, and the normal application API have different exposure and logging requirements. A route accidentally omitted from one vhost should not become reachable through another.
 
