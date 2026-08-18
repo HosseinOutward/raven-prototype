@@ -16,10 +16,13 @@ import type { RavenUpdater } from "@/lib/updater";
 import type { RavenShellData } from "./ravenv1/state";
 import type { RavenMediaAdapterState } from "./ravenv1/useRavenMediaAdapter";
 import { UserSettingsView } from "./ravenv1/UserSettings";
+import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 
 export function RavenShellV1() {
   const [history, setHistory] = useState<{ entries: RavenView[]; index: number }>({ entries: [{ kind: "home" }], index: 0 });
   const [recoverySettings, setRecoverySettings] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("raven.sidebarCollapsed") === "true");
   const previousAccessMode = useRef<string | undefined>(undefined);
   const updater = useRavenUpdater();
   const data = useRavenShellData();
@@ -29,6 +32,9 @@ export function RavenShellV1() {
     joinWithoutScreenSharing: data.preferences.joinWithoutScreenSharing,
     nestLabel: data.labels.nestSingular,
     rtcServerUrl: data.serverProperties.rtcServerUrl,
+    presenceState: data.presence?.state,
+    presenceReachability: data.presence?.reachability,
+    localUserId: data.user?.id,
   });
   const pendingCallFlow = data.pending.some((item) => item.kind === "knock");
   const view = history.entries[history.index] ?? { kind: "home" };
@@ -38,6 +44,20 @@ export function RavenShellV1() {
   useEffect(() => {
     setHistory({ entries: [{ kind: "home" }], index: 0 });
   }, [data.user?.id]);
+
+  useEffect(() => {
+    const disableContextMenu = (event: MouseEvent) => event.preventDefault();
+    window.addEventListener("contextmenu", disableContextMenu);
+    return () => window.removeEventListener("contextmenu", disableContextMenu);
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      localStorage.setItem("raven.sidebarCollapsed", String(next));
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!updater.state) return;
@@ -155,6 +175,7 @@ export function RavenShellV1() {
         error={data.error}
         serverName={data.serverProperties.name}
         serverDescription={data.serverProperties.description}
+        serverAvatar={data.serverProperties.avatar}
         apiServerUrl={data.apiServerUrl}
         apiServerHistory={data.apiServerHistory}
         onServerSelect={data.selectApiServer}
@@ -175,14 +196,14 @@ export function RavenShellV1() {
         onForward={navigation.goForward}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)] gap-3 px-3 pb-3 pt-1">
-        <Sidebar view={view} data={data} onNavigate={navigation.navigate} />
+      <div className={cn("grid min-h-0 flex-1 gap-3 px-3 pb-2 pt-1", sidebarCollapsed ? "grid-cols-[72px_minmax(0,1fr)]" : "grid-cols-[300px_minmax(0,1fr)]")}>
+        <Sidebar view={view} data={data} collapsed={sidebarCollapsed} onToggle={toggleSidebar} onNavigate={navigation.navigate} />
         <Island className="flex min-h-0 flex-col overflow-hidden">
           <MainView view={view} data={data} media={media} updater={updater} onNavigate={navigation.navigate} />
         </Island>
       </div>
 
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-2">
         <DeviceDock data={data} media={media} />
       </div>
     </div>
@@ -331,6 +352,7 @@ function ShellLogin({
   error,
   serverName,
   serverDescription,
+  serverAvatar,
   apiServerUrl,
   apiServerHistory,
   onServerSelect,
@@ -340,6 +362,7 @@ function ShellLogin({
   error: string;
   serverName: string;
   serverDescription: string;
+  serverAvatar: string;
   apiServerUrl: string;
   apiServerHistory: string[];
   onServerSelect: (url: string) => Promise<void>;
@@ -371,8 +394,8 @@ function ShellLogin({
       <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         <Island className="w-full max-w-[420px] p-7">
           <div className="mb-7 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground">
-              {(serverName || "Raven").slice(0, 1).toUpperCase()}
+            <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl bg-primary text-sm font-bold text-primary-foreground">
+              {serverAvatar ? <img src={api.assetUrl(serverAvatar)} alt="" draggable={false} className="h-full w-full object-cover" /> : (serverName || "Raven").slice(0, 1).toUpperCase()}
             </div>
             <div>
               <div className="text-lg font-semibold tracking-tight">{serverName || "Raven"}</div>

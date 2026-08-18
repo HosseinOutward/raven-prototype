@@ -10,7 +10,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use thiserror::Error;
 
-use crate::audio::capture::{list_input_devices, list_output_devices, CaptureRuntimeManager};
+use crate::audio::capture::{
+    list_input_devices, list_output_devices, system_audio_runtime_readiness, CaptureRuntimeManager,
+};
 use crate::audio::domain::{
     AudioInputDevice, AudioMixerState, AudioOutputDevice, AudioPreset, AudioPresetDefinition,
     AudioPresetTarget, AudioProcessorId, AudioProcessorKind, AudioProcessorParameters,
@@ -47,6 +49,7 @@ pub fn new_shared_audio_engine_state() -> SharedAudioEngineState {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAudioCapabilityReport {
     pub os: String,
+    pub issues: Vec<String>,
     pub supported_source_types: Vec<AudioSourceType>,
     pub supports_microphone: bool,
     pub supports_system_audio: bool,
@@ -1336,9 +1339,21 @@ pub async fn audio_get_network_totals(
 #[tauri::command]
 pub fn audio_get_capabilities() -> NativeAudioCapabilityReport {
     let mut supported_source_types = vec![AudioSourceType::Microphone, AudioSourceType::TestTone];
+    let mut issues = Vec::new();
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    {
+    let system_audio_available = match system_audio_runtime_readiness() {
+        Ok(()) => cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        Err(issue) => {
+            issues.push(issue);
+            false
+        }
+    };
+
+    if system_audio_available {
         supported_source_types.insert(1, AudioSourceType::SystemAudio);
     }
 
@@ -1349,13 +1364,10 @@ pub fn audio_get_capabilities() -> NativeAudioCapabilityReport {
 
     NativeAudioCapabilityReport {
         os: std::env::consts::OS.to_string(),
+        issues,
         supported_source_types,
         supports_microphone: true,
-        supports_system_audio: cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )),
+        supports_system_audio: system_audio_available,
         supports_app_audio: cfg!(any(target_os = "windows", target_os = "macos")),
         supports_screen_audio: false,
         supports_test_tone: true,
@@ -1842,7 +1854,7 @@ pub fn audio_connect_room(
     token: String,
 ) -> Result<AudioMixerState, AudioStateError> {
     let shared = Arc::clone(state.inner());
-    let updated = {
+    let (updated, media_error) = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         guard
             .engine
@@ -1854,19 +1866,27 @@ pub fn audio_connect_room(
             engine,
             ..
         } = &mut *guard;
-        engine.reconcile_publications(&mixer.local_sources);
+        let publication_error = engine.reconcile_publications(&mixer.local_sources).err();
         let sinks = engine.sink_map();
         let render_reference = engine.render_reference();
-        capture.reconcile(
+        let capture_error = capture.reconcile(
             &app,
             Arc::clone(&shared),
             &mut mixer.local_sources,
             &sinks,
             render_reference,
         );
-        guard.snapshot()
+        (
+            guard.snapshot(),
+            publication_error
+                .or(capture_error)
+                .map(|message| AudioStateError::MediaPublisherFailed { message }),
+        )
     };
     emit_audio_state_changed(&app, &updated)?;
+    if let Some(error) = media_error {
+        return Err(error);
+    }
     Ok(updated)
 }
 
@@ -1887,10 +1907,10 @@ pub fn audio_disconnect_room(
             engine,
             ..
         } = &mut *guard;
-        engine.reconcile_publications(&mixer.local_sources);
+        let _ = engine.reconcile_publications(&mixer.local_sources);
         let sinks = engine.sink_map();
         let render_reference = engine.render_reference();
-        capture.reconcile(
+        let _ = capture.reconcile(
             &app,
             Arc::clone(&shared),
             &mut mixer.local_sources,
@@ -2149,7 +2169,7 @@ fn mutate_audio_state(
     state: &SharedAudioEngineState,
     mutation: impl FnOnce(&mut AudioEngineState) -> Result<(), AudioStateError>,
 ) -> Result<AudioMixerState, AudioStateError> {
-    let updated = {
+    let (updated, media_error) = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         mutation(&mut guard)?;
         let shared = Arc::clone(state);
@@ -2161,20 +2181,28 @@ fn mutate_audio_state(
         } = &mut *guard;
         // Reconcile published LiveKit tracks first so the capture manager can attach the
         // matching publish sinks to the (possibly already running) capture threads.
-        engine.reconcile_publications(&mixer.local_sources);
+        let publication_error = engine.reconcile_publications(&mixer.local_sources).err();
         let sinks = engine.sink_map();
         let render_reference = engine.render_reference();
-        capture.reconcile(
+        let capture_error = capture.reconcile(
             app,
             shared,
             &mut mixer.local_sources,
             &sinks,
             render_reference,
         );
-        guard.snapshot()
+        (
+            guard.snapshot(),
+            publication_error
+                .or(capture_error)
+                .map(|message| AudioStateError::MediaPublisherFailed { message }),
+        )
     };
 
     emit_audio_state_changed(app, &updated)?;
+    if let Some(error) = media_error {
+        return Err(error);
+    }
     Ok(updated)
 }
 
@@ -2185,7 +2213,7 @@ fn mutate_audio_state_with_instruction(
         &mut AudioEngineState,
     ) -> Result<Option<AudioTrackPublishInstruction>, AudioStateError>,
 ) -> Result<AudioMixerState, AudioStateError> {
-    let (updated, instruction) = {
+    let (updated, instruction, media_error) = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         let instruction = mutation(&mut guard)?;
         let shared = Arc::clone(state);
@@ -2195,20 +2223,29 @@ fn mutate_audio_state_with_instruction(
             engine,
             ..
         } = &mut *guard;
-        engine.reconcile_publications(&mixer.local_sources);
+        let publication_error = engine.reconcile_publications(&mixer.local_sources).err();
         let sinks = engine.sink_map();
         let render_reference = engine.render_reference();
-        capture.reconcile(
+        let capture_error = capture.reconcile(
             app,
             shared,
             &mut mixer.local_sources,
             &sinks,
             render_reference,
         );
-        (guard.snapshot(), instruction)
+        (
+            guard.snapshot(),
+            instruction,
+            publication_error
+                .or(capture_error)
+                .map(|message| AudioStateError::MediaPublisherFailed { message }),
+        )
     };
 
     emit_audio_state_changed(app, &updated)?;
+    if let Some(error) = media_error {
+        return Err(error);
+    }
     if let Some(instruction) = instruction {
         emit_audio_track_publish_instruction(app, &instruction)?;
     }
@@ -2231,7 +2268,7 @@ pub fn add_and_publish_shared_audio_source(
     display_name: String,
     capture_device_id: Option<String>,
 ) -> Result<AudioSourceId, AudioStateError> {
-    let (updated, new_id, instruction) = {
+    let (updated, new_id, instruction, media_error) = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         let new_id = guard.add_local_source(source_type, display_name).id;
         if capture_device_id.is_some() {
@@ -2246,19 +2283,29 @@ pub fn add_and_publish_shared_audio_source(
             engine,
             ..
         } = &mut *guard;
-        engine.reconcile_publications(&mixer.local_sources);
+        let publication_error = engine.reconcile_publications(&mixer.local_sources).err();
         let sinks = engine.sink_map();
         let render_reference = engine.render_reference();
-        capture.reconcile(
+        let capture_error = capture.reconcile(
             app,
             shared,
             &mut mixer.local_sources,
             &sinks,
             render_reference,
         );
-        (guard.snapshot(), new_id, instruction)
+        (
+            guard.snapshot(),
+            new_id,
+            instruction,
+            publication_error
+                .or(capture_error)
+                .map(|message| AudioStateError::MediaPublisherFailed { message }),
+        )
     };
     emit_audio_state_changed(app, &updated)?;
+    if let Some(error) = media_error {
+        return Err(error);
+    }
     emit_audio_track_publish_instruction(app, &instruction)?;
     Ok(new_id)
 }

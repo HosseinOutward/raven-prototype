@@ -64,7 +64,7 @@ export function SettingsScaffold({
         </nav>
 
         <div className="min-h-0 overflow-y-auto px-7 py-6">
-          <div className="max-w-2xl space-y-8">{children}</div>
+          <div className="max-w-3xl space-y-5">{children}</div>
         </div>
       </div>
     </div>
@@ -81,12 +81,12 @@ export function SettingsSection({
   children: ReactNode;
 }) {
   return (
-    <section className="space-y-4">
+    <section className="space-y-5 rounded-2xl bg-background/45 p-5 shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
       <div className="space-y-1">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        {description ? <p className="text-xs leading-5 text-muted-foreground">{description}</p> : null}
+        <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+        {description ? <p className="max-w-2xl text-xs leading-5 text-muted-foreground">{description}</p> : null}
       </div>
-      <div className="space-y-3">{children}</div>
+      <div className="space-y-3.5">{children}</div>
     </section>
   );
 }

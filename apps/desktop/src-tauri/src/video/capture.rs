@@ -176,7 +176,8 @@ impl VideoCaptureManager {
         &mut self,
         sources: &mut [VideoSourceState],
         sinks: &HashMap<VideoSourceId, Arc<dyn VideoFrameSink>>,
-    ) {
+    ) -> Option<String> {
+        let mut first_error = None;
         let desired_ids: HashSet<_> = sources
             .iter()
             .filter(|source| should_capture(source, sinks))
@@ -228,10 +229,13 @@ impl VideoCaptureManager {
                     self.runtimes.insert(source.id, runtime);
                 }
                 Err(error) => {
-                    source.runtime = errored_runtime_state(error.to_string());
+                    let message = error.to_string();
+                    source.runtime = errored_runtime_state(message.clone());
+                    first_error.get_or_insert(message);
                 }
             }
         }
+        first_error
     }
 }
 
@@ -269,6 +273,17 @@ pub fn list_displays() -> Result<Vec<DisplayTarget>, VideoCaptureError> {
 
 pub fn list_windows() -> Result<Vec<WindowTarget>, VideoCaptureError> {
     screen::list_windows()
+}
+
+pub fn screen_capture_runtime_readiness() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        screen::runtime_readiness()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1215,6 +1230,37 @@ mod screen {
 
     const PORTAL_DISPLAY_TARGET_ID: &str = "portal:display";
     const PORTAL_WINDOW_TARGET_ID: &str = "portal:window";
+
+    pub(super) fn runtime_readiness() -> Result<(), String> {
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none()
+            && std::env::var_os("XDG_RUNTIME_DIR").is_none()
+        {
+            return Err(
+                "Screen sharing needs an active desktop session and xdg-desktop-portal."
+                    .to_string(),
+            );
+        }
+        let portal = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Screen sharing could not start its portal check: {error}"))?;
+        portal.block_on(Screencast::new()).map_err(|error| {
+            format!("Screen sharing needs a working xdg-desktop-portal ScreenCast service: {error}")
+        })?;
+        let pipewire_plugin = Command::new("gst-inspect-1.0")
+            .arg("pipewiresrc")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match pipewire_plugin {
+            Ok(status) if status.success() => Ok(()),
+            _ => Err(
+                "Screen sharing needs GStreamer and its PipeWire plugin (`gstreamer1.0-pipewire`)."
+                    .to_string(),
+            ),
+        }
+    }
 
     #[derive(Debug)]
     pub(super) struct PortalScreenRuntime {

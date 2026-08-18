@@ -567,6 +567,7 @@ function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDe
     for (const member of details.members) {
       if (member.userId === home.user.id) continue;
       const person = ensure(member.userId, displayNameFor(member));
+      person.presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
       if (!person.treeIds.includes(details.tree.id)) person.treeIds.push(details.tree.id);
     }
   }

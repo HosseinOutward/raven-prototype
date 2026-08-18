@@ -164,6 +164,7 @@ export interface AppAudioSource {
 
 export interface NativeAudioCapabilityReport {
   os: string;
+  issues: string[];
   supportedSourceTypes: AudioSourceType[];
   supportsMicrophone: boolean;
   supportsSystemAudio: boolean;

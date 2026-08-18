@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, type UserPresenceState, type UserReachability } from "@/lib/api";
 import {
   AppAudioSource,
   audioCommands,
@@ -26,7 +26,17 @@ import {
   VideoSourceState,
   WindowTarget,
 } from "@/lib/video";
+import {
+  type ParticipantVoiceActivityMap,
+  useParticipantVoiceActivity,
+} from "@/lib/speakingActivity";
 import type { NetworkActivityCategory, NetworkActivityDirection, NetworkActivitySettings } from "./networkActivity";
+import {
+  isConfirmedMicrophoneActive,
+  isConfirmedVideoSourceActive,
+  microphonesToMuteBeforeJoin,
+} from "./mediaState";
+import { presenceForActiveNest } from "./state";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
 
@@ -75,6 +85,7 @@ export interface RavenMediaAdapterState {
   lastError: MediaAdapterError | null;
   audioState: AudioMixerState | null;
   videoState: VideoMixerState | null;
+  speakingActivity: ParticipantVoiceActivityMap;
   audioCapabilities: NativeAudioCapabilityReport | null;
   videoCapabilities: NativeVideoCapabilityReport | null;
   selfMediaPreviewMode: SelfMediaPreviewMode;
@@ -152,6 +163,9 @@ export function useRavenMediaAdapter(
     joinWithoutScreenSharing?: boolean;
     nestLabel?: string;
     rtcServerUrl?: string;
+    presenceState?: UserPresenceState;
+    presenceReachability?: UserReachability;
+    localUserId?: string;
   } = {},
 ): RavenMediaAdapterState {
   const [phase, setPhase] = useState<MediaAdapterPhase>("idle");
@@ -159,6 +173,7 @@ export function useRavenMediaAdapter(
   const [error, setError] = useState("");
   const [audioState, setAudioState] = useState<AudioMixerState | null>(null);
   const [videoState, setVideoState] = useState<VideoMixerState | null>(null);
+  const speakingActivity = useParticipantVoiceActivity(audioState, options.localUserId);
   const [audioCapabilities, setAudioCapabilities] = useState<NativeAudioCapabilityReport | null>(null);
   const [videoCapabilities, setVideoCapabilities] = useState<NativeVideoCapabilityReport | null>(null);
   const [inputDevices, setInputDevices] = useState<AudioInputDevice[]>([]);
@@ -186,6 +201,7 @@ export function useRavenMediaAdapter(
   const alwaysJoinMutedRef = useRef(Boolean(options.alwaysJoinMuted));
   const joinWithCameraOffRef = useRef(Boolean(options.joinWithCameraOff));
   const joinWithoutScreenSharingRef = useRef(Boolean(options.joinWithoutScreenSharing));
+  const presenceRef = useRef({ state: options.presenceState, reachability: options.presenceReachability });
   const selfMediaPreviewModeRef = useRef<SelfMediaPreviewMode>(initialSettings.selfMediaPreviewMode ?? "local");
   const localPreviewSurfaceVisibleRef = useRef(true);
   const deafenRestoreRef = useRef<Map<string, boolean>>(new Map());
@@ -203,6 +219,10 @@ export function useRavenMediaAdapter(
   useEffect(() => {
     joinWithoutScreenSharingRef.current = Boolean(options.joinWithoutScreenSharing);
   }, [options.joinWithoutScreenSharing]);
+
+  useEffect(() => {
+    presenceRef.current = { state: options.presenceState, reachability: options.presenceReachability };
+  }, [options.presenceReachability, options.presenceState]);
 
   const refreshNativeState = useCallback(async () => {
     const [audio, video] = await Promise.allSettled([audioCommands.getState(), videoCommands.getState()]);
@@ -330,9 +350,9 @@ export function useRavenMediaAdapter(
     [videoState],
   );
 
-  const localMicEnabled = micSources.some((source) => source.publishing && !source.channelStrip.mute.muted);
-  const localCameraEnabled = cameraSource != null;
-  const screenSharing = screenSource != null;
+  const localMicEnabled = micSources.some(isConfirmedMicrophoneActive);
+  const localCameraEnabled = isConfirmedVideoSourceActive(cameraSource);
+  const screenSharing = isConfirmedVideoSourceActive(screenSource);
   const windowSharing = screenSource?.kind === "window";
   const appAudioCapturing = (audioState?.localSources ?? []).some(
     (source) => source.sourceType === "appAudio" && source.enabled && source.runtime.status !== "error",
@@ -384,7 +404,7 @@ export function useRavenMediaAdapter(
 
   const muteLocalMicrophones = useCallback(async () => {
     let state = await audioCommands.getState();
-    const microphones = state.localSources.filter((source) => source.sourceType === "microphone");
+    const microphones = microphonesToMuteBeforeJoin(state.localSources);
     for (const source of microphones) {
       if (source.publishedTrack) state = await audioCommands.unpublishAudioSource(source.id);
       if (!source.channelStrip.mute.muted) state = await audioCommands.setLocalChannelMute(source.id, true);
@@ -508,8 +528,8 @@ export function useRavenMediaAdapter(
           // Native sidecars reconcile and publish existing sources as soon as they
           // connect, so join defaults must be enforced before either sidecar joins.
           await applyVideoJoinDefaults();
+          if (alwaysJoinMutedRef.current) await muteLocalMicrophones();
 
-          const micConfiguredBeforeJoin = (await audioCommands.getState()).localSources.some((source) => source.sourceType === "microphone");
           const audioToken = await api.liveKitToken(nestId, "audio");
           let nextAudioState = await audioCommands.connectRoom(rtcServerUrl || audioToken.url, audioToken.token);
           if (deafened && deafenMode === "bandwidthSaver") {
@@ -518,7 +538,6 @@ export function useRavenMediaAdapter(
             nextAudioState = await audioCommands.setRemoteAudioReceiving(true);
           }
           setAudioState(nextAudioState);
-          if (alwaysJoinMutedRef.current && !micConfiguredBeforeJoin) await muteLocalMicrophones();
 
           const videoToken = await api.liveKitToken(nestId, "video");
           let nextVideoState = await videoCommands.connectRoom(
@@ -531,7 +550,8 @@ export function useRavenMediaAdapter(
 
           await api.joinSession(nestId);
           await api.joinNestPresence(nestId);
-          await api.updatePresence("in_nest", "around", nestId);
+          const nextPresence = presenceForActiveNest(presenceRef.current);
+          await api.updatePresence(nextPresence.state, nextPresence.reachability, nestId);
 
           activeNestRef.current = nestId;
           setActiveNestId(nestId);
@@ -667,15 +687,24 @@ export function useRavenMediaAdapter(
 
   const stopCamera = useCallback(async () => {
     setError("");
+    setLastError(null);
     try {
       if (cameraSource) setVideoState(await videoCommands.stopSource(cameraSource.id));
     } catch (err) {
+      // A native stop can finish before its state event/invoke response fails. Re-read
+      // the engine so a completed stop is reflected immediately instead of requiring
+      // a second hotkey press.
+      const refreshed = await videoCommands.getState().catch(() => null);
+      if (refreshed) {
+        setVideoState(refreshed);
+        if (!refreshed.localSources.some((source) => source.kind === "camera")) return;
+      }
       setSafeError(messageFromError(err, "Camera could not be stopped"), "capture_failure", "Try stopping camera again or leave the media session.");
     }
   }, [cameraSource, setSafeError]);
 
   const toggleCamera = useCallback(async () => {
-    if (cameraSource) {
+    if (localCameraEnabled) {
       await stopCamera();
       return;
     }
@@ -686,7 +715,7 @@ export function useRavenMediaAdapter(
       return;
     }
     await startCamera(camera, preferredCameraProfile);
-  }, [cameraSource, cameras, preferredCameraId, preferredCameraProfile, setSafeError, startCamera, stopCamera]);
+  }, [cameras, localCameraEnabled, preferredCameraId, preferredCameraProfile, setSafeError, startCamera, stopCamera]);
 
   const applyRemotePlaybackMute = useCallback(
     async (muted: boolean, state: AudioMixerState | null = audioState) => {
@@ -758,11 +787,11 @@ export function useRavenMediaAdapter(
         messageFromError(err, "Incoming audio could not be fully muted"),
         "unsupported",
         nextDeafened
-          ? "Raven muted incoming audio in the stage, but the audio engine did not accept the full deafen state."
-          : "Raven restored incoming audio in the stage, but the audio engine did not accept the full restore.",
+          ? `Raven muted incoming audio in the ${nestLabel}, but the audio engine did not accept the full deafen state.`
+          : `Raven restored incoming audio in the ${nestLabel}, but the audio engine did not accept the full restore.`,
       );
     }
-  }, [applyDeafenStrategy, deafenMode, deafened, setNonFatalError]);
+  }, [applyDeafenStrategy, deafenMode, deafened, nestLabel, setNonFatalError]);
 
   useEffect(() => {
     if (!deafened || !audioState?.remoteTracks.length) return;
@@ -774,10 +803,10 @@ export function useRavenMediaAdapter(
       setNonFatalError(
         messageFromError(err, "New incoming audio could not be muted"),
         "unsupported",
-        "Raven muted incoming audio in the stage, but the audio engine did not accept the full deafen state for new audio.",
+        `Raven muted incoming audio in the ${nestLabel}, but the audio engine did not accept the full deafen state for new audio.`,
       );
     });
-  }, [applyRemotePlaybackMute, audioState, deafenMode, deafened, setNonFatalError, setRemoteAudioReceiving]);
+  }, [applyRemotePlaybackMute, audioState, deafenMode, deafened, nestLabel, setNonFatalError, setRemoteAudioReceiving]);
 
   const setOutputDevice = useCallback(async (deviceId: string | null) => {
     setError("");
@@ -926,6 +955,7 @@ export function useRavenMediaAdapter(
     lastError,
     audioState,
     videoState,
+    speakingActivity,
     audioCapabilities,
     videoCapabilities,
     selfMediaPreviewMode,
@@ -959,7 +989,7 @@ export function useRavenMediaAdapter(
     bitrateSupported: false,
     bitrateLabel: "Managed by the native video profile",
     micLabel: micStateLabel(micSources, localMicEnabled),
-    cameraLabel: cameraSource?.displayName ?? (localCameraEnabled ? "Camera on" : "Camera off"),
+    cameraLabel: localCameraEnabled ? cameraSource?.displayName ?? "Camera on" : "Camera off",
     outputLabel: deafened ? "Deafened" : "Sound on",
     visibilityLabel: activeNestId ? `Visible in ${nestLabel}` : `Not in a ${nestLabel}`,
     deviceReadiness: readinessLabel(audioCapabilities, videoCapabilities, phase, nestLabel),
@@ -1011,6 +1041,8 @@ function readinessLabel(
   if (phase === "joining") return `Joining ${nestLabel}`;
   if (phase === "leaving") return `Leaving ${nestLabel}`;
   if (!audio && !video) return "Checking devices";
+  const issue = [...(audio?.issues ?? []), ...(video?.issues ?? [])][0];
+  if (issue) return issue;
   const parts = [
     audio?.supportsMicrophone ? "Mic ready" : "Mic unavailable",
     video?.supportsCamera ? "Camera ready" : "Camera unavailable",

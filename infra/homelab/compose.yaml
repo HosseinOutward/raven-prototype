@@ -18,6 +18,69 @@ services:
     networks:
       - raven_internal
 
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - raven_redis:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  livekit:
+    image: livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50000
+          port_range_end: 50100
+          use_external_ip: false
+          node_ip: ${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP is required}
+        redis:
+          address: redis:6379
+        room:
+          empty_timeout: 300
+          departure_timeout: 20
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "7881:7881/tcp"
+      - "50000-50100:50000-50100/udp"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:7880/
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      raven_internal: {}
+      proxy:
+        aliases:
+          - raven-livekit
+
   api:
     build:
       context: ../..
@@ -39,7 +102,6 @@ services:
       RAVEN_REQUIRED_CLIENT_CAPABILITIES: ${RAVEN_REQUIRED_CLIENT_CAPABILITIES:-}
       RAVEN_SERVER_NAME: ${RAVEN_SERVER_NAME:-Raven}
       RAVEN_SERVER_DESCRIPTION: ${RAVEN_SERVER_DESCRIPTION:-Raven closed alpha}
-      RAVEN_ADVERTISE_URL: https://mimir.rvn.bluehour.cloud
       RAVEN_UPDATE_PUBLIC_URL: https://downloads.rvn.bluehour.cloud
       RAVEN_UPDATE_CONSENT_VERSION: closed-alpha-2026-07-12
       RAVEN_UPDATE_PRESIGN_SECONDS: ${RAVEN_UPDATE_PRESIGN_SECONDS:-600}
@@ -53,6 +115,7 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY is required}
       S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
+      RAVEN_MEDIA_PREFIX: ${RAVEN_MEDIA_PREFIX:-profile-images}
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,6 +159,7 @@ services:
 
 volumes:
   raven_postgres:
+  raven_redis:
 
 networks:
   raven_internal:

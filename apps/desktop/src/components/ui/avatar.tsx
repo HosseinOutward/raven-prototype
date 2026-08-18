@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
-export function Avatar({ name, className }: { name: string; className?: string }) {
+export function Avatar({ name, src, className }: { name: string; src?: string; className?: string }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => setImageFailed(false), [src]);
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -14,7 +17,11 @@ export function Avatar({ name, className }: { name: string; className?: string }
         className,
       )}
     >
-      {initials || "R"}
+      {src && !imageFailed ? (
+        <img src={src} alt="" draggable={false} className="h-full w-full rounded-[inherit] object-cover" onError={() => setImageFailed(true)} />
+      ) : (
+        initials || "R"
+      )}
     </div>
   );
 }

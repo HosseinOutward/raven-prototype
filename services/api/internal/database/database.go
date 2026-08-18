@@ -157,6 +157,7 @@ func migrate(db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
 			password_hash TEXT NOT NULL,
+			avatar_object_key TEXT NOT NULL DEFAULT '',
 			role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -194,6 +195,7 @@ func migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS trees (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
+			avatar_object_key TEXT NOT NULL DEFAULT '',
 			description TEXT NOT NULL DEFAULT '',
 			join_policy TEXT NOT NULL DEFAULT 'request' CHECK (join_policy IN ('free', 'request')),
 			visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public', 'private')),
@@ -265,6 +267,8 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE user_preferences ADD COLUMN join_with_camera_off BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE user_preferences ADD COLUMN join_without_screen_sharing BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE user_preferences ADD COLUMN follow_screen_shares BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE users ADD COLUMN avatar_object_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE trees ADD COLUMN avatar_object_key TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, statement := range alterStatements {
 		if _, err := db.Exec(statement); err != nil && !isDuplicateColumn(err) {
@@ -278,6 +282,11 @@ func migrate(db *sql.DB) error {
 		`UPDATE nests SET type = 'persistent' WHERE type IS NULL OR type = ''`,
 		`UPDATE nests SET lifecycle_state = CASE WHEN status = 'ended' THEN 'closed' ELSE 'created' END WHERE lifecycle_state IS NULL OR lifecycle_state = ''`,
 		`UPDATE nests SET last_activity_at = updated_at WHERE last_activity_at IS NULL`,
+		`CREATE TABLE IF NOT EXISTS server_settings (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			avatar_object_key TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS tree_members (
 			tree_id TEXT NOT NULL REFERENCES trees(id) ON DELETE CASCADE,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

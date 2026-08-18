@@ -6,6 +6,7 @@ use std::{
 use tauri::{Manager, RunEvent};
 
 pub mod audio;
+pub mod media_hotkeys;
 pub mod overlay;
 pub mod updater;
 pub mod video;
@@ -33,6 +34,9 @@ use audio::state::{
     audio_unpublish_audio_source, audio_unpublish_local_source_metadata,
     audio_update_processor_parameter, audio_update_published_track_metadata,
     audio_update_remote_processor_parameter, new_shared_audio_engine_state,
+};
+use media_hotkeys::{
+    media_hotkeys_get_settings, media_hotkeys_update_settings, new_media_hotkey_state,
 };
 use overlay::{
     new_voice_overlay_state, overlay_get_settings, overlay_get_snapshot, overlay_hide,
@@ -62,6 +66,7 @@ pub fn run() {
         .manage(video_state)
         .manage(video_frames)
         .manage(new_voice_overlay_state())
+        .manage(new_media_hotkey_state())
         .invoke_handler(tauri::generate_handler![
             audio_get_state,
             audio_get_capabilities,
@@ -144,6 +149,8 @@ pub fn run() {
             overlay_save_position,
             overlay_get_snapshot,
             overlay_update_snapshot,
+            media_hotkeys_get_settings,
+            media_hotkeys_update_settings,
             updater::updater_get_state,
             updater::updater_check_now,
             updater::updater_download,
@@ -163,6 +170,9 @@ pub fn run() {
             }
             if let Err(err) = overlay::initialize_voice_overlay(app.handle()) {
                 eprintln!("[raven] voice overlay initialization failed: {err}");
+            }
+            if let Err(err) = media_hotkeys::initialize(app.handle()) {
+                eprintln!("[raven] media hotkey initialization failed: {err}");
             }
             updater::initialize(app.handle()).map_err(std::io::Error::other)?;
             Ok(())

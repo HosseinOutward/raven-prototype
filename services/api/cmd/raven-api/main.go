@@ -23,17 +23,23 @@ func main() {
 	}
 	defer db.Close()
 
-	if len(os.Args) >= 3 && os.Args[1] == "user" && os.Args[2] == "create" {
-		server := apihttp.New(db)
-		createUser(server, os.Args[3:])
-		return
-	}
-	if len(os.Args) >= 3 && os.Args[1] == "release-admin" {
+	if len(os.Args) >= 2 && os.Args[1] == "release-admin" {
+		if len(os.Args) < 3 {
+			log.Fatal("usage: raven-api release-admin <grant|revoke|list|assign-cohort> [flags]")
+		}
 		manageReleaseAdministrator(updates.NewStore(db), os.Args[2], os.Args[3:])
 		return
 	}
-
 	server := apihttp.New(db)
+	if handled, err := runProvisioningCLI(server, os.Args[1:], os.Stdout, os.Stderr); handled {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 {
+		log.Fatalf("unknown command %q", os.Args[1])
+	}
 
 	addr := os.Getenv("RAVEN_API_ADDR")
 	if addr == "" {
@@ -85,18 +91,4 @@ func manageReleaseAdministrator(store *updates.Store, action string, args []stri
 	default:
 		log.Fatal("release-admin action must be grant, revoke, list, or assign-cohort")
 	}
-}
-
-func createUser(server *apihttp.Server, args []string) {
-	fs := flag.NewFlagSet("user create", flag.ExitOnError)
-	username := fs.String("username", "", "username")
-	password := fs.String("password", "", "password")
-	role := fs.String("role", "user", "role: admin or user")
-	_ = fs.Parse(args)
-
-	user, err := server.CreateUser(*username, *password, *role)
-	if err != nil {
-		log.Fatalf("create user: %v", err)
-	}
-	fmt.Printf("created %s user %q (%s)\n", user.Role, user.Username, user.ID)
 }

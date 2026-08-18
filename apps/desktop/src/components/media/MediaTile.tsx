@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { VideoConnectionQuality } from "@/lib/video";
 import {
-  Expand,
   Loader2,
+  Maximize2,
   Mic,
   MicOff,
   MoreHorizontal,
+  Minimize2,
   MonitorUp,
   Pin,
   PinOff,
@@ -18,6 +19,8 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
+import { speakingGlowStyle } from "@/lib/speakingActivity";
 import type { NativeMediaTile } from "./useNativeMediaTiles";
 import type { ParticipantMediaPreference } from "./useParticipantMediaPreferences";
 
@@ -47,13 +50,24 @@ export function MediaTile({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const clickTimerRef = useRef<number | null>(null);
   const [playbackWaiting, setPlaybackWaiting] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const canFullscreen = typeof document !== "undefined" && document.fullscreenEnabled;
 
   useEffect(() => () => {
     if (clickTimerRef.current !== null) window.clearTimeout(clickTimerRef.current);
   }, []);
 
-  const requestFullscreen = () => {
+  useEffect(() => {
+    const syncFullscreen = () => setFullscreen(document.fullscreenElement === rootRef.current);
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement === rootRef.current) {
+      void document.exitFullscreen();
+      return;
+    }
     void rootRef.current?.requestFullscreen?.();
   };
   const handleTileClick = (event: React.MouseEvent) => {
@@ -95,10 +109,12 @@ export function MediaTile({
           onTogglePin();
         }
       }}
+      style={speakingGlowStyle(tile.speakingIntensity, "tile")}
       className={cn(
         "raven-media-tile group relative h-full min-h-0 w-full overflow-hidden rounded-2xl bg-card/95 text-left shadow-[0_8px_24px_rgba(0,0,0,0.16)] outline-none transition-[box-shadow,transform] duration-200",
-        tile.speaking && "shadow-[0_0_0_2px_hsl(var(--primary)/0.72),0_12px_32px_rgba(0,0,0,0.24)]",
+        tile.speaking && "raven-speaking-tile",
         pinned && "shadow-[0_0_0_1px_hsl(var(--primary)/0.48),0_16px_40px_rgba(0,0,0,0.32)]",
+        fullscreen && "rounded-none",
         "focus-visible:shadow-[0_0_0_2px_hsl(var(--ring)/0.8),0_12px_32px_rgba(0,0,0,0.24)]",
       )}
     >
@@ -115,7 +131,7 @@ export function MediaTile({
       {!tile.streamUrl ? (
         <div className="absolute inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_center,hsl(var(--muted)/0.3),transparent_68%)]">
           <div className="px-5 text-center">
-            {fallback.loading ? <Loader2 className="mx-auto h-7 w-7 animate-spin text-primary/70" /> : <Avatar name={tile.displayName} className={cn("mx-auto text-sm", prominent ? "h-20 w-20 text-lg" : "h-12 w-12")} />}
+            {fallback.loading ? <Loader2 className="mx-auto h-7 w-7 animate-spin text-primary/70" /> : <Avatar name={tile.displayName} src={api.userAvatarUrl(tile.participantId)} className={cn("mx-auto text-sm", prominent ? "h-20 w-20 text-lg" : "h-12 w-12")} />}
             <div className="mt-3 text-xs font-medium text-white/70">{fallback.title}</div>
             <div className="mt-1 text-[11px] text-white/35">{fallback.detail}</div>
           </div>
@@ -130,7 +146,7 @@ export function MediaTile({
       ) : null}
 
       <div className="absolute left-3 top-3 flex items-center gap-1.5">
-        {tile.speaking ? <span className="rounded-full bg-primary px-2 py-1 text-[10px] font-semibold text-primary-foreground">Speaking</span> : null}
+        {/* {tile.speaking ? <span className="rounded-full bg-primary px-2 py-1 text-[10px] font-semibold text-primary-foreground">Speaking</span> : null} */}
         {tile.source === "screenshare" ? (
           <span className="inline-flex items-center gap-1 rounded-full bg-black/60 px-2 py-1 text-[10px] text-white/80 backdrop-blur-md">
             <MonitorUp className="h-3 w-3" /> Screen
@@ -143,7 +159,7 @@ export function MediaTile({
         onClick={(event) => event.stopPropagation()}
       >
         <TileAction label={pinned ? "Unpin" : "Pin"} onClick={onTogglePin}>{pinned ? <PinOff /> : <Pin />}</TileAction>
-        {canFullscreen ? <TileAction label="Fullscreen media" onClick={requestFullscreen}><Expand /></TileAction> : null}
+        {canFullscreen ? <TileAction label={fullscreen ? "Exit fullscreen" : "Fullscreen media"} onClick={toggleFullscreen}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</TileAction> : null}
         <ParticipantMenu
           tile={tile}
           pinned={pinned}
@@ -151,7 +167,8 @@ export function MediaTile({
           preference={preference}
           canFullscreen={canFullscreen}
           onTogglePin={onTogglePin}
-          onFullscreen={requestFullscreen}
+          fullscreen={fullscreen}
+          onFullscreen={toggleFullscreen}
           onFitChange={onFitChange}
           onPreferenceChange={onPreferenceChange}
         />
@@ -175,6 +192,7 @@ function ParticipantMenu({
   fit,
   preference,
   canFullscreen,
+  fullscreen,
   onTogglePin,
   onFullscreen,
   onFitChange,
@@ -185,6 +203,7 @@ function ParticipantMenu({
   fit: MediaFit;
   preference: ParticipantMediaPreference;
   canFullscreen: boolean;
+  fullscreen: boolean;
   onTogglePin: () => void;
   onFullscreen: () => void;
   onFitChange: (fit: MediaFit) => void;
@@ -209,7 +228,7 @@ function ParticipantMenu({
           </>
         ) : null}
         <DropdownMenuItem onSelect={onTogglePin}>{pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}{pinned ? "Unpin" : "Pin"}</DropdownMenuItem>
-        {canFullscreen ? <DropdownMenuItem onSelect={onFullscreen}><Expand className="h-4 w-4" />Fullscreen</DropdownMenuItem> : null}
+        {canFullscreen ? <DropdownMenuItem onSelect={onFullscreen}>{fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}{fullscreen ? "Exit fullscreen" : "Fullscreen"}</DropdownMenuItem> : null}
         <div className="my-1 h-px bg-white/8" />
         <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Media sizing</div>
         <DropdownMenuItem onSelect={() => onFitChange("fit")} className={cn(fit === "fit" && "bg-accent")}>Fit whole frame</DropdownMenuItem>

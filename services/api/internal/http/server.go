@@ -11,6 +11,7 @@ import (
 
 	"raven/services/api/internal/auth"
 	"raven/services/api/internal/database"
+	profilemedia "raven/services/api/internal/media"
 	"raven/services/api/internal/updates"
 
 	"github.com/gofiber/fiber/v2"
@@ -26,7 +27,7 @@ type Server struct {
 	serverName        string
 	serverDescription string
 	serverAvatar      string
-	advertiseURL      string
+	profileMedia      profilemedia.Store
 	liveKitURL        string
 	liveKitAPIKey     string
 	liveKitAPISecret  string
@@ -41,7 +42,6 @@ type ServerProperties struct {
 	Description  string         `json:"description"`
 	Avatar       string         `json:"avatar"`
 	RTCServerURL string         `json:"rtcServerUrl"`
-	AdvertiseURL string         `json:"advertiseUrl"`
 	Properties   map[string]any `json:"properties"`
 }
 
@@ -159,14 +159,10 @@ func New(db *database.DB) *Server {
 		serverDescription = "Desktop RTC for private Nests"
 	}
 	serverAvatar := strings.TrimSpace(os.Getenv("RAVEN_SERVER_AVATAR"))
-	advertiseURL := strings.TrimSpace(os.Getenv("RAVEN_ADVERTISE_URL"))
-	if advertiseURL == "" {
-		advertiseURL = advertisedURLFromAddr(os.Getenv("RAVEN_API_ADDR"))
-	}
 	s := &Server{
 		app: fiber.New(fiber.Config{
 			AppName:      "Raven API",
-			BodyLimit:    512 * 1024,
+			BodyLimit:    maxProfileImageBytes + 64*1024,
 			ErrorHandler: errorHandler,
 		}),
 		db: db,
@@ -178,7 +174,7 @@ func New(db *database.DB) *Server {
 		serverName:        serverName,
 		serverDescription: serverDescription,
 		serverAvatar:      serverAvatar,
-		advertiseURL:      advertiseURL,
+		profileMedia:      profilemedia.NewStoreFromEnv(),
 		liveKitURL:        liveKitURL,
 		liveKitAPIKey:     liveKitAPIKey,
 		liveKitAPISecret:  liveKitAPISecret,
@@ -228,6 +224,9 @@ func (s *Server) routes() {
 
 	v1 := s.app.Group("/v1")
 	v1.Get("/server/properties", s.getServerProperties)
+	v1.Get("/media/users/:id/avatar", s.getUserAvatar)
+	v1.Get("/media/trees/:id/avatar", s.getTreeAvatar)
+	v1.Get("/media/server/avatar", s.getStoredServerAvatar)
 	v1.Get("/server/compatibility", s.getServerCompatibility)
 	v1.Post("/auth/login", s.login)
 	s.registerPublicUpdateRoutes(v1)
@@ -239,8 +238,10 @@ func (s *Server) routes() {
 	authenticated.Delete("/auth/sessions/:id", s.revokeAuthSession)
 	authenticated.Get("/preferences", s.getPreferences)
 	authenticated.Post("/preferences", s.updatePreferences)
+	authenticated.Post("/profile/avatar", s.uploadUserAvatar)
 	authenticated.Post("/admin/users", s.requireAdmin, s.adminCreateUser)
 	authenticated.Get("/admin/users", s.requireAdmin, s.adminListUsers)
+	authenticated.Post("/admin/server/avatar", s.requireAdmin, s.uploadServerAvatar)
 	s.registerOpsRoutes(authenticated)
 	service := authenticated.Use(s.requireCompatibleClient)
 	service.Get("/users/search", s.searchUsers)
@@ -257,6 +258,7 @@ func (s *Server) routes() {
 	service.Post("/trees", s.createTree)
 	service.Get("/trees/:id", s.getTree)
 	service.Post("/trees/:id/settings", s.updateTreeSettings)
+	service.Post("/trees/:id/avatar", s.uploadTreeAvatar)
 	service.Delete("/trees/:id", s.deleteTree)
 	service.Post("/trees/:id/join", s.joinTree)
 	service.Post("/trees/:id/members", s.addTreeMember)
@@ -301,12 +303,16 @@ func (s *Server) routes() {
 }
 
 func (s *Server) getServerProperties(c *fiber.Ctx) error {
+	avatar := s.serverAvatar
+	var storedAvatar string
+	if err := s.db.QueryRow(`SELECT avatar_object_key FROM server_settings WHERE id = 1`).Scan(&storedAvatar); err == nil && storedAvatar != "" {
+		avatar = serverAvatarRoute(storedAvatar)
+	}
 	return c.JSON(ServerProperties{
 		Name:         fallbackString(s.serverName, "Raven"),
 		Description:  fallbackString(s.serverDescription, "Desktop RTC for private Nests"),
-		Avatar:       s.serverAvatar,
+		Avatar:       avatar,
 		RTCServerURL: fallbackString(s.liveKitURL, "ws://127.0.0.1:7880"),
-		AdvertiseURL: s.advertiseURL,
 		Properties:   map[string]any{},
 	})
 }
@@ -361,17 +367,6 @@ func allowedCORSOrigin(origin string) bool {
 		}
 	}
 	return false
-}
-
-func advertisedURLFromAddr(addr string) string {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		addr = "127.0.0.1:6977"
-	}
-	if strings.HasPrefix(strings.ToLower(addr), "http://") || strings.HasPrefix(strings.ToLower(addr), "https://") {
-		return strings.TrimRight(addr, "/")
-	}
-	return "http://" + strings.TrimRight(addr, "/")
 }
 
 func (s *Server) requireAuth(c *fiber.Ctx) error {
@@ -596,9 +591,17 @@ func (s *Server) adminListUsers(c *fiber.Ctx) error {
 }
 
 func (s *Server) CreateUser(username, password, role string) (User, error) {
+	return s.CreateUserWithDisplayName(username, "", password, role)
+}
+
+func (s *Server) CreateUserWithDisplayName(username, displayName, password, role string) (User, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
 		return User{}, fmt.Errorf("username and password are required")
+	}
+	normalizedDisplayName, err := normalizeDisplayName(displayName, username)
+	if err != nil {
+		return User{}, err
 	}
 	normalizedRole, err := database.NormalizeRole(role)
 	if err != nil {
@@ -609,13 +612,30 @@ func (s *Server) CreateUser(username, password, role string) (User, error) {
 		return User{}, err
 	}
 	now := database.Now()
-	user := User{ID: auth.NewID(), Username: username, DisplayName: username, Role: normalizedRole, CreatedAt: now, UpdatedAt: now}
+	user := User{ID: auth.NewID(), Username: username, DisplayName: normalizedDisplayName, Role: normalizedRole, CreatedAt: now, UpdatedAt: now}
 	user.Preferences = defaultUserPreferences(user.Username, now)
-	_, err = s.db.Exec(
+	user.Preferences.DisplayName = normalizedDisplayName
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(
 		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		user.ID, user.Username, hash, user.Role, user.CreatedAt, user.UpdatedAt,
-	)
-	return user, err
+	); err != nil {
+		return User{}, err
+	}
+	if _, err = tx.Exec(
+		`INSERT INTO user_preferences (user_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		user.ID, user.DisplayName, now, now,
+	); err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	return user, nil
 }
 
 func (s *Server) createNest(c *fiber.Ctx) error {
@@ -648,7 +668,6 @@ func (s *Server) createNestWithType(c *fiber.Ctx, defaultType string) error {
 	if nestType == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "Nest type must be persistent or temporary")
 	}
-	now := database.Now()
 	var treeID *string
 	if nestType == "persistent" {
 		requestedTreeID := strings.TrimSpace(body.TreeID)
@@ -665,48 +684,10 @@ func (s *Server) createNestWithType(c *fiber.Ctx, defaultType string) error {
 			treeID = &requestedTreeID
 		}
 	}
-	nest := Nest{
-		ID:             auth.NewID(),
-		Name:           name,
-		JoinCode:       auth.NewJoinCode(),
-		CreatorUserID:  user.ID,
-		TreeID:         treeID,
-		Type:           nestType,
-		Status:         "active",
-		LifecycleState: normalizeLifecycleState(nestType),
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		LastActivityAt: now,
-	}
-	tx, err := s.db.Begin()
+	nest, err := s.createNestForUser(user, name, nestType, treeID)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if nest.Type == "persistent" && nest.TreeID == nil {
-		defaultTreeID, err := s.ensureDefaultTreeForUserTx(tx, user, now)
-		if err != nil {
-			return err
-		}
-		nest.TreeID = &defaultTreeID
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO nests (id, name, join_code, creator_user_id, tree_id, type, status, lifecycle_state, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		nest.ID, nest.Name, nest.JoinCode, nest.CreatorUserID, nullableStringPtr(nest.TreeID), nest.Type, nest.Status, nest.LifecycleState, nest.CreatedAt, nest.UpdatedAt, nest.LastActivityAt,
-	); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO nest_members (nest_id, user_id, role, state, joined_at, created_at, updated_at) VALUES (?, ?, 'creator', 'joined', ?, ?, ?)`,
-		nest.ID, user.ID, now, now, now,
-	); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	_ = s.appendEvent(nest.ID, "", user.ID, "nest.created", map[string]any{"type": nest.Type, "name": nest.Name})
-	s.broadcastNestUpdate(nest.ID, "nest.created")
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"nest": withLinks(nest)})
 }
 

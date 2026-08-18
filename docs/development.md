@@ -22,7 +22,23 @@ Create the first admin:
 
 ```powershell
 cd services/api
-go run ./cmd/raven-api user create --username admin --password "admin123" --role admin
+go run ./cmd/raven-api user create --username admin --display-name "Raven Admin" --password "admin123" --role admin
+```
+
+Provision users, Spaces, Rooms, and Space membership against the API's configured PostgreSQL or SQLite database:
+
+```powershell
+go run ./cmd/raven-api user create --username alice --display-name "Alice Example" --password "change-me"
+go run ./cmd/raven-api space create --name "Raven Core" --creator alice
+go run ./cmd/raven-api room create --name "Daily Room" --space "Raven Core"
+go run ./cmd/raven-api space add-user --space "Raven Core" --username admin
+go run ./cmd/raven-api space add-user --space "Raven Core" --username alice --role owner
+```
+
+`--display-name` is optional and falls back to the username. `--space` accepts an active Space ID or an exact, unique name. The optional membership role is `owner`, `moderator`, or `member`, with `member` used for new/restored memberships when omitted. A built binary uses the same interface:
+
+```powershell
+raven-api room create --name "Daily Room" --space "<space-id>"
 ```
 
 Run tests:
@@ -61,6 +77,11 @@ cd ..\..
 Release preparation intentionally requires a clean committed HEAD. See `docs/update-release-runbook.md`; never copy the updater private key to a backend, Linux builder, object store, or deployment host.
 
 ## Desktop
+
+On Windows, the desktop native build requires LLVM for bindgen. Install it once
+with `winget install LLVM.LLVM` (or use another local LLVM installation); the
+Tauri wrapper discovers the local `libclang.dll` and ignores stale absolute LLVM
+paths inherited from another synced machine.
 
 ```powershell
 cd apps/desktop

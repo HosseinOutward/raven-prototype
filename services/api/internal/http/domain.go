@@ -27,14 +27,17 @@ type Tree struct {
 }
 
 type TreeMember struct {
-	TreeID      string  `json:"treeId"`
-	UserID      string  `json:"userId"`
-	Username    string  `json:"username"`
-	DisplayName string  `json:"displayName"`
-	Role        string  `json:"role"`
-	State       string  `json:"state"`
-	JoinedAt    *string `json:"joinedAt"`
-	LeftAt      *string `json:"leftAt"`
+	TreeID        string  `json:"treeId"`
+	UserID        string  `json:"userId"`
+	Username      string  `json:"username"`
+	DisplayName   string  `json:"displayName"`
+	Role          string  `json:"role"`
+	State         string  `json:"state"`
+	JoinedAt      *string `json:"joinedAt"`
+	LeftAt        *string `json:"leftAt"`
+	PresenceState string  `json:"presenceState"`
+	Reachability  string  `json:"reachability"`
+	ActiveNestID  *string `json:"activeNestId,omitempty"`
 }
 
 type UserPresence struct {
@@ -1146,10 +1149,12 @@ func (s *Server) findTree(treeID string) (Tree, error) {
 
 func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	rows, err := s.db.Query(
-		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at
+		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
-		 LEFT JOIN user_preferences up ON up.user_id = u.id
+		 LEFT JOIN user_preferences pref ON pref.user_id = u.id
+		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ?
 		 ORDER BY tm.role, u.username`,
 		treeID,
@@ -1161,7 +1166,7 @@ func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	members := []TreeMember{}
 	for rows.Next() {
 		var member TreeMember
-		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt); err != nil {
+		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID); err != nil {
 			return nil, err
 		}
 		members = append(members, member)
@@ -1172,13 +1177,15 @@ func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 func (s *Server) findTreeMember(treeID, userID string) (TreeMember, error) {
 	var member TreeMember
 	err := s.db.QueryRow(
-		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at
+		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
-		 LEFT JOIN user_preferences up ON up.user_id = u.id
+		 LEFT JOIN user_preferences pref ON pref.user_id = u.id
+		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ? AND tm.user_id = ? AND tm.state = 'joined'`,
 		treeID, userID,
-	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt)
+	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID)
 	return member, err
 }
 
@@ -1195,13 +1202,15 @@ func (s *Server) addTreeMemberRecord(treeID, userID, role string) (TreeMember, e
 	}
 	var member TreeMember
 	err = s.db.QueryRow(
-		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at
+		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
-		 LEFT JOIN user_preferences up ON up.user_id = u.id
+		 LEFT JOIN user_preferences pref ON pref.user_id = u.id
+		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ? AND tm.user_id = ?`,
 		treeID, userID,
-	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt)
+	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID)
 	return member, err
 }
 

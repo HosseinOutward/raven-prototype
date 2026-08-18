@@ -55,12 +55,26 @@ Response:
   "description": "Desktop RTC for private Nests",
   "avatar": "",
   "rtcServerUrl": "ws://127.0.0.1:7880",
-  "advertiseUrl": "http://127.0.0.1:6977",
   "properties": {}
 }
 ```
 
 The desktop app lets logged-out users choose the Raven API server URL. The realtime server URL comes from this response.
+
+## Profile images
+
+JPEG, PNG, GIF, and WebP profile images up to 512 KB are stored in Raven's configured S3 media namespace. The desktop app square-crops and optimizes pictures before upload. User uploads apply to the signed-in account, Tree uploads require owner or moderator access, and server uploads require an admin account.
+
+```http
+POST /v1/profile/avatar
+POST /v1/trees/:id/avatar
+POST /v1/admin/server/avatar
+GET  /v1/media/users/:id/avatar
+GET  /v1/media/trees/:id/avatar
+GET  /v1/media/server/avatar
+```
+
+Upload requests contain the raw image body and its matching image `Content-Type`. Read routes proxy the private S3 object without exposing storage credentials.
 
 ## Admin Users
 

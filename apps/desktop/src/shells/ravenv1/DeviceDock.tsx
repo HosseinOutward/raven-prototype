@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
@@ -12,6 +14,7 @@ import {
   profileFromSelection,
 } from "@/components/nest/VideoPickers";
 import { buildVoiceOverlaySnapshot, EMPTY_VOICE_OVERLAY_SNAPSHOT, voiceOverlayCommands } from "@/lib/voiceOverlay";
+import { subscribeMediaHotkeys } from "@/lib/mediaHotkeys";
 import { cn } from "@/lib/utils";
 import { type VideoQualityProfileId } from "@/lib/video";
 import { Headphones, Mic, MicOff, MonitorUp, Network, Settings2, SlidersHorizontal, Video, VideoOff, VolumeX } from "lucide-react";
@@ -31,12 +34,57 @@ import { useNetworkActivity } from "./useNetworkActivity";
 export function DeviceDock({ data, media }: { data: RavenShellData; media: RavenMediaAdapterState }) {
   const [drawer, setDrawer] = useState<"media" | "mixer" | null>(null);
   const [screenPickerOpen, setScreenPickerOpen] = useState(false);
+  const mediaRef = useRef(media);
+  const hotkeyActionRef = useRef<Set<string>>(new Set());
+  mediaRef.current = media;
+  const [fullscreenHost, setFullscreenHost] = useState<HTMLElement | null>(null);
   const lastOverlaySnapshotRef = useRef("");
   const presence = presenceFromApi(data.presence);
   const adapterError = media.error;
   const activeDetails = media.activeNestId ? data.getNestDetails(media.activeNestId) : undefined;
   const activeSession = media.activeNestId ? data.getActiveSession(media.activeNestId) ?? null : null;
   const selfName = data.user ? displayNameFor(data.user) : "You";
+  const networkActivity = useNetworkActivity(media.activeNestId != null, media.networkActivity);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    subscribeMediaHotkeys((action) => {
+      const current = mediaRef.current;
+      if (current.busy || hotkeyActionRef.current.has(action)) return;
+      let operation: Promise<void> | null = null;
+      if (action === "mic" && current.audioSupported) operation = current.toggleMic();
+      if (action === "camera" && current.cameraSupported) {
+        operation = current.localCameraEnabled ? current.stopCamera() : current.toggleCamera();
+      }
+      if (action === "deafen" && current.deafenSupported) operation = current.toggleDeafen();
+      if (action === "screenShare" && current.screenShareSupported) {
+        if (current.screenSharing) operation = current.stopScreenShare();
+        else {
+          setScreenPickerOpen(true);
+          const appWindow = getCurrentWindow();
+          void appWindow.show().then(() => appWindow.setFocus()).catch(() => undefined);
+        }
+      }
+      if (!operation) return;
+      hotkeyActionRef.current.add(action);
+      void operation.catch(() => undefined).finally(() => hotkeyActionRef.current.delete(action));
+    }).then((nextUnlisten) => { unlisten = nextUnlisten; }).catch(() => undefined);
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    const syncFullscreenHost = () => {
+      const element = document.fullscreenElement;
+      setFullscreenHost(
+        element instanceof HTMLElement && element.matches(".raven-media-stage, .raven-media-tile")
+          ? element
+          : null,
+      );
+    };
+    syncFullscreenHost();
+    document.addEventListener("fullscreenchange", syncFullscreenHost);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreenHost);
+  }, []);
 
   useEffect(() => {
     const visible = drawer === null && !screenPickerOpen;
@@ -61,7 +109,9 @@ export function DeviceDock({ data, media }: { data: RavenShellData; media: Raven
       connected: media.phase === "connected",
       mixerState: media.audioState,
       videoMixer: media.videoState,
+      speakingActivity: media.speakingActivity,
       screenSharingUserIds: media.screenSharingUserIds,
+      locationLabel: data.labels.nestSingular,
     });
     const serialized = JSON.stringify(snapshot);
     if (lastOverlaySnapshotRef.current === serialized) return;
@@ -74,17 +124,19 @@ export function DeviceDock({ data, media }: { data: RavenShellData; media: Raven
     activeDetails,
     activeSession,
     data.user,
+    data.labels.nestSingular,
     media.audioState,
     media.phase,
     media.screenSharingUserIds,
+    media.speakingActivity,
     media.videoState,
   ]);
 
   return (
     <>
-      <Island className={cn("grid h-[78px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 bg-transparent px-4", adapterError && "ring-1 ring-destructive/50")}>
+      <Island className={cn("grid h-[64px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 bg-transparent px-3", adapterError && "ring-1 ring-destructive/50")}>
         <div className="flex min-w-0 items-center gap-3 justify-self-start">
-          <Avatar name={selfName} className="h-10 w-10" />
+          <Avatar name={selfName} src={data.user ? `${data.apiServerUrl}/v1/media/users/${data.user.id}/avatar?v=${encodeURIComponent(data.user.updatedAt)}` : undefined} className="h-8 w-8" />
           <div className="min-w-0">
             <div className="truncate text-sm font-medium leading-none">{selfName}</div>
             <DropdownMenu>
@@ -117,57 +169,33 @@ export function DeviceDock({ data, media }: { data: RavenShellData; media: Raven
         </div>
 
         <div className="flex items-center gap-2 justify-self-center">
-          <DeviceControl
-            label={media.localMicEnabled ? "Mic on" : media.audioSupported ? "Mic off" : "No mic"}
-            tone={media.localMicEnabled ? "active" : "muted"}
-            disabled={!media.audioSupported || media.busy}
-            onClick={() => void media.toggleMic()}
-          >
-            {media.localMicEnabled ? <Mic className="h-[18px] w-[18px]" /> : <MicOff className="h-[18px] w-[18px]" />}
-          </DeviceControl>
-          <DeviceControl
-            label={media.localCameraEnabled ? "Camera on" : media.cameraSupported ? "Camera off" : "No camera"}
-            tone={media.localCameraEnabled ? "active" : "idle"}
-            disabled={!media.cameraSupported || media.busy}
-            onClick={() => void media.toggleCamera()}
-          >
-            {media.localCameraEnabled ? <Video className="h-[18px] w-[18px]" /> : <VideoOff className="h-[18px] w-[18px]" />}
-          </DeviceControl>
-          <DeviceControl
-            label={media.deafenSupported ? media.outputLabel : "Output N/A"}
-            tone={media.localDeafened ? "danger" : "idle"}
-            disabled={media.busy}
-            title={
-              media.outputMuteSupported
-                ? "Toggle output mute"
-                : `Toggle app-level deafen. Raven mutes remote playback without leaving the ${data.labels.nestSingular}.`
-            }
-            onClick={() => void media.toggleDeafen()}
-          >
-            {media.localDeafened ? <VolumeX className="h-[18px] w-[18px]" /> : <Headphones className="h-[18px] w-[18px]" />}
-          </DeviceControl>
-          <DeviceControl
-            label={media.screenSharing ? (media.windowSharing ? "Window" : "Sharing") : "Share off"}
-            tone={media.screenSharing ? "active" : "idle"}
-            disabled={!media.screenShareSupported || media.busy}
-            onClick={() => void (media.screenSharing ? media.stopScreenShare() : setScreenPickerOpen(true))}
-          >
-            <MonitorUp className="h-[18px] w-[18px]" />
-          </DeviceControl>
+          <DockDeviceControls data={data} media={media} onScreenPicker={() => setScreenPickerOpen(true)} />
         </div>
 
         <div className="flex min-w-0 items-center justify-end gap-2 justify-self-end">
-          <NetworkActivityIndicator connected={media.activeNestId != null} settings={media.networkActivity} />
-          <Button variant="secondary" size="sm" className="h-12 rounded-2xl px-3 gap-2" onClick={() => setDrawer("mixer")} title="Open mixer">
+          <NetworkActivityIndicator activity={networkActivity} />
+          <Button variant="secondary" size="sm" className="h-10 rounded-xl px-3 gap-2" onClick={() => setDrawer("mixer")} title="Open mixer">
             <SlidersHorizontal className="h-4 w-4" />
             Mixer
           </Button>
-          <Button variant="secondary" size="sm" className="h-12 rounded-2xl px-3 gap-2" onClick={() => setDrawer("media")} title={media.deviceReadiness}>
+          <Button variant="secondary" size="sm" className="h-10 rounded-xl px-3 gap-2" onClick={() => setDrawer("media")} title={media.deviceReadiness}>
             <Settings2 className="h-4 w-4" />
             Media Setup
           </Button>
         </div>
       </Island>
+
+      {fullscreenHost
+        ? createPortal(
+            <FullscreenDeviceOverlay
+              data={data}
+              media={media}
+              networkActivity={networkActivity}
+              onScreenPicker={() => setScreenPickerOpen(true)}
+            />,
+            fullscreenHost,
+          )
+        : null}
 
       <Drawer
         open={drawer === "media"}
@@ -209,27 +237,164 @@ export function DeviceDock({ data, media }: { data: RavenShellData; media: Raven
   );
 }
 
-function NetworkActivityIndicator({
-  connected,
-  settings,
+function DockDeviceControls({
+  data,
+  media,
+  onScreenPicker,
 }: {
-  connected: boolean;
-  settings: RavenMediaAdapterState["networkActivity"];
+  data: RavenShellData;
+  media: RavenMediaAdapterState;
+  onScreenPicker: () => void;
 }) {
-  const activity = useNetworkActivity(connected, settings);
+  return (
+    <>
+      <DeviceControl
+        label={media.localMicEnabled ? "Mic on" : media.audioSupported ? "Mic off" : "No mic"}
+        tone={media.localMicEnabled ? "active" : "muted"}
+        disabled={!media.audioSupported || media.busy}
+        onClick={() => void media.toggleMic()}
+      >
+        {media.localMicEnabled ? <Mic className="h-[18px] w-[18px]" /> : <MicOff className="h-[18px] w-[18px]" />}
+      </DeviceControl>
+      <DeviceControl
+        label={media.localCameraEnabled ? "Camera on" : media.cameraSupported ? "Camera off" : "No camera"}
+        tone={media.localCameraEnabled ? "active" : "idle"}
+        disabled={!media.cameraSupported || media.busy}
+        onClick={() => void media.toggleCamera()}
+      >
+        {media.localCameraEnabled ? <Video className="h-[18px] w-[18px]" /> : <VideoOff className="h-[18px] w-[18px]" />}
+      </DeviceControl>
+      <DeviceControl
+        label={media.deafenSupported ? media.outputLabel : "Output N/A"}
+        tone={media.localDeafened ? "danger" : "idle"}
+        disabled={media.busy}
+        title={
+          media.outputMuteSupported
+            ? "Toggle output mute"
+            : `Toggle app-level deafen. Raven mutes remote playback without leaving the ${data.labels.nestSingular}.`
+        }
+        onClick={() => void media.toggleDeafen()}
+      >
+        {media.localDeafened ? <VolumeX className="h-[18px] w-[18px]" /> : <Headphones className="h-[18px] w-[18px]" />}
+      </DeviceControl>
+      <DeviceControl
+        label={media.screenSharing ? (media.windowSharing ? "Window" : "Sharing") : "Share off"}
+        tone={media.screenSharing ? "active" : "idle"}
+        disabled={!media.screenShareSupported || media.busy}
+        onClick={() => void (media.screenSharing ? media.stopScreenShare() : onScreenPicker())}
+      >
+        <MonitorUp className="h-[18px] w-[18px]" />
+      </DeviceControl>
+    </>
+  );
+}
+
+function FullscreenDeviceOverlay({
+  data,
+  media,
+  networkActivity,
+  onScreenPicker,
+}: {
+  data: RavenShellData;
+  media: RavenMediaAdapterState;
+  networkActivity: NetworkActivitySnapshot;
+  onScreenPicker: () => void;
+}) {
+  const [visible, setVisible] = useState(true);
+  const hideTimerRef = useRef<number | null>(null);
+  const pointerInsideRef = useRef(false);
+  const networkMenuOpenRef = useRef(false);
+
+  const clearHideTimer = () => {
+    if (hideTimerRef.current === null) return;
+    window.clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = null;
+  };
+  const reveal = () => {
+    clearHideTimer();
+    setVisible(true);
+  };
+  const scheduleHide = () => {
+    clearHideTimer();
+    if (networkMenuOpenRef.current) return;
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setVisible(false);
+    }, 1400);
+  };
+
+  useEffect(() => {
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      setVisible(false);
+    }, 2800);
+    return () => clearHideTimer();
+  }, []);
+
+  return (
+    <div
+      className={cn(
+        "absolute inset-x-0 bottom-0 z-[60] flex items-end justify-center px-4 transition-[height] duration-200",
+        visible ? "h-24 pb-4" : "h-5",
+      )}
+      onMouseEnter={() => {
+        pointerInsideRef.current = true;
+        reveal();
+      }}
+      onMouseLeave={() => {
+        pointerInsideRef.current = false;
+        scheduleHide();
+      }}
+      onFocusCapture={reveal}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) scheduleHide();
+      }}
+      aria-label="Fullscreen media controls"
+    >
+      <div
+        inert={!visible}
+        aria-hidden={!visible}
+        className={cn(
+          "flex items-center gap-2 rounded-2xl border border-white/10 bg-background/85 p-2 shadow-2xl shadow-black/55 backdrop-blur-xl transition-[opacity,transform] duration-200",
+          visible ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-3 opacity-0",
+        )}
+      >
+        <DockDeviceControls data={data} media={media} onScreenPicker={onScreenPicker} />
+        <div className="ml-1 border-l border-white/10 pl-3">
+          <NetworkActivityIndicator
+            activity={networkActivity}
+            onOpenChange={(open) => {
+              networkMenuOpenRef.current = open;
+              if (open) reveal();
+              else if (!pointerInsideRef.current) scheduleHide();
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NetworkActivityIndicator({
+  activity,
+  onOpenChange,
+}: {
+  activity: NetworkActivitySnapshot;
+  onOpenChange?: (open: boolean) => void;
+}) {
   const visibleCategories = activity.categories.filter((category) => category !== "other");
   if (!activity.enabled || visibleCategories.length === 0 || activity.directions.length === 0) return null;
 
   const summary = selectedNetworkSummary(activity);
   const summaryText = networkSummaryText(activity, summary);
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           aria-label={`Network activity: ${summaryText}`}
           title="Measured network activity"
-          className="flex h-12 shrink-0 items-center gap-2 rounded-2xl bg-background/40 px-3 text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-10 shrink-0 items-center gap-2 rounded-xl bg-background/40 px-3 text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Network className="h-3.5 w-3.5 shrink-0 text-primary/80" />
           <CompactNetworkSummary activity={activity} rate={summary} summaryText={summaryText} />
@@ -640,7 +805,7 @@ function DeviceControl({
       onClick={onClick}
       title={title ?? label}
       className={cn(
-        "flex h-12 min-w-[78px] flex-col items-center justify-center gap-1 rounded-2xl px-3 transition-colors",
+        "flex h-10 min-w-[70px] flex-col items-center justify-center gap-0.5 rounded-xl px-2.5 transition-colors",
         tone === "active" && "bg-primary/10 text-primary ring-1 ring-primary/30",
         tone === "danger" && "bg-destructive/15 text-destructive ring-1 ring-destructive/45 hover:bg-destructive/20",
         tone === "muted" && "bg-secondary/60 text-foreground",

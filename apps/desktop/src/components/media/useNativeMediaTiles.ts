@@ -7,6 +7,11 @@ import {
   type VideoTrackSource,
   videoStreamUrl,
 } from "@/lib/video";
+import { stripSidecarIdentity } from "@/lib/mediaIdentity";
+import {
+  resolveParticipantVoicePresentation,
+  type ParticipantVoiceActivityMap,
+} from "@/lib/speakingActivity";
 
 export type NativeMediaTile = {
   key: string;
@@ -21,6 +26,7 @@ export type NativeMediaTile = {
   cameraPublished: boolean;
   screenSharing: boolean;
   speaking: boolean;
+  speakingIntensity: number;
   connectionQuality: VideoConnectionQuality;
   videoAvailable: boolean;
   shareStartedAt?: number;
@@ -31,6 +37,7 @@ export function useNativeMediaTiles(
   state: VideoMixerState | null,
   endpoint: VideoStreamEndpoint | null,
   selfPreviewMode: SelfPreviewMode,
+  speakingActivity: ParticipantVoiceActivityMap,
 ) {
   const shareStartOrderRef = useRef(new Map<string, number>());
   const shareSequenceRef = useRef(0);
@@ -56,6 +63,11 @@ export function useNativeMediaTiles(
     const next: NativeMediaTile[] = [];
 
     for (const participant of participants) {
+      const voice = participantVoiceFields(
+        participant.participantId,
+        participant.speaking,
+        speakingActivity,
+      );
       const cameraTrack = state.remoteTracks.find(
         (track) => track.participantId === participant.participantId && track.source === "camera",
       );
@@ -94,7 +106,7 @@ export function useNativeMediaTiles(
           cameraEnabled,
           cameraPublished: participant.isLocal ? Boolean(localCamera?.publishedTrack) : Boolean(cameraTrack),
           screenSharing,
-          speaking: participant.speaking,
+          ...voice,
           connectionQuality: participant.connectionQuality,
           videoAvailable: Boolean(cameraStreamUrl),
           loading: cameraEnabled && !cameraStreamUrl,
@@ -121,7 +133,7 @@ export function useNativeMediaTiles(
           cameraEnabled,
           cameraPublished: participant.isLocal ? Boolean(localCamera?.publishedTrack) : Boolean(cameraTrack),
           screenSharing: true,
-          speaking: participant.speaking,
+          ...voice,
           connectionQuality: participant.connectionQuality,
           videoAvailable: Boolean(screenStreamUrl),
           loading: !screenStreamUrl,
@@ -134,9 +146,21 @@ export function useNativeMediaTiles(
       if (!activeShareKeys.has(key)) shareStartOrderRef.current.delete(key);
     }
     return next;
-  }, [endpoint, selfPreviewMode, state]);
+  }, [endpoint, selfPreviewMode, speakingActivity, state]);
 
   return { tiles };
+}
+
+export function participantVoiceFields(
+  participantId: string,
+  fallbackSpeaking: boolean,
+  speakingActivity: ParticipantVoiceActivityMap,
+): Pick<NativeMediaTile, "speaking" | "speakingIntensity"> {
+  const voice = resolveParticipantVoicePresentation(
+    fallbackSpeaking,
+    speakingActivity[stripSidecarIdentity(participantId)],
+  );
+  return { speaking: voice.speaking, speakingIntensity: voice.intensity };
 }
 
 export function selectPresentationStreamId(

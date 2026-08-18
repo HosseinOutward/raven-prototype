@@ -13,13 +13,19 @@ export function Tabs({
   const current = tabs.find((tab) => tab.value === value) ?? tabs[0];
   return (
     <div>
-      <div className="inline-flex h-9 items-center rounded-md bg-muted p-1">
+      {/* Segmented control: the track sits below the panel surface and the active
+          segment lifts above it, which is the way round that reads on dark. */}
+      <div className="inline-flex h-9 items-center gap-1 rounded-lg border border-border bg-background/60 p-1" role="tablist">
         {tabs.map((tab) => (
           <button
             key={tab.value}
+            type="button"
+            role="tab"
+            aria-selected={tab.value === current.value}
             className={cn(
-              "h-7 rounded px-3 text-sm font-medium text-muted-foreground transition-colors",
-              tab.value === current.value && "bg-background text-foreground shadow-sm",
+              "h-7 rounded-md px-3 text-xs font-medium text-muted-foreground transition-colors",
+              "hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              tab.value === current.value && "bg-secondary text-foreground shadow-sm hover:text-foreground",
             )}
             onClick={() => onValueChange(tab.value)}
           >

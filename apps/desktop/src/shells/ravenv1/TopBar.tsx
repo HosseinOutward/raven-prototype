@@ -75,7 +75,7 @@ export function TopBar({
                 view.kind === "settings" ? "bg-accent" : "bg-card/80 hover:bg-accent",
               )}
             >
-              <Avatar name={selfName} className="h-7 w-7 text-[10px]" />
+              <Avatar name={selfName} src={data.user ? `${data.apiServerUrl}/v1/media/users/${data.user.id}/avatar?v=${encodeURIComponent(data.user.updatedAt)}` : undefined} className="h-7 w-7 text-[10px]" />
               <span className="hidden max-w-[116px] truncate text-xs font-medium lg:block">{selfName}</span>
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             </button>
@@ -397,7 +397,7 @@ function SearchResult({ user, data, onOpenUser }: { user: PublicUser; data: Rave
   return (
     <div className="flex items-center gap-3 rounded-xl px-2 py-2 hover:bg-accent/40">
       <button type="button" onClick={onOpenUser} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-        <Avatar name={name} className="h-8 w-8 text-[10px]" />
+        <Avatar name={name} src={`${data.apiServerUrl}/v1/media/users/${user.id}/avatar`} className="h-8 w-8 text-[10px]" />
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">{name}</div>
           <div className="rv-mono text-[10px] text-muted-foreground">@{user.username} · {relationshipLabel(user.relationship)}</div>

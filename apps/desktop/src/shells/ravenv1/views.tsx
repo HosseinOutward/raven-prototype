@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { cn } from "@/lib/utils";
 import type { RavenUpdater } from "@/lib/updater";
 import { Check, ChevronLeft, Eye, Globe2, Hand, Info, LogIn, LogOut, Lock, Mic, Network, Phone, Plus, Radio, Search, Settings, Shield, Trash2, UserMinus, UserPlus, UserX, Users, Video, X } from "lucide-react";
+import { SquareImageUpload } from "@/components/SquareImageUpload";
 import { UserSettingsView } from "./UserSettings";
 import {
   SettingsField,
@@ -17,7 +18,7 @@ import {
   SettingsSection,
   type SettingsCategory,
 } from "./SettingsScaffold";
-import type { LauncherNest, Nest, NestDetails, ParticipantSummary, TreeDetails, TreeMember, TreeRole, TreeSearchResult } from "@/lib/api";
+import { api, type LauncherNest, type Nest, type TreeDetails, type TreeMember, type TreeRole, type TreeSearchResult } from "@/lib/api";
 import { AvatarStack, MonoLabel, PresenceDot } from "./atoms";
 import {
   displayNameFor,
@@ -113,6 +114,33 @@ function ViewHeader({
   );
 }
 
+function RoomHeader({
+  roomLabel,
+  title,
+  subtitle,
+  startedAt,
+  actions,
+}: {
+  roomLabel: string;
+  title: string;
+  subtitle: string;
+  startedAt?: string | null;
+  actions: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border/50 px-4 py-2">
+      <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.65)]" aria-hidden="true" />
+      <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
+        <span className="shrink-0 rv-mono text-[10px] uppercase tracking-[0.12em] text-primary">Live {roomLabel}</span>
+        <h1 className="truncate text-[15px] font-semibold tracking-tight">{title}</h1>
+        <span className="hidden truncate text-xs text-muted-foreground md:inline">{subtitle}</span>
+        {startedAt ? <span className="hidden shrink-0 rv-mono text-[10px] text-muted-foreground xl:inline">{formatRelativeTime(startedAt)}</span> : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
+    </div>
+  );
+}
+
 function ViewBody({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn("min-h-0 flex-1 overflow-y-auto px-7 py-6", className)}>{children}</div>;
 }
@@ -193,14 +221,6 @@ function PublicTreePreviewView({
         eyebrow={`Public ${treeLabel}`}
         title={result.tree.name}
         subtitle={result.tree.description || `A public ${treeLabel.toLowerCase()} visible in search.`}
-        meta={
-          <>
-            <Chip>Public</Chip>
-            <Chip>{result.tree.joinPolicy === "free" ? "Free join" : "Request required"}</Chip>
-            {joined ? <Chip tone="primary">Joined</Chip> : null}
-            {pending ? <Chip>Request sent</Chip> : null}
-          </>
-        }
         actions={
           pending ? (
             <Chip>Waiting for approval</Chip>
@@ -434,7 +454,7 @@ function ReachableRow({ person, data, onNavigate }: { person: ShellPerson; data:
   return (
     <div className="flex items-center gap-3 rounded-xl bg-background/40 px-3 py-2.5">
       <button type="button" onClick={() => onNavigate({ kind: "user", id: person.id })} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-        <Avatar name={person.name} className="h-9 w-9" />
+        <Avatar name={person.name} src={`${data.apiServerUrl}/v1/media/users/${person.id}/avatar`} className="h-9 w-9" />
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">{person.name}</div>
           <div className="mt-0.5 flex items-center gap-1.5 rv-mono text-[11px] text-muted-foreground">
@@ -514,15 +534,6 @@ function TreeLobbyView({
         eyebrow={`${data.labels.treeSingular} lobby`}
         title={details.tree.name}
         subtitle={details.tree.description || `Visible ${data.labels.nestPlural} and members from your ${data.labels.treeSingular} membership.`}
-        meta={
-          <>
-            <Chip>{details.tree.visibility === "public" ? "Public" : "Private"}</Chip>
-            <Chip>{details.tree.joinPolicy === "free" ? "Free join" : "Join requests"}</Chip>
-            <Chip>{details.members.length} members</Chip>
-            <Chip>{details.activeNests.length} live {data.labels.nestPlural.toLowerCase()}</Chip>
-            <Chip>{details.inactiveNests.length} inactive {data.labels.nestPlural.toLowerCase()}</Chip>
-          </>
-        }
         actions={
           canManage ? (
             <>
@@ -582,8 +593,7 @@ function TreeLobbyView({
             <div className="space-y-2">
               {details.members
                 .map((member) => {
-                  const person = data.getPerson(member.userId);
-                  const presence = person?.presence ?? "around";
+                  const presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
                   return (
                     <TreeMemberRow
                       key={member.userId}
@@ -652,7 +662,7 @@ function TreeMemberRow({
   return (
     <div className="flex items-center gap-3 rounded-xl bg-background/40 px-3 py-2.5">
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-        <Avatar name={displayNameFor(member)} className="h-8 w-8 text-[10px]" />
+        <Avatar name={displayNameFor(member)} src={api.userAvatarUrl(member.userId)} className="h-8 w-8 text-[10px]" />
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <span className="truncate text-sm font-medium">{displayNameFor(member)}</span>
@@ -683,7 +693,7 @@ function TreeMemberRow({
             </SelectContent>
           </Select>
           {canRemoveMember ? (
-            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onRemove} aria-label="Remove from Tree">
+            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onRemove} aria-label="Remove from group">
               <UserX className="h-3.5 w-3.5" />
             </Button>
           ) : (
@@ -757,7 +767,7 @@ function UserPageView({
       <ViewBody>
         <div className="max-w-2xl space-y-8">
           <div className="flex items-center gap-4">
-            <Avatar name={person.name} className="h-16 w-16 text-lg" />
+            <Avatar name={person.name} src={`${data.apiServerUrl}/v1/media/users/${person.id}/avatar`} className="h-16 w-16 text-lg" />
             <p className="text-sm leading-relaxed text-muted-foreground">
               You can see {person.name} through shared {data.labels.treeSingular} membership or current {data.labels.nestSingular} activity.
             </p>
@@ -966,9 +976,7 @@ function ActiveNestView({
   media: RavenMediaAdapterState;
   onNavigate: (view: RavenView) => void;
 }) {
-  const details = data.getNestDetails(nest.id);
   const session = data.getActiveSession(nest.id);
-  const participants = session?.participants ?? participantsFromDetails(details);
   const mediaConnectedHere = media.phase === "connected" && media.activeNestId === nest.id;
   const connect = async () => {
     const result = await data.joinNest(nest.id);
@@ -980,31 +988,23 @@ function ActiveNestView({
   };
   return (
     <>
-      <ViewHeader
-        eyebrow={`Active ${data.labels.nestSingular}`}
+      <RoomHeader
+        roomLabel={data.labels.nestSingular}
         title={nest.name}
         subtitle={treeSubtitle(data, nest.treeId)}
-        meta={
-          <>
-            <span className="inline-flex items-center gap-1.5 rv-mono text-[12px] text-primary">
-              <span className="h-2 w-2 rounded-full bg-primary" />
-              {lifecycleLabel(nest)} · {participants.length} visible
-            </span>
-            <Chip>{nest.type === "temporary" ? "Temporary" : "Permanent"}</Chip>
-            {session?.startedAt ? <Chip>started {formatRelativeTime(session.startedAt)}</Chip> : null}
-          </>
-        }
+        startedAt={session?.startedAt}
         actions={
           <>
             {!mediaConnectedHere ? (
-              <Button className="gap-2" onClick={() => void connect()} disabled={data.busy || media.busy}>
+              <Button size="sm" className="h-8 gap-1.5 px-3 text-xs" onClick={() => void connect()} disabled={data.busy || media.busy}>
                 <LogIn className="h-4 w-4" />
                 {media.phase === "joining" ? "Joining..." : `Enter ${data.labels.nestSingular}`}
               </Button>
             ) : null}
             <Button
               variant="outline"
-              className="gap-2 border-destructive/40 text-destructive hover:bg-destructive/10"
+              size="sm"
+              className="h-8 gap-1.5 border-destructive/35 px-3 text-xs text-destructive hover:bg-destructive/10"
               onClick={() => void leave()}
               disabled={media.busy}
             >
@@ -1014,7 +1014,7 @@ function ActiveNestView({
           </>
         }
       />
-      <ViewBody className="flex flex-col px-5 pb-4 pt-3">
+      <ViewBody className="flex flex-col px-3 pb-3 pt-2">
         <div className="flex min-h-0 flex-1 flex-col">
           <LiveMediaStage
             connected={mediaConnectedHere}
@@ -1022,11 +1022,13 @@ function ActiveNestView({
             error={media.error}
             errorAction={media.lastError?.action}
             videoState={media.videoState}
+            speakingActivity={media.speakingActivity}
             videoStreamEndpoint={media.videoStreamEndpoint}
             selfMediaPreviewMode={media.selfMediaPreviewMode}
             followScreenShares={data.preferences.followScreenShares}
             onFollowScreenSharesChange={(followScreenShares) => void data.updatePreferences({ followScreenShares })}
             onConnect={() => void connect()}
+            roomLabel={data.labels.nestSingular}
             className="flex-1"
           />
         </div>
@@ -1126,6 +1128,7 @@ function TreeSettingsView({
   const [visibility, setVisibility] = useState(tree.visibility);
   const [confirmation, setConfirmation] = useState("");
   const [saving, setSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -1168,6 +1171,18 @@ function TreeSettingsView({
       setSaving(false);
     }
   };
+  const uploadAvatar = async (file: File) => {
+    setAvatarUploading(true);
+    setError("");
+    try {
+      await api.uploadTreeAvatar(tree.id, file);
+      await data.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${treeLabel} profile image could not be uploaded`);
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
 
   const remove = async () => {
     setSaving(true);
@@ -1198,16 +1213,16 @@ function TreeSettingsView({
       onSelect={(id) => setActive(id as typeof active)}
       actions={
         <>
+          <Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => onNavigate({ kind: "tree", id: tree.id })}>
+            <ChevronLeft className="h-4 w-4" />
+            Back to lobby
+          </Button>
           {editing ? (
             <Button className="gap-2" onClick={() => void save()} disabled={!canSave}>
               <Check className="h-4 w-4" />
               {saving ? "Saving…" : "Save changes"}
             </Button>
           ) : null}
-          <Button variant="ghost" className="gap-2 text-muted-foreground" onClick={() => onNavigate({ kind: "tree", id: tree.id })}>
-            <ChevronLeft className="h-4 w-4" />
-            Back to lobby
-          </Button>
         </>
       }
     >
@@ -1215,6 +1230,14 @@ function TreeSettingsView({
 
       {active === "general" ? (
         <SettingsSection title="General" description={`The name and description people see for this ${treeLabel.toLowerCase()}.`}>
+          <div className="flex items-center gap-4 rounded-xl bg-card/55 p-4">
+            <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-16 w-16 rounded-xl text-lg" />
+            <div>
+              <div className="text-sm font-medium">{treeLabel} profile picture</div>
+              <p className="mt-1 text-xs text-muted-foreground">Square-cropped and optimized to 512 KB or less.</p>
+              <SquareImageUpload disabled={avatarUploading} label={avatarUploading ? "Uploading…" : "Choose image"} onUpload={uploadAvatar} onError={setError} />
+            </div>
+          </div>
           <SettingsField label="Name">
             <Input value={name} onChange={(event) => setName(event.currentTarget.value)} />
           </SettingsField>
@@ -1388,18 +1411,6 @@ function AddTreeMemberDialog({
       </form>
     </Dialog>
   );
-}
-
-function participantsFromDetails(details?: NestDetails): ParticipantSummary[] {
-  if (!details) return [];
-  return details.members
-    .filter((member) => member.state === "joined")
-    .map((member) => ({
-      userId: member.userId,
-      username: member.username,
-      displayName: member.displayName,
-      joinedAt: member.joinedAt ?? member.leftAt ?? details.nest.createdAt,
-    }));
 }
 
 function treeSubtitle(data: RavenShellData, treeId?: string | null) {

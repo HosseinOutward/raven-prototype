@@ -465,6 +465,7 @@ impl OutputMixer {
         let resolved = resolve_output_device(selected_device_id.as_deref());
         let rate = resolved
             .as_ref()
+            .ok()
             .and_then(|(device, _)| device.default_output_config().ok())
             .map(|config| config.sample_rate().0)
             .unwrap_or(48_000);
@@ -476,6 +477,7 @@ impl OutputMixer {
         let selected_device_id = Arc::clone(&self.selected_device_id);
         let worker = thread::spawn(move || {
             let device = resolved
+                .ok()
                 .map(|(device, selected)| {
                     if let Ok(mut guard) = selected_device_id.lock() {
                         *guard = selected;
@@ -576,6 +578,7 @@ impl OutputMixer {
                 .into_iter()
                 .find(|device| device.device_id == id)
                 .ok_or_else(|| "Speaker is no longer available.".to_string())?;
+            resolve_output_device(Some(&selected.device_id))?;
             *self
                 .selected_device_id
                 .lock()
@@ -584,6 +587,7 @@ impl OutputMixer {
             self.restart_if_running();
             Ok(Some(selected))
         } else {
+            resolve_output_device(None)?;
             *self
                 .selected_device_id
                 .lock()
@@ -653,27 +657,45 @@ fn output_device_by_id(device_id: &str) -> Option<AudioOutputDevice> {
         .find(|device| device.device_id == device_id)
 }
 
-fn resolve_output_device(device_id: Option<&str>) -> Option<(Device, Option<String>)> {
+fn resolve_output_device(device_id: Option<&str>) -> Result<(Device, Option<String>), String> {
     let host = cpal::default_host();
-    let target = device_id.and_then(output_device_by_id);
-    if let Some(target) = target {
-        if let Ok(devices) = host.output_devices() {
-            for device in devices {
-                let name = device.name().ok();
-                if name.as_deref() == Some(target.name.as_str())
-                    || name.as_deref() == Some(target.device_id.as_str())
-                {
-                    return Some((device, Some(target.device_id)));
-                }
+    if let Some(device_id) = device_id {
+        let target = output_device_by_id(device_id)
+            .ok_or_else(|| "Selected speaker is no longer available.".to_string())?;
+        let devices = host
+            .output_devices()
+            .map_err(|error| format!("Speakers could not be enumerated: {error}"))?;
+        for device in devices {
+            let name = device.name().ok();
+            if name.as_deref() == Some(target.name.as_str())
+                || name.as_deref() == Some(target.device_id.as_str())
+            {
+                return Ok((device, Some(target.device_id)));
             }
         }
+        return Err(format!(
+            "Selected speaker `{}` could not be opened by the playback backend.",
+            target.name
+        ));
     }
-    host.default_output_device().map(|device| (device, None))
+    host.default_output_device()
+        .map(|device| (device, None))
+        .ok_or_else(|| "No default speaker is available.".to_string())
+}
+
+#[cfg(test)]
+mod output_device_tests {
+    use super::resolve_output_device;
+
+    #[test]
+    fn an_unknown_selected_speaker_is_rejected_instead_of_using_the_default() {
+        let result = resolve_output_device(Some("raven-test-device-that-does-not-exist"));
+        assert!(result.is_err());
+    }
 }
 
 fn play_test_tone_on_device(device_id: Option<&str>) -> Result<(), String> {
-    let (device, _) = resolve_output_device(device_id)
-        .ok_or_else(|| "No speaker is available for the test sound.".to_string())?;
+    let (device, _) = resolve_output_device(device_id)?;
     let config = device
         .default_output_config()
         .map_err(|error| format!("Speaker could not be opened: {error}"))?;
@@ -912,13 +934,13 @@ impl AudioEngine {
 
     /// Reconcile published LiveKit tracks against which local sources are marked
     /// `publishing`. Called under the state write lock after every mutation.
-    pub fn reconcile_publications(&mut self, sources: &[AudioSourceState]) {
+    pub fn reconcile_publications(&mut self, sources: &[AudioSourceState]) -> Result<(), String> {
         let Some(connection) = self.connection.as_ref() else {
             // Not connected: nothing can be published.
             for (_, entry) in self.publications.drain() {
                 entry.drain.abort();
             }
-            return;
+            return Ok(());
         };
         let room = Arc::clone(&connection.room);
 
@@ -952,9 +974,13 @@ impl AudioEngine {
             .filter(|source| !self.publications.contains_key(&source.id))
             .map(|source| (*source).clone())
             .collect();
+        let mut first_error = None;
         for source in to_publish {
             if let Err(error) = self.publish_source(&room, &source) {
                 eprintln!("[audio-engine] publish failed for {}: {error}", source.id);
+                first_error.get_or_insert_with(|| {
+                    format!("could not publish audio source {}: {error}", source.id)
+                });
             }
         }
 
@@ -995,6 +1021,7 @@ impl AudioEngine {
                 }
             }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn publish_source(

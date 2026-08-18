@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Camera, Loader2, Monitor, AppWindow, RefreshCw, X } from "lucide-react";
+import { createPortal } from "react-dom";
 import {
   CameraDevice,
   DEFAULT_VIDEO_PROFILE,
@@ -29,7 +30,7 @@ function ModalShell({
   widthClassName?: string;
   children: React.ReactNode;
 }) {
-  return (
+  const content = (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
       <div className={cn("w-full rounded-lg border bg-background shadow-xl", widthClassName)}>
         <div className="flex items-start justify-between gap-4 p-4">
@@ -47,6 +48,8 @@ function ModalShell({
       </div>
     </div>
   );
+  const fullscreenHost = document.fullscreenElement;
+  return fullscreenHost instanceof HTMLElement ? createPortal(content, fullscreenHost) : content;
 }
 
 function LoadingRow({ label }: { label: string }) {

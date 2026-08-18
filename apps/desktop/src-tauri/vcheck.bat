@@ -1,5 +1,11 @@
 @echo off
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-cd /d "C:\Users\Soroush Taheri\code\raven\apps\desktop\src-tauri"
-set CARGO_TARGET_DIR=C:\Users\Soroush Taheri\rv
-cargo check > "C:\Users\Soroush Taheri\code\raven\apps\desktop\src-tauri\vcheck.log" 2>&1
+setlocal
+
+rem Keep this helper portable across synced Windows workspaces. The PowerShell
+rem environment scripts discover Visual Studio, LLVM, and a short target dir.
+set "SCRIPT_DIR=%~dp0..\scripts"
+set "TAURI_DIR=%~dp0."
+set "LOG_FILE=%~dp0vcheck.log"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $ErrorActionPreference = 'Stop'; . (Join-Path $args[0] 'msvc-env.ps1'); . (Join-Path $args[0] 'native-build-env.ps1'); Set-Location -LiteralPath $args[1]; cargo check }" "%SCRIPT_DIR%" "%TAURI_DIR%" > "%LOG_FILE%" 2>&1
+exit /b %ERRORLEVEL%

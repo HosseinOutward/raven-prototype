@@ -164,6 +164,7 @@ export interface WindowTarget {
 
 export interface NativeVideoCapabilityReport {
   os: string;
+  issues: string[];
   supportedSourceKinds: VideoSourceKind[];
   supportsCamera: boolean;
   supportsDisplayCapture: boolean;

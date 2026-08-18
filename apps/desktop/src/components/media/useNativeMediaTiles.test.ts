@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RemoteVideoTrackState } from "@/lib/video";
-import { selectPresentationStreamId } from "./useNativeMediaTiles";
+import { participantVoiceFields, selectPresentationStreamId } from "./useNativeMediaTiles";
 
 const rtcTrack: RemoteVideoTrackState = {
   streamId: "remote-track",
@@ -24,5 +24,16 @@ describe("native media presentation", () => {
 
   test("unsubscribed RTC tracks never create a presentation request", () => {
     expect(selectPresentationStreamId(false, "local", undefined, { ...rtcTrack, subscribed: false })).toBeUndefined();
+  });
+
+  test("uses one normalized activity value for every tile owned by a participant", () => {
+    const activity = {
+      "person": { speaking: true, intensity: 0.72, meterObserved: true },
+    };
+
+    expect(participantVoiceFields("person#video", false, activity)).toEqual({
+      speaking: true,
+      speakingIntensity: 0.72,
+    });
   });
 });

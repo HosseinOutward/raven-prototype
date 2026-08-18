@@ -418,10 +418,10 @@ impl VideoEngine {
 
     /// Reconcile published LiveKit tracks against which local sources are marked
     /// `publishing`. Called under the state write lock after every mutation.
-    pub fn reconcile_publications(&mut self, sources: &[VideoSourceState]) {
+    pub fn reconcile_publications(&mut self, sources: &[VideoSourceState]) -> Result<(), String> {
         let Some(connection) = self.connection.as_ref() else {
             self.publications.clear();
-            return;
+            return Ok(());
         };
         let room = Arc::clone(&connection.room);
 
@@ -466,11 +466,16 @@ impl VideoEngine {
             .filter(|source| !self.publications.contains_key(&source.id))
             .map(|source| (*source).clone())
             .collect();
+        let mut first_error = None;
         for source in to_publish {
             if let Err(error) = self.publish_source(&room, &source) {
                 eprintln!("[video-engine] publish failed for {}: {error}", source.id);
+                first_error.get_or_insert_with(|| {
+                    format!("could not publish video source {}: {error}", source.id)
+                });
             }
         }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn publish_source(

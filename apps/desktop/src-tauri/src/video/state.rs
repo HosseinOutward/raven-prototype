@@ -15,13 +15,15 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use thiserror::Error;
 
+use crate::audio::capture::system_audio_runtime_readiness;
 use crate::audio::domain::{AudioSourceId, AudioSourceType};
 use crate::audio::state::{
     add_and_publish_shared_audio_source, remove_shared_audio_source, AudioStateError,
     SharedAudioEngineState,
 };
 use crate::video::capture::{
-    list_cameras, list_displays, list_windows, VideoCaptureError, VideoCaptureManager,
+    list_cameras, list_displays, list_windows, screen_capture_runtime_readiness, VideoCaptureError,
+    VideoCaptureManager,
 };
 use crate::video::domain::{
     CameraDevice, DisplayTarget, PublishedVideoTrack, PublishedVideoTrackId, SelfPreviewMode,
@@ -46,6 +48,7 @@ pub fn new_shared_video_engine_state(hub: VideoFrameHub) -> SharedVideoEngineSta
 #[serde(rename_all = "camelCase")]
 pub struct NativeVideoCapabilityReport {
     pub os: String,
+    pub issues: Vec<String>,
     pub supported_source_kinds: Vec<VideoSourceKind>,
     pub supports_camera: bool,
     pub supports_display_capture: bool,
@@ -190,32 +193,39 @@ pub async fn video_get_network_totals(
 #[tauri::command]
 pub fn video_get_capabilities() -> NativeVideoCapabilityReport {
     let mut supported_source_kinds = vec![VideoSourceKind::Camera];
+    let mut issues = Vec::new();
 
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-    {
+    let screen_capture_available = match screen_capture_runtime_readiness() {
+        Ok(()) => cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )),
+        Err(issue) => {
+            issues.push(issue);
+            false
+        }
+    };
+    let display_audio_available = system_audio_runtime_readiness().is_ok()
+        && cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        ));
+
+    if screen_capture_available {
         supported_source_kinds.push(VideoSourceKind::Display);
         supported_source_kinds.push(VideoSourceKind::Window);
     }
 
     NativeVideoCapabilityReport {
         os: std::env::consts::OS.to_string(),
+        issues,
         supported_source_kinds,
         supports_camera: true,
-        supports_display_capture: cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )),
-        supports_window_capture: cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )),
-        supports_display_audio: cfg!(any(
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "macos"
-        )),
+        supports_display_capture: screen_capture_available,
+        supports_window_capture: screen_capture_available,
+        supports_display_audio: display_audio_available,
         supports_window_audio: cfg!(any(target_os = "windows", target_os = "macos")),
     }
 }
@@ -497,7 +507,7 @@ fn mutate_video_state(
     state: &SharedVideoEngineState,
     mutation: impl FnOnce(&mut VideoEngineState) -> Result<(), VideoStateError>,
 ) -> Result<VideoMixerState, VideoStateError> {
-    let updated = {
+    let (updated, media_error) = {
         let mut guard = state.write().map_err(|_| VideoStateError::StatePoisoned)?;
         mutation(&mut guard)?;
         let VideoEngineState {
@@ -509,12 +519,24 @@ fn mutate_video_state(
         } = &mut *guard;
         // Publish/unpublish LiveKit tracks first so the capture manager can attach the
         // matching publish sinks to the capture threads it starts.
-        engine.reconcile_publications(&mixer.local_sources);
+        let publication_error = engine.reconcile_publications(&mixer.local_sources).err();
         let sinks = preview.wrap_publish_sinks(engine.sink_map());
-        capture.reconcile(&mut mixer.local_sources, &sinks);
-        guard.snapshot()
+        let capture_error = capture.reconcile(&mut mixer.local_sources, &sinks);
+        (
+            guard.snapshot(),
+            publication_error
+                .map(|message| VideoStateError::EngineFailed { message })
+                .or_else(|| {
+                    capture_error.map(|message| {
+                        VideoStateError::Capture(VideoCaptureError::StreamFailed { message })
+                    })
+                }),
+        )
     };
     emit_video_state_changed(app, &updated)?;
+    if let Some(error) = media_error {
+        return Err(error);
+    }
     Ok(updated)
 }
 

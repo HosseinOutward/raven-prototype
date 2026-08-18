@@ -3,7 +3,9 @@ import {
   ArrowDown,
   ArrowUp,
   AudioLines,
+  ChevronDown,
   CircleSlash,
+  Gauge,
   Headphones,
   Mic,
   MonitorUp,
@@ -13,10 +15,12 @@ import {
   RotateCcw,
   Save,
   Settings2,
+  ShieldCheck,
   Signal,
+  SlidersHorizontal,
+  Sparkles,
   Trash2,
   Volume2,
-  VolumeX,
   AudioWaveform,
 } from "lucide-react";
 import {
@@ -50,6 +54,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { Drawer } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs } from "@/components/ui/tabs";
 
 const GAIN_MIN_DB = -60;
 const GAIN_MAX_DB = 12;
@@ -161,7 +166,6 @@ export function AudioMixerPanel() {
   const [draftGains, setDraftGains] = useState<Record<string, GainDb>>({});
   const [draftProcessorParams, setDraftProcessorParams] = useState<Record<string, AudioParameterValue>>({});
   const gainTimers = useRef<Record<string, number>>({});
-  const processorParamTimers = useRef<Record<string, number>>({});
   const [addSourceOpen, setAddSourceOpen] = useState(false);
 
   const setSourceBusy = (sourceId: string, busy: boolean) => {
@@ -253,26 +257,15 @@ export function AudioMixerPanel() {
         setError(formatCommandError(err));
       });
 
-    // Microphone capture devices come from the browser (getUserMedia is what actually
-    // controls the published track), so Studio and Nest share the same deviceId space.
-    void (async () => {
-      try {
-        let devices = await navigator.mediaDevices.enumerateDevices();
-        let inputs = devices.filter((device) => device.kind === "audioinput");
-        // Labels/ids stay hidden until the page has mic access; unlock once if needed.
-        if (inputs.length && inputs.every((device) => !device.deviceId)) {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
-          if (stream) {
-            for (const track of stream.getTracks()) track.stop();
-            devices = await navigator.mediaDevices.enumerateDevices();
-            inputs = devices.filter((device) => device.kind === "audioinput");
-          }
-        }
-        if (mounted) setInputDevices(inputs.map(browserDeviceToInputDevice));
-      } catch {
-        // ignore — input device list stays empty
-      }
-    })();
+    // Rust/CPAL owns microphone capture. Its device identifiers are intentionally
+    // used here too; browser MediaDeviceInfo ids belong to a different namespace
+    // and would make native capture miss the selection and open the default input.
+    audioCommands
+      .listInputDevices()
+      .then((devices) => {
+        if (mounted) setInputDevices(devices);
+      })
+      .catch(() => undefined);
 
     audioCommands
       .listOutputDevices()
@@ -303,7 +296,6 @@ export function AudioMixerPanel() {
       mounted = false;
       unsubscribeState?.();
       Object.values(gainTimers.current).forEach((timer) => window.clearTimeout(timer));
-      Object.values(processorParamTimers.current).forEach((timer) => window.clearTimeout(timer));
     };
   }, []);
 
@@ -337,7 +329,7 @@ export function AudioMixerPanel() {
     void runMutation(() => setChannelGainCommand(sourceId, gainDb), sourceId);
   };
 
-  const scheduleProcessorParameter = (
+  const draftProcessorParameter = (
     sourceId: string,
     processorId: string,
     parameterName: string,
@@ -345,14 +337,6 @@ export function AudioMixerPanel() {
   ) => {
     const key = processorParameterKey(sourceId, processorId, parameterName);
     setDraftProcessorParams((current) => ({ ...current, [key]: value }));
-    if (processorParamTimers.current[key]) window.clearTimeout(processorParamTimers.current[key]);
-    processorParamTimers.current[key] = window.setTimeout(() => {
-      void runMutation(
-        () => updateProcessorParameterCommand(sourceId, processorId, parameterName, value),
-        sourceId,
-      );
-      delete processorParamTimers.current[key];
-    }, GAIN_DEBOUNCE_MS);
   };
 
   const flushProcessorParameter = (
@@ -361,11 +345,6 @@ export function AudioMixerPanel() {
     parameterName: string,
     value: AudioParameterValue,
   ) => {
-    const key = processorParameterKey(sourceId, processorId, parameterName);
-    if (processorParamTimers.current[key]) {
-      window.clearTimeout(processorParamTimers.current[key]);
-      delete processorParamTimers.current[key];
-    }
     void runMutation(
       () => updateProcessorParameterCommand(sourceId, processorId, parameterName, value),
       sourceId,
@@ -594,7 +573,7 @@ export function AudioMixerPanel() {
               onWebRtcProcessingChange={(sourceId, processing) =>
                 runMutation(() => setLocalWebRtcProcessingCommand(sourceId, processing), sourceId)
               }
-              onProcessorParameterChange={scheduleProcessorParameter}
+              onProcessorParameterChange={draftProcessorParameter}
               onProcessorParameterCommit={flushProcessorParameter}
               draftProcessorParams={draftProcessorParams}
             />
@@ -653,7 +632,7 @@ export function AudioMixerPanel() {
                     onSafetyLimiterCeilingChange={(stripId, ceilingDb) =>
                       runMutation(() => setSafetyLimiterCeilingCommand(stripId, ceilingDb), stripId)
                     }
-                    onProcessorParameterChange={scheduleProcessorParameter}
+                    onProcessorParameterChange={draftProcessorParameter}
                     onProcessorParameterCommit={flushProcessorParameter}
                     draftProcessorParams={draftProcessorParams}
                   />
@@ -798,10 +777,16 @@ function AddSourceForm({
       </FormField>
 
       {capabilities && !capabilities.supportsAppAudio ? (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-300">
           App audio capture is not available on {capabilities.os}. Use system audio for desktop playback capture.
         </div>
       ) : null}
+
+      {capabilities?.issues?.map((issue) => (
+        <div key={issue} className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-300">
+          {issue}
+        </div>
+      ))}
 
       {isAppAudio ? (
         <FormField label="Application">
@@ -1097,7 +1082,9 @@ function ChannelStrip({
   // the outgoing channel (so peers don't get a double / echo); disabling restores the prior
   // mute state captured at enable time.
   const isMonitorable = strip.mode === "local" && strip.sourceType === "microphone";
-  const monitorDeviceId = strip.mode === "local" ? strip.captureDeviceId : null;
+  const monitorDeviceName = strip.mode === "local"
+    ? strip.runtime.deviceName ?? strip.captureDeviceId
+    : null;
   const [monitorOn, setMonitorOn] = useState(false);
   const [monitorGainDb, setMonitorGainDb] = useState<number>(0);
   const monitorAudioRef = useRef<{ ctx: AudioContext; stream: MediaStream; gain: GainNode } | null>(null);
@@ -1113,8 +1100,14 @@ function ChannelStrip({
     let teardown: (() => void) | undefined;
     void (async () => {
       try {
+        const browserDeviceId = monitorDeviceName
+          ? await browserInputIdForNativeDevice(monitorDeviceName)
+          : null;
+        if (monitorDeviceName && !browserDeviceId) {
+          throw new Error(`Browser input matching ${monitorDeviceName} was not found`);
+        }
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: monitorDeviceId ? { deviceId: { exact: monitorDeviceId } } : true,
+          audio: browserDeviceId ? { deviceId: { exact: browserDeviceId } } : true,
         });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
@@ -1144,7 +1137,7 @@ function ChannelStrip({
     };
     // monitorGainDb is intentionally omitted — it's applied live without rebuilding the graph.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMonitorable, monitorOn, monitorDeviceId]);
+  }, [isMonitorable, monitorOn, monitorDeviceName]);
 
   useEffect(() => {
     const node = monitorAudioRef.current?.gain;
@@ -1381,281 +1374,644 @@ function ChannelStrip({
       <Drawer
         open={toolsOpen}
         onOpenChange={setToolsOpen}
-        title={`${strip.title} — Tools`}
-        description={strip.mode === "local" ? "Local source channel" : strip.participantTitle}
-        widthClassName="w-full max-w-lg"
+        title={strip.title}
+        description={
+          strip.mode === "local"
+            ? `${sourceTypeLabel(strip.sourceType)} · channel tools`
+            : `${strip.participantTitle} · incoming track`
+        }
+        widthClassName="w-full max-w-[560px]"
       >
-        {strip.mode === "local" ? (
-          <SourceRuntimePanel
-            sourceId={strip.id}
-            sourceType={strip.sourceType}
-            runtime={strip.runtime}
-            captureDeviceId={strip.captureDeviceId}
-            inputDevices={inputDevices}
-            outputDevices={outputDevices}
-            editable={!busy}
-            onCaptureDeviceChange={onCaptureDeviceChange}
-          />
-        ) : null}
-        {strip.mode === "local" ? (
-          <WebRtcProcessingPanel
-            sourceId={strip.id}
-            sourceType={strip.sourceType}
-            processing={strip.webrtcProcessing}
-            editable={!busy}
-            onChange={onWebRtcProcessingChange}
-          />
-        ) : null}
-        {strip.publishedTrack ? <PublishedTrackDebug track={strip.publishedTrack} /> : null}
-        <ProcessorChainPanel
-          sourceId={strip.id}
-          stripMode={strip.mode}
-          sourceType={strip.sourceType}
-          currentPresetId={strip.presetId}
-          health={strip.health}
-          safetyLimiterCeilingDb={strip.safetyLimiterCeilingDb}
+        <ChannelToolsPanel
+          strip={strip}
           presets={presets}
-          processors={strip.processors}
+          inputDevices={inputDevices}
+          outputDevices={outputDevices}
           editable={!busy}
           draftProcessorParams={draftProcessorParams}
-          onAdd={onProcessorAdd}
-          onRemove={onProcessorRemove}
-          onReorder={onProcessorReorder}
+          onCaptureDeviceChange={onCaptureDeviceChange}
+          onWebRtcProcessingChange={onWebRtcProcessingChange}
+          onProcessorAdd={onProcessorAdd}
+          onProcessorRemove={onProcessorRemove}
+          onProcessorReorder={onProcessorReorder}
+          onProcessorToggle={onProcessorToggle}
           onPresetApply={onPresetApply}
           onPresetSave={onPresetSave}
           onPresetDelete={onPresetDelete}
           onPresetRename={onPresetRename}
-          onReset={onProcessorChainReset}
+          onProcessorChainReset={onProcessorChainReset}
           onSafeDefaultsReset={onSafeDefaultsReset}
           onSafetyLimiterCeilingChange={onSafetyLimiterCeilingChange}
-          onToggle={onProcessorToggle}
-          onParameterChange={onProcessorParameterChange}
-          onParameterCommit={onProcessorParameterCommit}
+          onProcessorParameterChange={onProcessorParameterChange}
+          onProcessorParameterCommit={onProcessorParameterCommit}
         />
       </Drawer>
     </div>
   );
 }
 
-function PublishedTrackDebug({ track }: { track: PublishedTrackMetadata }) {
+// ---------------------------------------------------------------------------
+// Channel tools drawer
+//
+// Everything below renders inside a fixed ~560 px drawer column, so the layouts
+// are authored for that one width. Tailwind's sm:/md:/lg: prefixes track the
+// *viewport*, not this container — reaching for them here is what produced the
+// earlier squeezed grids (four-column forms collapsing into slivers, buttons
+// wrapping onto rows of their own). Use fixed column counts instead.
+// ---------------------------------------------------------------------------
+
+type ChannelToolHandlers = {
+  onCaptureDeviceChange?: (sourceId: string, captureDeviceId: string | null) => void;
+  onWebRtcProcessingChange?: (sourceId: string, processing: WebRtcAudioProcessingSettings) => void;
+  onProcessorAdd?: (sourceId: string, kind: AudioProcessorKind) => void;
+  onProcessorRemove?: (sourceId: string, processorId: string) => void;
+  onProcessorReorder?: (sourceId: string, orderedProcessorIds: string[]) => void;
+  onProcessorToggle?: (sourceId: string, processorId: string, enabled: boolean) => void;
+  onPresetApply?: (sourceId: string, presetId: string) => void;
+  onPresetSave?: (sourceId: string, name: string, description: string, target: AudioPresetTarget) => void;
+  onPresetDelete?: (presetId: string) => void;
+  onPresetRename?: (presetId: string, name: string) => void;
+  onProcessorChainReset?: (sourceId: string) => void;
+  onSafeDefaultsReset?: (sourceId: string) => void;
+  onSafetyLimiterCeilingChange?: (sourceId: string, ceilingDb: GainDb) => void;
+  onProcessorParameterChange?: (
+    sourceId: string,
+    processorId: string,
+    parameterName: string,
+    value: AudioParameterValue,
+  ) => void;
+  onProcessorParameterCommit?: (
+    sourceId: string,
+    processorId: string,
+    parameterName: string,
+    value: AudioParameterValue,
+  ) => void;
+};
+
+type ChannelToolsProps = ChannelToolHandlers & {
+  strip: ChannelStripView;
+  presets: AudioPresetDefinition[];
+  inputDevices: AudioInputDevice[];
+  outputDevices: AudioOutputDevice[];
+  editable: boolean;
+  draftProcessorParams: Record<string, AudioParameterValue>;
+};
+
+/**
+ * Two tabs keep the ~30 per-channel controls legible: "Channel" is the signal
+ * path you check while talking (device, levels, safety), "Processing" is the
+ * DSP chain you edit while setting up.
+ */
+function ChannelToolsPanel(props: ChannelToolsProps) {
+  const [tab, setTab] = useState("channel");
   return (
-    <div className="mt-3 grid gap-2 rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground md:grid-cols-4">
-      <DebugValue label="track" value={shortId(track.trackId)} />
-      <DebugValue label="participant" value={shortId(track.participantId)} />
-      <DebugValue label="kind" value={track.kind} />
-      <DebugValue label="default" value={formatDb(track.defaultGainDb)} />
-      <DebugValue label="source" value={sourceTypeLabel(track.sourceType)} />
-      <DebugValue label="controllable" value={track.controllable ? "yes" : "no"} />
-      <DebugValue label="muted" value={track.muted ? "yes" : "no"} />
-      <DebugValue label="codec" value={track.codec ?? "pending"} />
+    <Tabs
+      value={tab}
+      onValueChange={setTab}
+      tabs={[
+        { value: "channel", label: "Channel", content: <ChannelTab {...props} /> },
+        { value: "processing", label: "Processing", content: <ProcessingTab {...props} /> },
+      ]}
+    />
+  );
+}
+
+function ChannelTab({
+  strip,
+  inputDevices,
+  outputDevices,
+  editable,
+  onCaptureDeviceChange,
+  onWebRtcProcessingChange,
+  onSafetyLimiterCeilingChange,
+}: ChannelToolsProps) {
+  const health = useLiveChannelHealth(strip);
+  return (
+    <div className="space-y-3">
+      {strip.mode === "local" ? (
+        <SourceSection
+          strip={strip}
+          inputDevices={inputDevices}
+          outputDevices={outputDevices}
+          editable={editable}
+          onCaptureDeviceChange={onCaptureDeviceChange}
+        />
+      ) : (
+        <IncomingTrackSection strip={strip} />
+      )}
+
+      <LevelsSection
+        strip={strip}
+        health={health}
+        editable={editable}
+        onSafetyLimiterCeilingChange={onSafetyLimiterCeilingChange}
+      />
+
+      {strip.mode === "local" && supportsWebRtcProcessing(strip.sourceType) ? (
+        <VoiceProcessingSection
+          sourceId={strip.id}
+          processing={strip.webrtcProcessing}
+          editable={editable}
+          onChange={onWebRtcProcessingChange}
+        />
+      ) : null}
+
+      {strip.publishedTrack ? <PublishedTrackDetails track={strip.publishedTrack} /> : null}
     </div>
   );
 }
 
-function SourceRuntimePanel({
-  sourceId,
-  sourceType,
-  runtime,
-  captureDeviceId,
+function SourceSection({
+  strip,
   inputDevices,
   outputDevices,
   editable,
   onCaptureDeviceChange,
 }: {
-  sourceId: string;
-  sourceType: AudioSourceType;
-  runtime: AudioSourceRuntimeState;
-  captureDeviceId: string | null;
+  strip: Extract<ChannelStripView, { mode: "local" }>;
   inputDevices: AudioInputDevice[];
   outputDevices: AudioOutputDevice[];
   editable: boolean;
   onCaptureDeviceChange?: (sourceId: string, captureDeviceId: string | null) => void;
 }) {
+  const { runtime, captureDeviceId, sourceType } = strip;
   const selectedOutputDevice = outputDeviceForId(captureDeviceId, outputDevices);
   const selectedInputDevice = captureDeviceId
     ? inputDevices.find((device) => device.deviceId === captureDeviceId) ?? null
     : null;
 
   return (
-    <div className="mt-3 grid gap-2 rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground md:grid-cols-[130px_1fr]">
-      <div className="flex items-center gap-2">
+    <ToolSection
+      icon={plainSourceIcon(sourceType)}
+      title="Source"
+      meta={
         <Badge variant={runtime.status === "running" ? "default" : runtime.status === "error" ? "warning" : "outline"}>
           {runtimeStatusLabel(runtime.status)}
         </Badge>
-        <span className="tabular-nums">
-          {runtime.sampleRate && runtime.channelCount
-            ? `${runtime.sampleRate} Hz / ${runtime.channelCount} ch / ${runtime.format}`
-            : runtime.format}
-        </span>
-      </div>
-      {sourceType === "appAudio" ? (
-        <div className="truncate">
-          {runtime.deviceName ?? (runtime.deviceId ? `Process ${runtime.deviceId}` : "No app selected")}
-        </div>
-      ) : sourceType === "systemAudio" ? (
-        <Select
-          value={captureDeviceId ?? ""}
-          disabled={!editable}
-          onValueChange={(value) => onCaptureDeviceChange?.(sourceId, value)}
-        >
-          <SelectTrigger aria-label="Output device" size="sm" className="h-7 min-w-0 px-2">
-            <span className="flex min-w-0 items-center gap-2">
-              <OutputDeviceIcon className="h-4 w-4" />
-              <SelectValue>{selectedOutputDevice?.name ?? runtime.deviceName ?? "Default output device"}</SelectValue>
-            </span>
-          </SelectTrigger>
-          <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
-            <SelectGroup>
-              {outputDevices.length ? (
-                outputDevices.map((device) => (
-                  <SelectItem
-                    key={device.deviceId}
-                    value={device.deviceId}
-                  >
-                    <OutputDeviceIcon className="h-5 w-5" />
+      }
+    >
+      {sourceType === "microphone" ? (
+        <FormField label="Input device">
+          <Select
+            value={captureDeviceId ?? "__default-input"}
+            disabled={!editable}
+            onValueChange={(value) => onCaptureDeviceChange?.(strip.id, value === "__default-input" ? null : value)}
+          >
+            <SelectTrigger aria-label="Input device" className="min-w-0 px-2.5">
+              <span className="flex min-w-0 items-center gap-2">
+                <Mic className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <SelectValue>{selectedInputDevice?.name ?? runtime.deviceName ?? "Default input device"}</SelectValue>
+              </span>
+            </SelectTrigger>
+            <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+              <SelectGroup>
+                <SelectItem value="__default-input">
+                  <Mic className="h-4 w-4" />
+                  <span className="min-w-0 flex-1 truncate">Default input device</span>
+                  {captureDeviceId == null ? <Badge variant="outline">current</Badge> : null}
+                </SelectItem>
+                {inputDevices.map((device) => (
+                  <SelectItem key={device.deviceId} value={device.deviceId}>
+                    <Mic className="h-4 w-4" />
                     <span className="min-w-0 flex-1 truncate">{device.name}</span>
                     {device.isDefault ? <Badge variant="outline">default</Badge> : null}
                   </SelectItem>
-                ))
-              ) : (
-                <SelectItem value="__empty-outputs" disabled>No output devices found</SelectItem>
-              )}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      ) : sourceType === "microphone" ? (
-        <Select
-          value={captureDeviceId ?? "__default-input"}
-          disabled={!editable}
-          onValueChange={(value) => onCaptureDeviceChange?.(sourceId, value === "__default-input" ? null : value)}
-        >
-          <SelectTrigger aria-label="Input device" size="sm" className="h-7 min-w-0 px-2">
-            <span className="flex min-w-0 items-center gap-2">
-              <Mic className="h-4 w-4" />
-              <SelectValue>{selectedInputDevice?.name ?? runtime.deviceName ?? "Default input device"}</SelectValue>
-            </span>
-          </SelectTrigger>
-          <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
-            <SelectGroup>
-              <SelectItem value="__default-input">
-                <Mic className="h-5 w-5" />
-                <span className="min-w-0 flex-1 truncate">Default input device</span>
-                {captureDeviceId == null ? <Badge variant="outline">current</Badge> : null}
-              </SelectItem>
-              {inputDevices.map((device) => (
-                <SelectItem
-                  key={device.deviceId}
-                  value={device.deviceId}
-                >
-                  <Mic className="h-5 w-5" />
-                  <span className="min-w-0 flex-1 truncate">{device.name}</span>
-                  {device.isDefault ? <Badge variant="outline">default</Badge> : null}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </FormField>
+      ) : sourceType === "systemAudio" ? (
+        <FormField label="Output device">
+          <Select
+            value={captureDeviceId ?? ""}
+            disabled={!editable}
+            onValueChange={(value) => onCaptureDeviceChange?.(strip.id, value)}
+          >
+            <SelectTrigger aria-label="Output device" className="min-w-0 px-2.5">
+              <span className="flex min-w-0 items-center gap-2">
+                <OutputDeviceIcon className="h-4 w-4" />
+                <SelectValue>{selectedOutputDevice?.name ?? runtime.deviceName ?? "Default output device"}</SelectValue>
+              </span>
+            </SelectTrigger>
+            <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+              <SelectGroup>
+                {outputDevices.length ? (
+                  outputDevices.map((device) => (
+                    <SelectItem key={device.deviceId} value={device.deviceId}>
+                      <OutputDeviceIcon className="h-4 w-4" />
+                      <span className="min-w-0 flex-1 truncate">{device.name}</span>
+                      {device.isDefault ? <Badge variant="outline">default</Badge> : null}
+                    </SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value="__empty-outputs" disabled>No output devices found</SelectItem>
+                )}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </FormField>
       ) : (
-        <div className="truncate">
-          {runtime.deviceName ?? runtime.deviceId ?? captureSourceLabel(sourceType)}
-        </div>
+        <InfoRow
+          label="Capturing"
+          value={
+            sourceType === "appAudio"
+              ? runtime.deviceName ?? (runtime.deviceId ? `Process ${runtime.deviceId}` : "No app selected")
+              : runtime.deviceName ?? runtime.deviceId ?? captureSourceLabel(sourceType)
+          }
+        />
       )}
+
+      <InfoRow label="Stream" value={formatRuntimeSpec(runtime)} />
+
       {runtime.error ? (
-        <div className="md:col-span-2 text-destructive">{runtime.error}</div>
+        <p className="rounded-lg border border-destructive/35 bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+          {runtime.error}
+        </p>
       ) : null}
+    </ToolSection>
+  );
+}
+
+function IncomingTrackSection({ strip }: { strip: Extract<ChannelStripView, { mode: "remote" }> }) {
+  return (
+    <ToolSection
+      icon={<Signal />}
+      title="Incoming track"
+      meta={<Badge variant="outline">{sourceTypeLabel(strip.sourceType)}</Badge>}
+    >
+      <InfoRow label="From" value={strip.participantTitle} />
+      <InfoRow label="Codec" value={strip.publishedTrack.codec ?? "pending"} />
+      <InfoRow label="Track" value={shortId(strip.remoteTrackId)} />
+      <p className="text-[11px] leading-4 text-muted-foreground">
+        These controls are receiver-local: they change what you hear, not what the sender publishes.
+      </p>
+    </ToolSection>
+  );
+}
+
+function LevelsSection({
+  strip,
+  health,
+  editable,
+  onSafetyLimiterCeilingChange,
+}: {
+  strip: ChannelStripView;
+  health: ChannelHealthState;
+  editable: boolean;
+  onSafetyLimiterCeilingChange?: (sourceId: string, ceilingDb: GainDb) => void;
+}) {
+  const warnings = channelWarnings(health);
+  return (
+    <ToolSection icon={<Gauge />} title="Levels">
+      <HorizontalMeter
+        peakDb={health.peakDb}
+        rmsDb={health.rmsDb}
+        muted={strip.muted}
+        clipping={meterClipping(health)}
+        safetyCeilingDb={strip.safetyLimiterCeilingDb}
+      />
+
+      <div className="grid grid-cols-2 gap-x-5 gap-y-1">
+        <MetricRow label="Peak" value={formatDb(health.peakDb)} danger={health.recentClipping || health.nearClipping} />
+        <MetricRow label="RMS" value={formatDb(health.rmsDb)} danger={health.tooLoud} />
+        <MetricRow label="Latency" value={`${health.latencySamples} smp`} danger={health.latencySamples >= 2400} />
+        <MetricRow
+          label="DSP load"
+          value={health.processorCpuEstimate == null ? "n/a" : `${health.processorCpuEstimate.toFixed(1)}%`}
+          danger={health.processorCpuEstimate != null && health.processorCpuEstimate >= 8}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {strip.muted ? <Badge variant="outline">muted</Badge> : null}
+        {warnings.length ? (
+          warnings.map((warning) => (
+            <Badge key={warning} variant="warning">
+              {warning}
+            </Badge>
+          ))
+        ) : (
+          <Badge variant="outline">healthy</Badge>
+        )}
+        {health.safetyLimiterActive ? <Badge variant="secondary">limiting</Badge> : null}
+      </div>
+
+      <div className="rounded-xl bg-background/40 px-3 py-2.5">
+        <SafetyCeilingSlider
+          value={strip.safetyLimiterCeilingDb}
+          disabled={!editable}
+          onCommit={(ceilingDb) => onSafetyLimiterCeilingChange?.(strip.id, ceilingDb)}
+        />
+        <p className="text-[11px] leading-4 text-muted-foreground">
+          Final limiter, always last in the chain. Catches overshoot the processors let through.
+        </p>
+      </div>
+    </ToolSection>
+  );
+}
+
+function SafetyCeilingSlider({
+  value,
+  disabled,
+  onCommit,
+}: {
+  value: GainDb;
+  disabled: boolean;
+  onCommit?: (value: GainDb) => void;
+}) {
+  const [draftValue, setDraftValue] = useState<GainDb>(value);
+  const draftRef = useRef<GainDb>(value);
+  const pendingCommitRef = useRef<GainDb | null>(null);
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    if (pendingCommitRef.current === value) pendingCommitRef.current = null;
+    if (!draggingRef.current && pendingCommitRef.current == null) {
+      draftRef.current = value;
+      setDraftValue(value);
+    }
+  }, [value]);
+
+  const updateDraft = (next: GainDb) => {
+    draftRef.current = next;
+    setDraftValue(next);
+  };
+
+  const commitDraft = () => {
+    const next = draftRef.current;
+    draggingRef.current = false;
+    if (next === value) {
+      pendingCommitRef.current = null;
+      return;
+    }
+    if (pendingCommitRef.current === next) return;
+    pendingCommitRef.current = next;
+    onCommit?.(next);
+  };
+  const commitPointerDraft = (event: React.PointerEvent<HTMLInputElement>) => {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+    commitDraft();
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs font-medium">Safety ceiling</span>
+        <span className="text-xs tabular-nums text-muted-foreground">{formatSafetyCeilingDb(draftValue)}</span>
+      </div>
+      <input
+        className="raven-fader"
+        type="range"
+        aria-label="Safety limiter ceiling"
+        aria-valuetext={formatSafetyCeilingDb(draftValue)}
+        min={-6}
+        max={-0.5}
+        step={0.5}
+        value={draftValue}
+        disabled={disabled}
+        onPointerDown={(event) => {
+          draggingRef.current = true;
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+        }}
+        onChange={(event) => updateDraft(Number(event.target.value))}
+        onPointerUp={commitPointerDraft}
+        onPointerCancel={commitPointerDraft}
+        onBlur={commitDraft}
+      />
     </div>
   );
 }
 
-function WebRtcProcessingPanel({
+function VoiceProcessingSection({
   sourceId,
-  sourceType,
   processing,
   editable,
   onChange,
 }: {
   sourceId: string;
-  sourceType: AudioSourceType;
   processing: WebRtcAudioProcessingSettings;
   editable: boolean;
   onChange?: (sourceId: string, processing: WebRtcAudioProcessingSettings) => void;
 }) {
-  if (!supportsWebRtcProcessing(sourceType)) return null;
-
-  const update = (patch: Partial<WebRtcAudioProcessingSettings>) => {
-    onChange?.(sourceId, { ...processing, ...patch });
-  };
-
+  const update = (patch: Partial<WebRtcAudioProcessingSettings>) => onChange?.(sourceId, { ...processing, ...patch });
   return (
-    <div className="mt-3 grid gap-2 rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground sm:grid-cols-3">
-      <CheckboxToggle
-        label="Noise suppress"
+    <ToolSection icon={<SlidersHorizontal />} title="Voice processing">
+      <ToggleRow
+        label="Noise suppression"
+        helper="Reduces steady background noise."
         checked={processing.noiseSuppression}
         disabled={!editable}
         onChange={(checked) => update({ noiseSuppression: checked })}
       />
-      <CheckboxToggle
-        label="Echo cancel"
+      <ToggleRow
+        label="Echo cancellation"
+        helper="Stops speaker audio feeding back into this mic."
         checked={processing.echoCancellation}
         disabled={!editable}
         onChange={(checked) => update({ echoCancellation: checked })}
       />
-      <CheckboxToggle
+      <ToggleRow
         label="Auto gain"
+        helper="Levels the mic automatically before the fader."
         checked={processing.autoGainControl}
         disabled={!editable}
         onChange={(checked) => update({ autoGainControl: checked })}
       />
+    </ToolSection>
+  );
+}
+
+function PublishedTrackDetails({ track }: { track: PublishedTrackMetadata }) {
+  return (
+    <details className="group rounded-lg border border-border bg-card/35">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+        Published track details
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="grid grid-cols-2 gap-x-5 gap-y-1 border-t border-border px-3.5 py-3">
+        <MetricRow label="Track" value={shortId(track.trackId)} />
+        <MetricRow label="Participant" value={shortId(track.participantId)} />
+        <MetricRow label="Kind" value={track.kind} />
+        <MetricRow label="Source" value={sourceTypeLabel(track.sourceType)} />
+        <MetricRow label="Codec" value={track.codec ?? "pending"} />
+        <MetricRow label="Default gain" value={formatDb(track.defaultGainDb)} />
+        <MetricRow label="Controllable" value={track.controllable ? "yes" : "no"} />
+        <MetricRow label="Muted" value={track.muted ? "yes" : "no"} />
+      </div>
+    </details>
+  );
+}
+
+// --- drawer building blocks ------------------------------------------------
+
+function ToolSection({
+  icon,
+  title,
+  meta,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  meta?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="space-y-3 rounded-lg border border-border bg-card/35 p-3.5">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+          <span className="shrink-0 text-primary [&>svg]:h-4 [&>svg]:w-4">{icon}</span>
+          <span className="truncate">{title}</span>
+        </h3>
+        {meta ? <div className="flex shrink-0 items-center gap-2">{meta}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-xs font-medium" title={value}>
+        {value}
+      </span>
     </div>
   );
 }
 
-function CheckboxToggle({
+function MetricRow({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2 border-b border-border/60 pb-1">
+      <span className="shrink-0 text-[11px] text-muted-foreground">{label}</span>
+      <span
+        className={cn("min-w-0 truncate text-xs font-medium tabular-nums", danger && "text-destructive")}
+        title={value}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function ToggleRow({
   label,
+  helper,
   checked,
   disabled,
   onChange,
 }: {
   label: string;
+  helper?: string;
   checked: boolean;
-  disabled: boolean;
+  disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className={cn("flex items-center gap-2 text-xs font-medium", disabled && "opacity-60")}>
+    <label className={cn("flex items-center justify-between gap-3 rounded-xl bg-background/40 px-3 py-2", disabled && "opacity-50")}>
+      <span className="min-w-0">
+        <span className="block text-xs font-medium">{label}</span>
+        {helper ? <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{helper}</span> : null}
+      </span>
       <input
         type="checkbox"
-        className="h-3.5 w-3.5 accent-primary"
+        className="h-4 w-4 shrink-0 accent-primary"
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.currentTarget.checked)}
       />
-      <span>{label}</span>
     </label>
   );
 }
 
-function HealthWarningBadges({ health }: { health: ChannelHealthState }) {
-  const warnings = channelWarnings(health);
-  if (!warnings.length) return null;
+/**
+ * Horizontal level meter for the drawer. Shares the piecewise dBFS scale with
+ * the channel strip's vertical meter so the same signal reads at the same
+ * position in both places.
+ */
+function HorizontalMeter({
+  peakDb,
+  rmsDb,
+  muted,
+  clipping,
+  safetyCeilingDb,
+}: {
+  peakDb: GainDb;
+  rmsDb: GainDb;
+  muted: boolean;
+  clipping: boolean;
+  safetyCeilingDb: GainDb;
+}) {
+  const peakPercent = muted ? 0 : meterPercent(peakDb);
+  const rmsPercent = muted ? 0 : meterPercent(rmsDb);
+  const safetyCeilingPercent = meterPercent(safetyCeilingDb);
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {warnings.slice(0, 3).map((warning) => (
-        <Badge key={warning} variant="warning">
-          {warning}
-        </Badge>
-      ))}
+    <div className="space-y-1">
+      <div
+        className="relative h-2.5 overflow-hidden rounded-full bg-background ring-1 ring-inset ring-border"
+        title={`Safety ceiling ${formatSafetyCeilingDb(safetyCeilingDb)}`}
+      >
+        <div
+          className="absolute inset-y-0 left-0 bg-cyan-500/85 transition-[width] duration-150 ease-out"
+          style={{ width: `${peakPercent}%` }}
+        />
+        <div
+          className="absolute inset-y-0 left-0 bg-emerald-500/85 transition-[width] duration-150 ease-out"
+          style={{ width: `${rmsPercent}%` }}
+        />
+        <div className="absolute inset-y-0 w-px bg-amber-400/70" style={{ left: `${meterPercent(-12)}%` }} />
+        <div className="absolute inset-y-0 w-px bg-red-500/80" style={{ left: `${meterPercent(-3)}%` }} />
+        <div
+          className="absolute inset-y-0 z-10 w-px border-l border-dashed border-amber-200/90"
+          style={{ left: `${safetyCeilingPercent}%` }}
+          aria-hidden="true"
+        />
+        {!muted && clipping ? <div className="absolute inset-y-0 right-0 w-1.5 bg-red-500" /> : null}
+      </div>
+      <div className="flex items-center justify-between text-[10px] tabular-nums text-muted-foreground/70">
+        <span>−60</span>
+        <span className="flex items-center gap-1 text-amber-200/80" title="Safety limiter ceiling">
+          <span className="h-2 w-px border-l border-dashed border-amber-200/90" aria-hidden="true" />
+          <span>ceiling {formatSafetyCeilingDb(safetyCeilingDb)}</span>
+        </span>
+        <span>{muted ? "muted" : clipping ? "clipping" : "0 dBFS"}</span>
+      </div>
     </div>
   );
 }
 
-function DebugValue({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <span className="mr-1 font-medium text-foreground">{label}</span>
-      <span className="break-all tabular-nums">{value}</span>
-    </div>
-  );
+/**
+ * Health snapshots ride the canonical state emits, which only fire when
+ * something changes. Meter events arrive ~10x/sec while the source runs, so
+ * prefer those once they start flowing and fall back to state otherwise.
+ */
+function useLiveChannelHealth(strip: ChannelStripView) {
+  const [live, setLive] = useState<ChannelHealthState | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    let unsubscribe: (() => void) | null = null;
+    setLive(null);
+    void subscribeAudioMeterChanged((update) => {
+      if (!mounted || !update.health || !meterUpdateMatchesStrip(update, strip)) return;
+      setLive(update.health);
+    })
+      .then((unlisten) => {
+        if (!mounted) unlisten();
+        else unsubscribe = unlisten;
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strip.id, strip.mode]);
+
+  return live ?? strip.health;
 }
 
 function UserPresetActions({
@@ -1674,9 +2030,10 @@ function UserPresetActions({
   useEffect(() => setName(preset.name), [preset.name, preset.presetId]);
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 rounded-xl bg-background/40 px-2.5 py-2">
+      <span className="shrink-0 text-[11px] text-muted-foreground">Your preset</span>
       <Input
-        className="h-8 min-w-0 text-xs"
+        className="h-8 min-w-0 flex-1 text-xs"
         value={name}
         disabled={!editable}
         onChange={(event) => setName(event.target.value)}
@@ -1697,6 +2054,7 @@ function UserPresetActions({
       <Button
         size="icon"
         variant="ghost"
+        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
         disabled={!editable}
         onClick={() => onDelete?.(preset.presetId)}
         aria-label="Delete preset"
@@ -1707,141 +2065,33 @@ function UserPresetActions({
   );
 }
 
-function ChannelHealthPanel({
-  sourceId,
-  health,
-  ceilingDb,
-  editable,
-  onSafetyLimiterCeilingChange,
-}: {
-  sourceId: string;
-  health: ChannelHealthState;
-  ceilingDb: GainDb;
-  editable: boolean;
-  onSafetyLimiterCeilingChange?: (sourceId: string, ceilingDb: GainDb) => void;
-}) {
-  const warnings = channelWarnings(health);
-  return (
-    <div className="mb-3 grid gap-3 rounded-md border bg-background p-3 text-xs md:grid-cols-[1fr_190px]">
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <HealthValue label="Peak" value={formatDb(health.peakDb)} danger={health.recentClipping || health.nearClipping} />
-        <HealthValue label="RMS" value={formatDb(health.rmsDb)} danger={health.tooLoud} />
-        <HealthValue label="Latency" value={`${health.latencySamples} samples`} danger={health.latencySamples >= 2400} />
-        <HealthValue
-          label="CPU"
-          value={health.processorCpuEstimate == null ? "n/a" : health.processorCpuEstimate.toFixed(1)}
-          danger={health.processorCpuEstimate != null && health.processorCpuEstimate >= 8}
-        />
-      </div>
-      <label className="text-xs font-medium">
-        Safety ceiling
-        <span className="mb-1 mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-          <span>Final limiter</span>
-          <span className="tabular-nums">{formatDb(ceilingDb)}</span>
-        </span>
-        <input
-          className="raven-fader"
-          type="range"
-          min={-6}
-          max={-0.5}
-          step={0.5}
-          value={ceilingDb}
-          disabled={!editable}
-          onChange={(event) => onSafetyLimiterCeilingChange?.(sourceId, Number(event.target.value))}
-        />
-      </label>
-      <div className="flex flex-wrap gap-1 md:col-span-2">
-        {warnings.length ? warnings.map((warning) => (
-          <Badge key={warning} variant="warning">
-            {warning}
-          </Badge>
-        )) : <Badge variant="outline">healthy</Badge>}
-        {health.safetyLimiterActive ? <Badge variant="secondary">safety limiter active</Badge> : null}
-      </div>
-    </div>
-  );
-}
-
-function HealthValue({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
-  return (
-    <div className={cn("rounded-md border px-2 py-1", danger ? "border-destructive/40 bg-red-50 text-destructive" : "bg-muted/30")}>
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className="tabular-nums font-medium">{value}</div>
-    </div>
-  );
-}
-
-function ProcessorChainPanel({
-  sourceId,
-  stripMode,
-  sourceType,
-  currentPresetId,
-  health,
-  safetyLimiterCeilingDb,
+function ProcessingTab({
+  strip,
   presets,
-  processors,
   editable,
   draftProcessorParams,
-  onAdd,
-  onRemove,
-  onReorder,
+  onProcessorAdd,
+  onProcessorRemove,
+  onProcessorReorder,
+  onProcessorToggle,
   onPresetApply,
   onPresetSave,
   onPresetDelete,
   onPresetRename,
-  onReset,
+  onProcessorChainReset,
   onSafeDefaultsReset,
-  onSafetyLimiterCeilingChange,
-  onToggle,
-  onParameterChange,
-  onParameterCommit,
-}: {
-  sourceId: string;
-  stripMode: "local" | "remote";
-  sourceType: AudioSourceType;
-  currentPresetId: string | null;
-  health: ChannelHealthState;
-  safetyLimiterCeilingDb: GainDb;
-  presets: AudioPresetDefinition[];
-  processors: AudioProcessorState[];
-  editable: boolean;
-  draftProcessorParams: Record<string, AudioParameterValue>;
-  onAdd?: (sourceId: string, kind: AudioProcessorKind) => void;
-  onRemove?: (sourceId: string, processorId: string) => void;
-  onReorder?: (sourceId: string, orderedProcessorIds: string[]) => void;
-  onPresetApply?: (sourceId: string, presetId: string) => void;
-  onPresetSave?: (sourceId: string, name: string, description: string, target: AudioPresetTarget) => void;
-  onPresetDelete?: (presetId: string) => void;
-  onPresetRename?: (presetId: string, name: string) => void;
-  onReset?: (sourceId: string) => void;
-  onSafeDefaultsReset?: (sourceId: string) => void;
-  onSafetyLimiterCeilingChange?: (sourceId: string, ceilingDb: GainDb) => void;
-  onToggle?: (sourceId: string, processorId: string, enabled: boolean) => void;
-  onParameterChange?: (
-    sourceId: string,
-    processorId: string,
-    parameterName: string,
-    value: AudioParameterValue,
-  ) => void;
-  onParameterCommit?: (
-    sourceId: string,
-    processorId: string,
-    parameterName: string,
-    value: AudioParameterValue,
-  ) => void;
-}) {
+  onProcessorParameterChange,
+  onProcessorParameterCommit,
+}: ChannelToolsProps) {
+  const sourceId = strip.id;
+  const processors = strip.processors;
   const [selectedKind, setSelectedKind] = useState<AudioProcessorKind>("highPassFilter");
-  const [selectedPresetId, setSelectedPresetId] = useState(currentPresetId ?? "");
-  const [presetName, setPresetName] = useState("");
-  const [presetDescription, setPresetDescription] = useState("");
-  const [presetTarget, setPresetTarget] = useState<AudioPresetTarget>(
-    defaultPresetTarget(stripMode, sourceType),
-  );
-  const applicablePresets = presets.filter((preset) => presetAppliesToChannel(preset, stripMode, sourceType));
+  const [selectedPresetId, setSelectedPresetId] = useState(strip.presetId ?? "");
+  const [saveOpen, setSaveOpen] = useState(false);
+  const applicablePresets = presets.filter((preset) => presetAppliesToChannel(preset, strip.mode, strip.sourceType));
   const selectedPreset = presets.find((preset) => preset.presetId === selectedPresetId) ?? null;
 
-  useEffect(() => setSelectedPresetId(currentPresetId ?? ""), [currentPresetId]);
-  useEffect(() => setPresetTarget(defaultPresetTarget(stripMode, sourceType)), [stripMode, sourceType]);
+  useEffect(() => setSelectedPresetId(strip.presetId ?? ""), [strip.presetId]);
 
   const moveProcessor = (index: number, direction: -1 | 1) => {
     const nextIndex = index + direction;
@@ -1849,53 +2099,44 @@ function ProcessorChainPanel({
     const ordered = processors.map((processor) => processor.id);
     const [moved] = ordered.splice(index, 1);
     ordered.splice(nextIndex, 0, moved);
-    onReorder?.(sourceId, ordered);
+    onProcessorReorder?.(sourceId, ordered);
   };
 
   return (
-    <div className="mt-3 rounded-md border bg-muted/40 p-3">
-      <div className="mb-3 grid gap-2 rounded-md border bg-background p-3 lg:grid-cols-[1fr_auto]">
-        <div className="grid items-end gap-2 md:grid-cols-[minmax(180px,1fr)_auto_auto]">
-          <FormField label="Preset" htmlFor="preset-apply">
-            <Select
-              value={selectedPresetId}
-              disabled={!editable}
-              onValueChange={setSelectedPresetId}
-            >
-              <SelectTrigger id="preset-apply" size="sm" className="min-w-0">
-                <SelectValue placeholder="Select preset">
-                  {selectedPreset ? `${selectedPreset.name}${selectedPreset.builtIn ? "" : " (user)"}` : undefined}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="">Select preset</SelectItem>
-                  {applicablePresets.map((preset) => (
-                    <SelectItem key={preset.presetId} value={preset.presetId}>
-                      {preset.name}
-                      {preset.builtIn ? "" : " (user)"}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </FormField>
+    <div className="space-y-3">
+      <ToolSection icon={<Sparkles />} title="Preset">
+        <div className="flex items-center gap-2">
+          <Select value={selectedPresetId} disabled={!editable} onValueChange={setSelectedPresetId}>
+            <SelectTrigger aria-label="Preset" className="min-w-0 flex-1">
+              <SelectValue placeholder="No preset selected">
+                {selectedPreset ? selectedPreset.name : undefined}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+              <SelectGroup>
+                <SelectItem value="">No preset selected</SelectItem>
+                {applicablePresets.map((preset) => (
+                  <SelectItem key={preset.presetId} value={preset.presetId}>
+                    <span className="min-w-0 flex-1 truncate">{preset.name}</span>
+                    {preset.builtIn ? null : <Badge variant="outline">yours</Badge>}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
           <Button
-            size="sm"
-            variant="outline"
+            className="shrink-0"
             disabled={!editable || !selectedPresetId}
             onClick={() => onPresetApply?.(sourceId, selectedPresetId)}
           >
             Apply
           </Button>
-          <Button size="sm" variant="outline" disabled={!editable} onClick={() => onReset?.(sourceId)}>
-            <RotateCcw className="h-4 w-4" />
-            Reset
-          </Button>
-          <Button size="sm" variant="secondary" disabled={!editable} onClick={() => onSafeDefaultsReset?.(sourceId)}>
-            Safe
-          </Button>
         </div>
+
+        {selectedPreset?.description ? (
+          <p className="text-[11px] leading-4 text-muted-foreground">{selectedPreset.description}</p>
+        ) : null}
+
         {selectedPreset?.userCreated ? (
           <UserPresetActions
             preset={selectedPreset}
@@ -1904,81 +2145,64 @@ function ProcessorChainPanel({
             onDelete={onPresetDelete}
           />
         ) : null}
-        {selectedPreset?.description ? (
-          <div className="text-[11px] text-muted-foreground lg:col-span-2">{selectedPreset.description}</div>
-        ) : null}
-      </div>
-      <ChannelHealthPanel
-        sourceId={sourceId}
-        health={health}
-        ceilingDb={safetyLimiterCeilingDb}
-        editable={editable}
-        onSafetyLimiterCeilingChange={onSafetyLimiterCeilingChange}
-      />
-      <form
-        className="mb-3 grid items-end gap-2 rounded-md border bg-background p-3 md:grid-cols-[minmax(150px,1fr)_minmax(150px,1fr)_150px_auto]"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const name = presetName.trim();
-          if (!name) return;
-          onPresetSave?.(sourceId, name, presetDescription, presetTarget);
-          setPresetName("");
-          setPresetDescription("");
-        }}
-      >
-        <FormField label="Preset name" htmlFor="preset-name">
-          <Input
-            id="preset-name"
-            value={presetName}
+
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <Button
+            size="sm"
+            variant="outline"
             disabled={!editable}
-            placeholder="e.g. Clean voice"
-            onChange={(event) => setPresetName(event.target.value)}
-          />
-        </FormField>
-        <FormField label="Description" htmlFor="preset-description">
-          <Input
-            id="preset-description"
-            value={presetDescription}
-            disabled={!editable}
-            placeholder="Optional"
-            onChange={(event) => setPresetDescription(event.target.value)}
-          />
-        </FormField>
-        <FormField label="Save as" htmlFor="preset-target">
-          <Select
-            value={presetTarget}
-            disabled={!editable}
-            onValueChange={(value) => setPresetTarget(value as AudioPresetTarget)}
+            onClick={() => onProcessorChainReset?.(sourceId)}
+            title="Clear every processor on this channel"
           >
-            <SelectTrigger id="preset-target">
-              <SelectValue>{presetTargetLabel(presetTarget)}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {presetTargets.map((target) => (
-                  <SelectItem key={target} value={target}>
-                    {presetTargetLabel(target)}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </FormField>
-        <Button disabled={!editable || !presetName.trim()} type="submit">
-          <Save className="h-4 w-4" />
-          Save
-        </Button>
-      </form>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium">Processor chain</div>
-          <div className="text-[11px] text-muted-foreground">Ordered before any future runtime audio path.</div>
+            <RotateCcw className="h-4 w-4" />
+            Clear chain
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!editable}
+            onClick={() => onSafeDefaultsReset?.(sourceId)}
+            title="Restore gain, mute and chain to conservative defaults"
+          >
+            <ShieldCheck className="h-4 w-4" />
+            Safe defaults
+          </Button>
+          <Button
+            size="sm"
+            variant={saveOpen ? "secondary" : "ghost"}
+            className="ml-auto"
+            disabled={!editable}
+            onClick={() => setSaveOpen((open) => !open)}
+          >
+            <Save className="h-4 w-4" />
+            Save as…
+          </Button>
         </div>
+
+        {saveOpen ? (
+          <SavePresetForm
+            stripMode={strip.mode}
+            sourceType={strip.sourceType}
+            editable={editable}
+            onCancel={() => setSaveOpen(false)}
+            onSave={(name, description, target) => {
+              onPresetSave?.(sourceId, name, description, target);
+              setSaveOpen(false);
+            }}
+          />
+        ) : null}
+      </ToolSection>
+
+      <ToolSection
+        icon={<AudioWaveform />}
+        title="Processor chain"
+        meta={<Badge variant="outline">{processors.length}</Badge>}
+      >
         <form
           className="flex items-center gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            onAdd?.(sourceId, selectedKind);
+            onProcessorAdd?.(sourceId, selectedKind);
           }}
         >
           <Select
@@ -1986,10 +2210,10 @@ function ProcessorChainPanel({
             disabled={!editable}
             onValueChange={(value) => setSelectedKind(value as AudioProcessorKind)}
           >
-            <SelectTrigger aria-label="Processor to add" size="sm" className="w-[180px]">
+            <SelectTrigger aria-label="Processor to add" className="min-w-0 flex-1">
               <SelectValue>{processorKindLabel(selectedKind)}</SelectValue>
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
               <SelectGroup>
                 {supportedProcessorKinds.map((kind) => (
                   <SelectItem key={kind} value={kind}>
@@ -1999,37 +2223,119 @@ function ProcessorChainPanel({
               </SelectGroup>
             </SelectContent>
           </Select>
-          <Button size="sm" disabled={!editable} type="submit">
+          <Button className="shrink-0" disabled={!editable} type="submit">
             <Plus className="h-4 w-4" />
             Add
           </Button>
         </form>
-      </div>
-      {processors.length ? (
-        <div className="grid gap-2">
-          {processors.map((processor, index) => (
-            <ProcessorRow
-              key={processor.id}
-              sourceId={sourceId}
-              processor={processor}
-              index={index}
-              processorCount={processors.length}
-              editable={editable}
-              draftProcessorParams={draftProcessorParams}
-              onMove={moveProcessor}
-              onRemove={onRemove}
-              onToggle={onToggle}
-              onParameterChange={onParameterChange}
-              onParameterCommit={onParameterCommit}
-            />
-          ))}
-        </div>
-      ) : (
-        <p className="rounded border border-dashed bg-background px-3 py-4 text-center text-xs text-muted-foreground">
-          No processors on this strip yet.
-        </p>
-      )}
+
+        {processors.length ? (
+          <div className="space-y-2">
+            {processors.map((processor, index) => (
+              <ProcessorRow
+                key={processor.id}
+                sourceId={sourceId}
+                processor={processor}
+                index={index}
+                processorCount={processors.length}
+                editable={editable}
+                draftProcessorParams={draftProcessorParams}
+                onMove={moveProcessor}
+                onRemove={onProcessorRemove}
+                onToggle={onProcessorToggle}
+                onParameterChange={onProcessorParameterChange}
+                onParameterCommit={onProcessorParameterCommit}
+              />
+            ))}
+            <p className="pt-0.5 text-[11px] leading-4 text-muted-foreground">
+              Processed top to bottom, before the fader and the safety limiter.
+            </p>
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-border bg-background/40 px-3 py-6 text-center text-xs text-muted-foreground">
+            No processors yet. Add one above to start shaping this channel.
+          </p>
+        )}
+      </ToolSection>
     </div>
+  );
+}
+
+function SavePresetForm({
+  stripMode,
+  sourceType,
+  editable,
+  onCancel,
+  onSave,
+}: {
+  stripMode: "local" | "remote";
+  sourceType: AudioSourceType;
+  editable: boolean;
+  onCancel: () => void;
+  onSave: (name: string, description: string, target: AudioPresetTarget) => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [target, setTarget] = useState<AudioPresetTarget>(defaultPresetTarget(stripMode, sourceType));
+
+  return (
+    <form
+      className="space-y-2.5 rounded-xl bg-background/40 p-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        onSave(trimmed, description.trim(), target);
+      }}
+    >
+      <p className="text-[11px] leading-4 text-muted-foreground">
+        Saves this channel&apos;s gain, mute and full processor chain as a reusable preset.
+      </p>
+      <FormField label="Preset name" htmlFor="preset-name">
+        <Input
+          id="preset-name"
+          value={name}
+          disabled={!editable}
+          placeholder="e.g. Clean voice"
+          autoFocus
+          onChange={(event) => setName(event.target.value)}
+        />
+      </FormField>
+      <FormField label="Description" htmlFor="preset-description">
+        <Input
+          id="preset-description"
+          value={description}
+          disabled={!editable}
+          placeholder="Optional"
+          onChange={(event) => setDescription(event.target.value)}
+        />
+      </FormField>
+      <FormField label="Available for" htmlFor="preset-target" hint="Which channels this preset shows up on.">
+        <Select value={target} disabled={!editable} onValueChange={(value) => setTarget(value as AudioPresetTarget)}>
+          <SelectTrigger id="preset-target" className="min-w-0">
+            <SelectValue>{presetTargetLabel(target)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]">
+            <SelectGroup>
+              {presetTargets.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {presetTargetLabel(option)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </FormField>
+      <div className="flex justify-end gap-2 pt-0.5">
+        <Button size="sm" variant="ghost" type="button" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button size="sm" disabled={!editable || !name.trim()} type="submit">
+          <Save className="h-4 w-4" />
+          Save preset
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -2069,19 +2375,31 @@ function ProcessorRow({
   ) => void;
 }) {
   return (
-    <div className={cn("rounded border bg-card p-3", !processor.enabled && "opacity-65")}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{processor.displayName}</div>
-          <div className="text-xs text-muted-foreground">
-            {processorKindLabel(processor.kind)}
-            {processor.latencySamples ? ` / ${processor.latencySamples} samples` : ""}
+    <div
+      className={cn(
+        "rounded-xl border border-border bg-background/40 p-3 transition-opacity",
+        !processor.enabled && "opacity-60",
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-secondary text-[10px] font-semibold tabular-nums text-secondary-foreground">
+            {index + 1}
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-medium leading-tight">{processor.displayName}</div>
+            <div className="truncate text-[11px] leading-4 text-muted-foreground">
+              {processorKindLabel(processor.kind)}
+              {processor.latencySamples ? ` · ${processor.latencySamples} smp` : ""}
+              {processor.enabled ? "" : " · bypassed"}
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center">
           <Button
             size="icon"
             variant="ghost"
+            className="h-8 w-8 text-muted-foreground hover:text-foreground"
             disabled={!editable || index === 0}
             onClick={() => onMove(index, -1)}
             aria-label="Move processor up"
@@ -2091,24 +2409,31 @@ function ProcessorRow({
           <Button
             size="icon"
             variant="ghost"
+            className="h-8 w-8 text-muted-foreground hover:text-foreground"
             disabled={!editable || index === processorCount - 1}
             onClick={() => onMove(index, 1)}
             aria-label="Move processor down"
           >
             <ArrowDown className="h-4 w-4" />
           </Button>
-          <label className="flex h-8 items-center gap-2 rounded-md border px-2 text-xs">
-            <input
-              type="checkbox"
-              checked={processor.enabled}
-              disabled={!editable}
-              onChange={(event) => onToggle?.(sourceId, processor.id, event.target.checked)}
-            />
-            Enabled
-          </label>
           <Button
             size="icon"
             variant="ghost"
+            className={cn(
+              "h-8 w-8",
+              processor.enabled ? "text-primary hover:text-primary" : "text-muted-foreground hover:text-foreground",
+            )}
+            aria-pressed={processor.enabled}
+            aria-label={processor.enabled ? "Bypass processor" : "Enable processor"}
+            disabled={!editable}
+            onClick={() => onToggle?.(sourceId, processor.id, !processor.enabled)}
+          >
+            <Power className="h-4 w-4" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 text-muted-foreground hover:text-destructive"
             disabled={!editable}
             onClick={() => onRemove?.(sourceId, processor.id)}
             aria-label="Remove processor"
@@ -2197,7 +2522,9 @@ function ProcessorParameterControls({
       <button
         className={cn(
           "flex h-10 items-center justify-between rounded-md border px-3 text-sm",
-          boolValue("muted", false) ? "border-destructive bg-red-50 text-destructive" : "bg-background",
+          boolValue("muted", false)
+            ? "border-destructive/45 bg-destructive/10 text-destructive"
+            : "border-border bg-background",
         )}
         disabled={!editable}
         onClick={() => {
@@ -2255,14 +2582,16 @@ function ProcessorParameterControls({
       </>
     );
   } else if (processor.kind === "meter") {
-    controls = <p className="text-xs text-muted-foreground">Meter reads signal level and has no editable parameters yet.</p>;
+    controls = <p className="text-[11px] leading-4 text-muted-foreground">Meter reads signal level and has no editable parameters yet.</p>;
   } else if (processor.kind === "eq") {
-    controls = <p className="text-xs text-muted-foreground">EQ band editing is reserved for the next UI pass.</p>;
+    controls = <p className="text-[11px] leading-4 text-muted-foreground">EQ band editing is reserved for the next UI pass.</p>;
   } else {
-    controls = <p className="text-xs text-muted-foreground">This processor is a placeholder.</p>;
+    controls = <p className="text-[11px] leading-4 text-muted-foreground">This processor is a placeholder.</p>;
   }
 
-  return <div className="mt-3 grid grid-cols-2 gap-3">{controls}</div>;
+  // Two columns fit the drawer; a lone control (or a placeholder note) stretches
+  // across both rather than sitting awkwardly at half width.
+  return <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 [&>*:only-child]:col-span-2">{controls}</div>;
 }
 
 function ParameterSlider({
@@ -2292,12 +2621,35 @@ function ParameterSlider({
   onChange?: (sourceId: string, processorId: string, parameterName: string, value: AudioParameterValue) => void;
   onCommit?: (sourceId: string, processorId: string, parameterName: string, value: AudioParameterValue) => void;
 }) {
-  const commit = (raw: string) => onCommit?.(sourceId, processorId, name, Number(raw));
+  const draftRef = useRef(value);
+  const dirtyRef = useRef(false);
+
+  useEffect(() => {
+    if (!dirtyRef.current) draftRef.current = value;
+  }, [value]);
+
+  const updateDraft = (next: number) => {
+    draftRef.current = next;
+    dirtyRef.current = true;
+    onChange?.(sourceId, processorId, name, next);
+  };
+  const commit = () => {
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+    onCommit?.(sourceId, processorId, name, draftRef.current);
+  };
+  const commitPointer = (event: React.PointerEvent<HTMLInputElement>) => {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+    commit();
+  };
+
   return (
-    <label className="text-xs font-medium">
-      <span className="mb-1 flex items-center justify-between gap-2">
-        <span>{label}</span>
-        <span className="tabular-nums text-muted-foreground">{format(value)}</span>
+    <label className="min-w-0">
+      <span className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="truncate text-[11px] text-muted-foreground">{label}</span>
+        <span className="shrink-0 text-xs font-medium tabular-nums">{format(value)}</span>
       </span>
       <input
         className="raven-fader"
@@ -2307,10 +2659,11 @@ function ParameterSlider({
         step={step}
         value={value}
         disabled={disabled}
-        onChange={(event) => onChange?.(sourceId, processorId, name, Number(event.target.value))}
-        onBlur={(event) => commit(event.currentTarget.value)}
-        onMouseUp={(event) => commit(event.currentTarget.value)}
-        onTouchEnd={(event) => commit(event.currentTarget.value)}
+        onPointerDown={(event) => event.currentTarget.setPointerCapture?.(event.pointerId)}
+        onChange={(event) => updateDraft(Number(event.currentTarget.value))}
+        onPointerUp={commitPointer}
+        onPointerCancel={commitPointer}
+        onBlur={commit}
       />
     </label>
   );
@@ -2643,28 +2996,6 @@ function RavenFader({
   );
 }
 
-function MeterPlaceholder({ peakDb, rmsDb, muted }: { peakDb: GainDb; rmsDb: GainDb; muted: boolean }) {
-  const peakPercent = meterPercent(peakDb);
-  const rmsPercent = meterPercent(rmsDb);
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-        <span className="flex items-center gap-1">
-          <Signal className="h-3 w-3" />
-          Level
-        </span>
-        <span className="tabular-nums">{muted ? "muted" : formatDb(peakDb)}</span>
-      </div>
-      <div className="relative h-4 overflow-hidden rounded bg-slate-200">
-        <div className="absolute inset-y-0 left-0 bg-emerald-500/80" style={{ width: `${muted ? 0 : rmsPercent}%` }} />
-        <div className="absolute inset-y-0 left-0 bg-cyan-600" style={{ width: `${muted ? 0 : peakPercent}%` }} />
-        <div className="absolute inset-y-0 w-px bg-amber-500" style={{ left: `${meterPercent(-12)}%` }} />
-        <div className="absolute inset-y-0 w-px bg-red-500" style={{ left: `${meterPercent(-3)}%` }} />
-      </div>
-    </div>
-  );
-}
-
 function BridgeStatus({ status }: { status: "loading" | "connected" | "error" }) {
   return (
     <Badge variant={status === "connected" ? "default" : status === "error" ? "warning" : "outline"}>
@@ -2769,15 +3100,20 @@ function outputDeviceForId(captureDeviceId: string | null, outputDevices: AudioO
   return outputDevices.find((device) => device.deviceId === captureDeviceId) ?? null;
 }
 
-function browserDeviceToInputDevice(device: MediaDeviceInfo, index: number): AudioInputDevice {
-  return {
-    deviceId: device.deviceId,
-    name: device.label || `Microphone ${index + 1}`,
-    isDefault: device.deviceId === "default",
-    sampleRate: null,
-    channelCount: null,
-    format: "unknown",
-  };
+async function browserInputIdForNativeDevice(nativeDeviceName: string): Promise<string | null> {
+  let devices = await navigator.mediaDevices.enumerateDevices();
+  let inputs = devices.filter((device) => device.kind === "audioinput");
+  if (inputs.length && inputs.every((device) => !device.label)) {
+    const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
+    if (permissionStream) {
+      for (const track of permissionStream.getTracks()) track.stop();
+      devices = await navigator.mediaDevices.enumerateDevices();
+      inputs = devices.filter((device) => device.kind === "audioinput");
+    }
+  }
+
+  const normalizedName = nativeDeviceName.trim().toLocaleLowerCase();
+  return inputs.find((device) => device.label.trim().toLocaleLowerCase() === normalizedName)?.deviceId ?? null;
 }
 
 function remoteParticipantGroups(mixerState: AudioMixerState) {
@@ -2882,6 +3218,38 @@ function defaultSourceName(sourceType: AudioSourceType) {
   }
 }
 
+// Unstyled twin of `sourceTypeIcon` — the caller (a section header) owns the
+// sizing and colour, so these must not carry their own classes.
+function plainSourceIcon(sourceType: AudioSourceType) {
+  switch (sourceType) {
+    case "microphone":
+      return <Mic />;
+    case "screenAudio":
+      return <MonitorUp />;
+    case "systemAudio":
+      return <Volume2 />;
+    case "appAudio":
+      return <AudioLines />;
+    case "testTone":
+      return <AudioWaveform />;
+    default:
+      return <CircleSlash />;
+  }
+}
+
+function formatRuntimeSpec(runtime: AudioSourceRuntimeState) {
+  const parts: string[] = [];
+  if (runtime.sampleRate) {
+    const khz = runtime.sampleRate / 1000;
+    parts.push(`${Number.isInteger(khz) ? khz : khz.toFixed(1)} kHz`);
+  }
+  if (runtime.channelCount) {
+    parts.push(runtime.channelCount === 1 ? "mono" : runtime.channelCount === 2 ? "stereo" : `${runtime.channelCount} ch`);
+  }
+  if (runtime.format && runtime.format !== "unknown") parts.push(runtime.format);
+  return parts.length ? parts.join(" · ") : "No stream format yet";
+}
+
 function sourceTypeIcon(sourceType: AudioSourceType) {
   const className = "h-4 w-4 shrink-0 text-muted-foreground";
   switch (sourceType) {
@@ -2935,6 +3303,11 @@ function OutputDeviceIcon({ className }: { className?: string }) {
 function formatDb(value: GainDb) {
   if (value > 0) return `+${Math.round(value)} dB`;
   return `${Math.round(value)} dB`;
+}
+
+function formatSafetyCeilingDb(value: GainDb) {
+  const normalized = Number(value.toFixed(1));
+  return `${normalized > 0 ? "+" : ""}${normalized.toFixed(1)} dB`;
 }
 
 // Number-only dB (unit implied) so readouts fit centered under the narrow meter/fader.

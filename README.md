@@ -67,12 +67,13 @@ $env:RAVEN_API_ADDR="127.0.0.1:6977"
 $env:RAVEN_SERVER_NAME="Raven"
 $env:RAVEN_SERVER_DESCRIPTION="Desktop RTC for private Nests"
 $env:RAVEN_SERVER_AVATAR=""
-$env:RAVEN_ADVERTISE_URL="http://127.0.0.1:6977"
 $env:DATABASE_URL="postgres://raven:change-me@127.0.0.1:5432/raven?sslmode=disable"
 $env:LIVEKIT_URL="ws://127.0.0.1:7880"
 $env:LIVEKIT_API_KEY="devkey"
 $env:LIVEKIT_API_SECRET="secret"
 ```
+
+User, Tree/Space, and server profile pictures use the configured S3 bucket under the `profile-images/` namespace. Set `RAVEN_MEDIA_PREFIX` to change that namespace. Dedicated `RAVEN_MEDIA_S3_*` settings may override the shared `S3_*` endpoint, bucket, region, credentials, and path-style settings.
 
 When `DATABASE_URL` or `RAVEN_DATABASE_URL` is set, Raven uses PostgreSQL. You can also set `RAVEN_DATABASE_DRIVER=postgres` with `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_SSLMODE`. If no PostgreSQL settings are present, the API falls back to SQLite at `RAVEN_DATABASE_PATH` or `data/raven.db`.
 
@@ -80,7 +81,22 @@ When `DATABASE_URL` or `RAVEN_DATABASE_URL` is set, Raven uses PostgreSQL. You c
 
 ```powershell
 cd services/api
-go run ./cmd/raven-api user create --username admin --password "admin123" --role admin
+go run ./cmd/raven-api user create --username admin --display-name "Raven Admin" --password "admin123" --role admin
+```
+
+The provisioning commands use the same database selection as the API: configured PostgreSQL when its environment variables are present, otherwise the configured/default SQLite database. `--display-name` is optional and falls back to the username.
+
+```powershell
+go run ./cmd/raven-api user create --username alice --display-name "Alice Example" --password "change-me"
+go run ./cmd/raven-api space create --name "Raven Core" --creator alice
+go run ./cmd/raven-api room create --name "Daily Room" --space "Raven Core"
+go run ./cmd/raven-api space add-user --space "Raven Core" --username admin --role moderator
+```
+
+`--space` accepts an active Space ID or an exact, unique Space name. Space membership defaults to `member`; `--role` may be `owner`, `moderator`, or `member`. A built `raven-api` binary accepts the same commands, for example:
+
+```powershell
+raven-api room create --name "Daily Room" --space "<space-id>"
 ```
 
 Admin users can also create users from the desktop app after signing in, or through:

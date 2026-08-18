@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, MonitorUp, Palette, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
+import { Check, Keyboard, MonitorUp, Palette, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
+import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { VoiceOverlaySettingsPanel } from "@/components/VoiceOverlaySettings";
+import { MediaHotkeySettingsPanel } from "@/components/MediaHotkeySettings";
+import { SquareImageUpload } from "@/components/SquareImageUpload";
 import { UpdatesSettingsPanel } from "@/components/updates/UpdatesSettings";
 import { api, type AuthSession, type UILabelPreference } from "@/lib/api";
 import type { SelfPreviewMode, VideoPresentationProfile } from "@/lib/video";
@@ -27,12 +30,13 @@ import type {
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
 
-type UserSettingsCategoryId = "profile" | "appearance" | "audio-video" | "updates" | "sessions" | "server" | "voice-overlay";
+type UserSettingsCategoryId = "profile" | "appearance" | "audio-video" | "hotkeys" | "updates" | "sessions" | "server" | "voice-overlay";
 
 const CATEGORIES: (SettingsCategory & { id: UserSettingsCategoryId })[] = [
   { id: "profile", label: "Profile", icon: <UserIcon /> },
   { id: "appearance", label: "Appearance", icon: <Palette /> },
   { id: "audio-video", label: "Audio & video", icon: <Video /> },
+  { id: "hotkeys", label: "Hotkeys", icon: <Keyboard /> },
   { id: "updates", label: "Updates", icon: <RefreshCw /> },
   { id: "sessions", label: "Sessions", icon: <ShieldCheck /> },
   { id: "server", label: "Server", icon: <ServerIcon /> },
@@ -57,6 +61,8 @@ export function UserSettingsView({
   const [joinWithCameraOff, setJoinWithCameraOff] = useState(data.preferences.joinWithCameraOff);
   const [joinWithoutScreenSharing, setJoinWithoutScreenSharing] = useState(data.preferences.joinWithoutScreenSharing);
   const [saving, setSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [serverAvatarUploading, setServerAvatarUploading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -78,7 +84,7 @@ export function UserSettingsView({
   );
 
   const canSave = dirty && Boolean(displayName.trim()) && !saving;
-  const prefCategory = active !== "voice-overlay" && active !== "server" && active !== "sessions" && active !== "updates";
+  const prefCategory = active !== "voice-overlay" && active !== "hotkeys" && active !== "server" && active !== "sessions" && active !== "updates";
 
   const save = async () => {
     setSaving(true);
@@ -93,6 +99,20 @@ export function UserSettingsView({
   };
 
   const username = data.user?.username ?? "username";
+  const uploadAvatar = async (file: File, target: "profile" | "server") => {
+    const setUploading = target === "profile" ? setAvatarUploading : setServerAvatarUploading;
+    setUploading(true);
+    setError("");
+    try {
+      if (target === "profile") await api.uploadProfileAvatar(file);
+      else await api.uploadServerAvatar(file);
+      await data.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Profile image could not be uploaded");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <SettingsScaffold
@@ -116,11 +136,19 @@ export function UserSettingsView({
         </>
       }
     >
-      {prefCategory && error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
       {active === "profile" ? (
         <>
           <SettingsSection title="Profile" description="How you appear to other people in Raven.">
+            <div className="flex items-center gap-4 rounded-xl bg-card/55 p-4">
+              <Avatar name={displayName || username} src={data.user ? api.userAvatarUrl(data.user.id, data.user.updatedAt) : undefined} className="h-16 w-16 text-lg" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Profile picture</div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Square-cropped and optimized to 512 KB or less.</p>
+                <SquareImageUpload disabled={avatarUploading} label={avatarUploading ? "Uploading…" : "Choose image"} onUpload={(file) => uploadAvatar(file, "profile")} onError={setError} />
+              </div>
+            </div>
             <SettingsField
               label="Display name"
               hint="People see this name in Raven. Your username stays unchanged for sign-in and search."
@@ -243,7 +271,7 @@ export function UserSettingsView({
             <SettingsModeOption
               mode="quality"
               title="Quality"
-              copy="Uses more CPU for larger, smoother stage frames. Best when video detail matters and the device has headroom."
+              copy={`Uses more CPU for larger, smoother ${data.labels.nestSingular.toLowerCase()} video frames. Best when video detail matters and the device has headroom.`}
               selected={media.videoPresentationProfile === "quality"}
               disabled={media.busy}
               onSelect={(profile) => void media.setVideoPresentationProfile(profile)}
@@ -322,16 +350,26 @@ export function UserSettingsView({
       {active === "server" ? (
         <>
           <SettingsSection title="Server" description="Properties returned by the Raven API server currently in use.">
+            {data.user?.role === "admin" ? (
+              <div className="flex items-center gap-4 rounded-xl bg-card/55 p-4">
+                <Avatar name={data.serverProperties.name || "Raven"} src={api.assetUrl(data.serverProperties.avatar)} className="h-14 w-14 rounded-xl text-base" />
+                <div>
+                  <div className="text-sm font-medium">Server profile picture</div>
+                  <p className="mt-1 text-xs text-muted-foreground">Stored in the configured Raven S3 media namespace.</p>
+                  <SquareImageUpload disabled={serverAvatarUploading} label={serverAvatarUploading ? "Uploading…" : "Choose image"} onUpload={(file) => uploadAvatar(file, "server")} onError={setError} />
+                </div>
+              </div>
+            ) : null}
             <SettingsReadOnlyRow label="Name" value={data.serverProperties.name || "Raven"} />
             <SettingsReadOnlyRow label="Description" value={data.serverProperties.description || "Desktop RTC for private Nests"} />
-            <SettingsReadOnlyRow label="Avatar" value={data.serverProperties.avatar || "Not set"} />
-            <SettingsReadOnlyRow label="Advertise URL" value={data.serverProperties.advertiseUrl || data.apiServerUrl} />
             <SettingsReadOnlyRow label="API server URL" value={data.apiServerUrl} />
             <SettingsReadOnlyRow label="Realtime server URL" value={data.serverProperties.rtcServerUrl || "Not advertised"} />
             <SettingsHint>To change servers, log out first. Server switching is disabled while you are signed in.</SettingsHint>
           </SettingsSection>
         </>
       ) : null}
+
+      {active === "hotkeys" ? <MediaHotkeySettingsPanel /> : null}
 
       {active === "sessions" ? <SessionSettings data={data} /> : null}
 

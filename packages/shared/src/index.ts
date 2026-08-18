@@ -34,7 +34,6 @@ export interface RavenServerProperties {
   description: string;
   avatar: string;
   rtcServerUrl: string;
-  advertiseUrl: string;
   properties: Record<string, unknown>;
 }
 

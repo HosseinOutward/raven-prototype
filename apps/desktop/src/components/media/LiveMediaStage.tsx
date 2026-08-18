@@ -3,6 +3,7 @@ import { ArrowRight, ChevronDown, ChevronRight, Focus, LayoutGrid, Loader2, Maxi
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { type SelfPreviewMode, type VideoMixerState, type VideoStreamEndpoint, videoCommands } from "@/lib/video";
+import type { ParticipantVoiceActivityMap } from "@/lib/speakingActivity";
 import { MediaTile, type MediaFit } from "./MediaTile";
 import { bestGridColumns, newestScreenShareKey, resolveStageFocusKey } from "./stageState";
 import { useNativeMediaTiles, type NativeMediaTile } from "./useNativeMediaTiles";
@@ -17,11 +18,13 @@ export function LiveMediaStage({
   error = "",
   errorAction = "",
   videoState,
+  speakingActivity,
   videoStreamEndpoint,
   selfMediaPreviewMode,
   followScreenShares = true,
   onFollowScreenSharesChange,
   onConnect,
+  roomLabel = "Nest",
   className,
 }: {
   connected: boolean;
@@ -29,11 +32,13 @@ export function LiveMediaStage({
   error?: string;
   errorAction?: string;
   videoState: VideoMixerState | null;
+  speakingActivity: ParticipantVoiceActivityMap;
   videoStreamEndpoint: VideoStreamEndpoint | null;
   selfMediaPreviewMode: SelfPreviewMode;
   followScreenShares?: boolean;
   onFollowScreenSharesChange?: (follow: boolean) => void;
   onConnect?: () => void;
+  roomLabel?: string;
   className?: string;
 }) {
   const stageRef = useRef<HTMLElement | null>(null);
@@ -49,7 +54,12 @@ export function LiveMediaStage({
   const [notice, setNotice] = useState("");
   const [stageFullscreen, setStageFullscreen] = useState(false);
   const size = useElementSize(contentRef);
-  const { tiles } = useNativeMediaTiles(connected ? videoState : null, videoStreamEndpoint, selfMediaPreviewMode);
+  const { tiles } = useNativeMediaTiles(
+    connected ? videoState : null,
+    videoStreamEndpoint,
+    selfMediaPreviewMode,
+    speakingActivity,
+  );
   const setCameraReceiving = useCallback(async (participantId: string, receiving: boolean) => {
     await videoCommands.setRemoteVideoReceiving(participantId, "camera", receiving);
   }, []);
@@ -132,24 +142,24 @@ export function LiveMediaStage({
     );
   };
 
-  const emptyState = stageEmptyState({ phase, connected, error, errorAction });
+  const emptyState = stageEmptyState({ phase, connected, error, errorAction, roomLabel });
 
   return (
     <section
       ref={stageRef}
-      className={cn("relative flex min-h-[380px] flex-col text-foreground", stageFullscreen && "h-screen w-screen min-h-0 max-w-none bg-card p-3", className)}
+      className={cn("raven-media-stage relative flex min-h-[380px] flex-col text-foreground", stageFullscreen && "min-h-0 max-w-none bg-card p-3", className)}
     >
-      <header className="flex min-h-11 shrink-0 flex-wrap items-center justify-between gap-2 px-1 pb-2">
+      <header className="flex min-h-9 shrink-0 flex-wrap items-center justify-between gap-2 px-1 pb-1.5">
         <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
           <span className={cn("h-2 w-2 rounded-full", connected ? reconnecting ? "bg-amber-300" : "bg-primary" : phase === "error" ? "bg-destructive" : "bg-white/25")} />
-          <span>{phase === "joining" ? "Connecting" : reconnecting ? "Reconnecting" : connected ? `${participantCount} ${participantCount === 1 ? "person" : "people"} here · You are visible` : phase === "error" ? "Media needs attention" : "Stage closed"}</span>
+          <span>{phase === "joining" ? "Connecting" : reconnecting ? "Reconnecting" : connected ? `${participantCount} ${participantCount === 1 ? "person" : "people"} here · You are visible` : phase === "error" ? "Media needs attention" : `${roomLabel} closed`}</span>
         </div>
         <div className="flex min-w-0 items-center gap-1.5">
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className={cn("h-8 gap-1.5 rounded-lg px-2 text-[11px] text-muted-foreground hover:bg-white/8 hover:text-foreground", followScreenShares && "bg-primary/10 text-primary")}
+            className={cn("h-7 gap-1.5 rounded-lg px-2 text-[11px] text-muted-foreground hover:bg-white/8 hover:text-foreground", followScreenShares && "bg-primary/10 text-primary")}
             aria-pressed={followScreenShares}
             title="Automatically focus the newest screen share"
             onClick={() => setFollowScreenShares(!followScreenShares)}
@@ -166,8 +176,8 @@ export function LiveMediaStage({
               type="button"
               variant="ghost"
               size="icon"
-              className="h-8 w-8 rounded-lg text-muted-foreground hover:bg-white/8 hover:text-foreground"
-              aria-label={stageFullscreen ? "Exit stage fullscreen" : "Fullscreen stage"}
+              className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-white/8 hover:text-foreground"
+              aria-label={stageFullscreen ? `Exit ${roomLabel} fullscreen` : `Fullscreen ${roomLabel}`}
               onClick={() => stageFullscreen ? void document.exitFullscreen() : void stageRef.current?.requestFullscreen?.()}
             >
               {stageFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
@@ -184,7 +194,7 @@ export function LiveMediaStage({
         {emptyState ? (
           <EmptyStage {...emptyState} onAction={emptyState.action && onConnect ? onConnect : undefined} />
         ) : !tiles.length ? (
-          <EmptyStage title="Stage is ready" text="Participant media will appear here when it becomes available." />
+          <EmptyStage title={`${roomLabel} is ready`} text="Participant media will appear here when it becomes available." />
         ) : focusTile ? (
           <div className={cn("relative flex h-full min-h-0 gap-2.5", narrowFocus && "flex-col")}>
             <div className="relative min-h-0 min-w-0 flex-1">
@@ -252,11 +262,11 @@ function EmptyStage({ title, text, action, loading = false, onAction }: { title:
   );
 }
 
-function stageEmptyState({ phase, connected, error, errorAction }: { phase: StagePhase; connected: boolean; error: string; errorAction: string }) {
-  if (phase === "joining") return { title: "Opening the stage", text: "Connecting your media without changing your device choices.", loading: true };
-  if (phase === "leaving") return { title: "Closing the stage", text: "Finishing local media safely.", loading: true };
-  if (phase === "error" || error) return { title: "Media could not start", text: [error || "Raven could not open the live stage.", errorAction].filter(Boolean).join(" "), action: "Try again" };
-  if (!connected) return { title: "Enter the Nest to open the stage", text: "Your camera, shared media, and other participants will appear here.", action: "Enter Nest" };
+function stageEmptyState({ phase, connected, error, errorAction, roomLabel }: { phase: StagePhase; connected: boolean; error: string; errorAction: string; roomLabel: string }) {
+  if (phase === "joining") return { title: `Opening the ${roomLabel.toLowerCase()}`, text: "Connecting your media without changing your device choices.", loading: true };
+  if (phase === "leaving") return { title: `Closing the ${roomLabel.toLowerCase()}`, text: "Finishing local media safely.", loading: true };
+  if (phase === "error" || error) return { title: "Media could not start", text: [error || `Raven could not open the live ${roomLabel.toLowerCase()}.`, errorAction].filter(Boolean).join(" "), action: "Try again" };
+  if (!connected) return { title: `Enter the ${roomLabel} to open media`, text: "Your camera, shared media, and other participants will appear here.", action: `Enter ${roomLabel}` };
   return null;
 }
 

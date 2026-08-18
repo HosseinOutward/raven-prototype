@@ -1,14 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { NestDetails, SessionSummary, User } from "@/lib/api";
+import { api, type NestDetails, type SessionSummary, type User } from "@/lib/api";
 import type { AudioMixerState } from "@/lib/audio";
 import type { VideoMixerState } from "@/lib/video";
 import { stripSidecarIdentity } from "@/lib/mediaIdentity";
+import {
+  resolveParticipantVoicePresentation,
+  speakingIntensityPercent,
+  type ParticipantVoiceActivityMap,
+} from "@/lib/speakingActivity";
 
 export const VOICE_OVERLAY_STATE_CHANGED_EVENT = "voice-overlay-state-changed";
+export const VOICE_OVERLAY_SETTINGS_CHANGED_EVENT = "voice-overlay-settings-changed";
 export const DEFAULT_VOICE_OVERLAY_HOTKEY = "Alt+F8";
-
-const SPEAKING_RMS_THRESHOLD_DB = -52;
+export const HORIZONTAL_VOICE_OVERLAY_LIMIT = 5;
 
 export interface VoiceOverlayPosition {
   x: number;
@@ -19,13 +24,19 @@ export interface VoiceOverlaySettings {
   supported: boolean;
   enabled: boolean;
   hotkey: string;
+  layout: VoiceOverlayLayout;
+  showNames: boolean;
   position: VoiceOverlayPosition | null;
   registrationError: string | null;
 }
 
+export type VoiceOverlayLayout = "vertical" | "horizontal";
+
 export interface VoiceOverlaySettingsPatch {
   enabled?: boolean;
   hotkey?: string;
+  layout?: VoiceOverlayLayout;
+  showNames?: boolean;
 }
 
 export interface VoiceOverlayParticipant {
@@ -34,14 +45,17 @@ export interface VoiceOverlayParticipant {
   avatarUrl: string | null;
   isLocal: boolean;
   speaking: boolean;
+  speakingLevel: number;
   muted: boolean;
   deafened: boolean;
   screenSharing: boolean;
+  cameraOn: boolean;
 }
 
 export interface VoiceOverlaySnapshot {
   nestId: string | null;
   nestName: string | null;
+  locationLabel: string;
   connected: boolean;
   participants: VoiceOverlayParticipant[];
 }
@@ -49,6 +63,7 @@ export interface VoiceOverlaySnapshot {
 export const EMPTY_VOICE_OVERLAY_SNAPSHOT: VoiceOverlaySnapshot = {
   nestId: null,
   nestName: null,
+  locationLabel: "nest",
   connected: false,
   participants: [],
 };
@@ -76,6 +91,14 @@ export async function subscribeVoiceOverlaySnapshot(
   );
 }
 
+export async function subscribeVoiceOverlaySettings(
+  onSettings: (settings: VoiceOverlaySettings) => void,
+) {
+  return listen<VoiceOverlaySettings>(VOICE_OVERLAY_SETTINGS_CHANGED_EVENT, (event) =>
+    onSettings(event.payload),
+  );
+}
+
 export function buildVoiceOverlaySnapshot({
   user,
   details,
@@ -83,7 +106,9 @@ export function buildVoiceOverlaySnapshot({
   connected,
   mixerState,
   videoMixer,
+  speakingActivity,
   screenSharingUserIds,
+  locationLabel,
 }: {
   user: User;
   details: NestDetails;
@@ -91,7 +116,9 @@ export function buildVoiceOverlaySnapshot({
   connected: boolean;
   mixerState: AudioMixerState | null;
   videoMixer: VideoMixerState | null;
+  speakingActivity: ParticipantVoiceActivityMap;
   screenSharingUserIds: string[];
+  locationLabel: string;
 }): VoiceOverlaySnapshot {
   const participants = new Map<string, { userId: string; displayName: string; isLocal: boolean }>();
 
@@ -130,6 +157,16 @@ export function buildVoiceOverlaySnapshot({
     });
   }
 
+  for (const track of videoMixer?.remoteTracks ?? []) {
+    const userId = stripSidecarIdentity(track.participantId);
+    if (!userId || participants.has(userId)) continue;
+    participants.set(userId, {
+      userId,
+      displayName: track.displayName || userId,
+      isLocal: userId === user.id,
+    });
+  }
+
   const screenSharing = new Set(screenSharingUserIds.map(stripSidecarIdentity).filter(Boolean));
   if (
     videoMixer?.localSources.some(
@@ -140,25 +177,76 @@ export function buildVoiceOverlaySnapshot({
   ) {
     screenSharing.add(user.id);
   }
+  const cameraUsers = cameraUserIdsForOverlay(videoMixer, user.id);
+  const liveKitSpeaking = new Map<string, boolean>();
+  for (const participant of videoMixer?.participants ?? []) {
+    const userId = stripSidecarIdentity(participant.participantId);
+    liveKitSpeaking.set(userId, Boolean(liveKitSpeaking.get(userId) || participant.speaking));
+  }
 
   return {
     nestId: details.nest.id,
     nestName: details.nest.name,
+    locationLabel: normalizeVoiceOverlayLocationLabel(locationLabel),
     connected,
-    participants: Array.from(participants.values()).map((participant) => ({
-      userId: participant.userId,
-      displayName: participant.displayName,
-      avatarUrl: null,
-      isLocal: participant.isLocal,
-      speaking: participant.isLocal
-        ? isLocalSpeaking(mixerState)
-        : isRemoteSpeaking(mixerState, participant.userId),
-      muted: participant.isLocal
-        ? isLocalMuted(mixerState)
-        : isRemoteMuted(mixerState, participant.userId),
-      deafened: false,
-      screenSharing: screenSharing.has(participant.userId),
-    })),
+    participants: Array.from(participants.values()).map((participant) => {
+      const voice = resolveParticipantVoicePresentation(
+        liveKitSpeaking.get(participant.userId) ?? false,
+        speakingActivity[participant.userId],
+      );
+      return {
+        userId: participant.userId,
+        displayName: participant.displayName,
+        avatarUrl: api.userAvatarUrl(participant.userId),
+        isLocal: participant.isLocal,
+        speaking: voice.speaking,
+        speakingLevel: speakingIntensityPercent(voice.intensity),
+        muted: participant.isLocal
+          ? isLocalMuted(mixerState)
+          : isRemoteMuted(mixerState, participant.userId),
+        deafened: false,
+        screenSharing: screenSharing.has(participant.userId),
+        cameraOn: cameraUsers.has(participant.userId),
+      };
+    }),
+  };
+}
+
+export function normalizeVoiceOverlayLocationLabel(locationLabel: string) {
+  return locationLabel.trim().toLowerCase() || "nest";
+}
+
+export function cameraUserIdsForOverlay(videoMixer: VideoMixerState | null, localUserId: string) {
+  const cameraUsers = new Set<string>();
+  if (
+    videoMixer?.localSources.some(
+      (source) => source.kind === "camera" && (source.publishing || source.publishedTrack != null),
+    )
+  ) {
+    cameraUsers.add(localUserId);
+  }
+  for (const track of videoMixer?.remoteTracks ?? []) {
+    if (track.source !== "camera" || track.muted) continue;
+    const userId = stripSidecarIdentity(track.participantId);
+    // LiveKit can briefly retain the local participant's subscribed camera track
+    // after the native source has stopped. The local source is authoritative for
+    // the local camera indicator; remote tracks are only authoritative for peers.
+    if (userId && userId !== localUserId) cameraUsers.add(userId);
+  }
+  return cameraUsers;
+}
+
+export function visibleHorizontalVoiceOverlayParticipants(
+  participants: VoiceOverlayParticipant[],
+  limit = HORIZONTAL_VOICE_OVERLAY_LIMIT,
+) {
+  const prioritized = [
+    ...participants.filter((participant) => participant.speaking),
+    ...participants.filter((participant) => !participant.speaking),
+  ];
+  return {
+    participants: prioritized.slice(0, limit),
+    hiddenCount: Math.max(0, prioritized.length - limit),
   };
 }
 
@@ -167,33 +255,13 @@ export function formatHotkeyEvent(event: Pick<KeyboardEvent, "key" | "code" | "c
   if (!key) return null;
 
   const parts: string[] = [];
-  if (event.ctrlKey) parts.push("CommandOrControl");
+  if (event.ctrlKey) parts.push("Control");
+  if (event.metaKey) parts.push("Command");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  if (event.metaKey) parts.push("Meta");
   parts.push(key);
 
   return parts.join("+");
-}
-
-function isLocalSpeaking(mixerState: AudioMixerState | null) {
-  return (mixerState?.localSources ?? []).some(
-    (source) =>
-      source.sourceType === "microphone" &&
-      source.publishedTrack != null &&
-      !source.publishedTrack.muted &&
-      !source.channelStrip.mute.muted &&
-      source.channelStrip.meter.rmsDb > SPEAKING_RMS_THRESHOLD_DB,
-  );
-}
-
-function isRemoteSpeaking(mixerState: AudioMixerState | null, participantId: string) {
-  return remoteMicTracks(mixerState, participantId).some(
-    (track) =>
-      !track.track.muted &&
-      !track.receiverChannelStrip.mute.muted &&
-      track.receiverChannelStrip.meter.rmsDb > SPEAKING_RMS_THRESHOLD_DB,
-  );
 }
 
 function isLocalMuted(mixerState: AudioMixerState | null) {

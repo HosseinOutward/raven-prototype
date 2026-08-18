@@ -83,15 +83,140 @@ body[data-raven-window="overlay"] #root {
   background: transparent;
 }
 
+.raven-speaking-tile {
+  outline: 3px solid hsl(var(--primary) / var(--raven-speaking-border-alpha, 0.62));
+  outline-offset: -3px;
+  filter: drop-shadow(
+    0 0 var(--raven-speaking-glow-radius, 12px)
+    hsl(var(--primary) / var(--raven-speaking-glow-alpha, 0.14))
+  );
+  transition: filter 140ms ease-out, outline-color 140ms ease-out;
+}
+
+.raven-overlay-speaking {
+  outline: 2px solid hsl(var(--primary) / var(--raven-speaking-border-alpha, 0.62));
+  outline-offset: -2px;
+  filter: drop-shadow(
+    0 0 var(--raven-speaking-glow-radius, 8px)
+    hsl(var(--primary) / var(--raven-speaking-glow-alpha, 0.16))
+  );
+  transition: filter 140ms ease-out, outline-color 140ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-speaking-tile,
+  .raven-overlay-speaking {
+    transition: none;
+  }
+}
+
+/* Fullscreen elements live in the browser's top layer. Give both the whole
+   stage and an individual participant an explicit top-layer box so inherited
+   flex/percentage sizing cannot leave a strip of the app visible underneath. */
+.raven-media-stage:fullscreen,
+.raven-media-tile:fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 0;
+  background: hsl(var(--background));
+}
+
+.raven-media-tile:fullscreen:focus-visible {
+  box-shadow: none;
+}
+
+.ravenv1-scope {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ravenv1-scope input,
+.ravenv1-scope textarea,
+.ravenv1-scope [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 button,
 input,
 select {
   font: inherit;
 }
 
+/* Horizontal parameter slider. Styled explicitly rather than left to
+   `accent-color`, whose default track is a light grey that reads as a bright
+   scar on the dark panels. */
 .raven-fader {
   width: 100%;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
   accent-color: hsl(var(--primary));
+  cursor: pointer;
+}
+
+.raven-fader::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+}
+
+.raven-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  /* (track height - thumb height) / 2 */
+  margin-top: -5px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  transition: box-shadow 120ms ease;
+}
+
+.raven-fader::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+}
+
+.raven-fader::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 999px;
+  background: hsl(var(--primary));
+}
+
+.raven-fader:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.18);
+}
+
+.raven-fader:focus-visible {
+  outline: none;
+}
+
+.raven-fader:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px hsl(var(--ring) / 0.4);
+}
+
+.raven-fader:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.raven-fader:disabled:hover::-webkit-slider-thumb {
+  box-shadow: none;
 }
 
 /* Vertical console fader — used by the Studio mixer channel strips */

@@ -219,6 +219,9 @@ export interface TreeMember {
   state: TreeMembershipState;
   joinedAt?: string | null;
   leftAt?: string | null;
+  presenceState: UserPresenceState;
+  reachability: UserReachability;
+  activeNestId?: string | null;
 }
 
 export interface TreeJoinRequest {
@@ -332,7 +335,6 @@ export interface ServerProperties {
   description: string;
   avatar: string;
   rtcServerUrl: string;
-  advertiseUrl: string;
   properties: Record<string, unknown>;
 }
 
@@ -401,6 +403,19 @@ export class ApiClient {
 
   url(path: string) {
     return `${this.baseUrl}${path}`;
+  }
+
+  assetUrl(value: string) {
+    if (!value || /^(?:https?:|data:|blob:)/i.test(value)) return value;
+    return this.url(value.startsWith("/") ? value : `/${value}`);
+  }
+
+  userAvatarUrl(userId: string, version = "") {
+    return this.url(`/v1/media/users/${encodeURIComponent(userId)}/avatar${version ? `?v=${encodeURIComponent(version)}` : ""}`);
+  }
+
+  treeAvatarUrl(treeId: string, version = "") {
+    return this.url(`/v1/media/trees/${encodeURIComponent(treeId)}/avatar${version ? `?v=${encodeURIComponent(version)}` : ""}`);
   }
 
   getServerHistory() {
@@ -567,7 +582,6 @@ export class ApiClient {
       description: "Desktop RTC for private Nests",
       avatar: "",
       rtcServerUrl: "ws://127.0.0.1:7880",
-      advertiseUrl: this.baseUrl,
       properties: {},
     };
   }
@@ -585,6 +599,14 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(patch),
     });
+  }
+
+  uploadProfileAvatar(file: File) {
+    return this.uploadAvatar("/v1/profile/avatar", file);
+  }
+
+  uploadServerAvatar(file: File) {
+    return this.uploadAvatar("/v1/admin/server/avatar", file);
   }
 
   dashboard() {
@@ -650,6 +672,10 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  }
+
+  uploadTreeAvatar(treeId: string, file: File) {
+    return this.uploadAvatar(`/v1/trees/${treeId}/avatar`, file);
   }
 
   deleteTree(treeId: string, confirmation: string) {
@@ -841,6 +867,17 @@ export class ApiClient {
     return this.request<{ users: User[] }>("/v1/admin/users");
   }
 
+  private uploadAvatar(path: string, file: File) {
+    if (file.size > 512 * 1024) {
+      return Promise.reject(new Error("Profile images must be 512 KB or smaller"));
+    }
+    return this.request<{ avatar: string }>(path, {
+      method: "POST",
+      headers: { "Content-Type": file.type },
+      body: file,
+    });
+  }
+
   private async request<T>(
     path: string,
     init: RequestInit & { auth?: boolean; response?: "json" | "none" } = {},
@@ -857,7 +894,7 @@ export class ApiClient {
     const { auth = true, response: responseMode = "json", ...requestInit } = init;
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
-    if (init.body) headers.set("Content-Type", "application/json");
+    if (init.body && !headers.has("Content-Type") && typeof init.body === "string") headers.set("Content-Type", "application/json");
     if (auth && this.sessionId) headers.set("X-Session-ID", this.sessionId);
     headers.set("X-Raven-OS", desktopOS());
     headers.set("X-Raven-Device", "Raven Desktop");

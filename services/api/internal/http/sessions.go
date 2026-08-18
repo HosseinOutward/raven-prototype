@@ -284,7 +284,6 @@ func (s *Server) disconnectUserFromNest(nestID, userID, status string, leaveMemb
 	if _, err := s.db.Exec(
 		`UPDATE user_presence
 		 SET state = CASE WHEN state = 'in_nest' THEN 'available' ELSE state END,
-		     reachability = CASE WHEN state = 'in_nest' THEN 'around' ELSE reachability END,
 		     active_nest_id = NULL,
 		     updated_at = ?
 		 WHERE user_id = ? AND active_nest_id = ?`,

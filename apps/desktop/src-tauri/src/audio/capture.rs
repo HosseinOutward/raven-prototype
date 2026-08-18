@@ -118,7 +118,8 @@ impl CaptureRuntimeManager {
         sources: &mut [AudioSourceState],
         sinks: &HashMap<AudioSourceId, Arc<dyn ProcessedSampleSink>>,
         render_reference: Arc<RenderReference>,
-    ) {
+    ) -> Option<String> {
+        let mut first_error = None;
         let desired_ids: HashSet<_> = sources
             .iter()
             .filter(|source| should_capture_source(source))
@@ -187,10 +188,13 @@ impl CaptureRuntimeManager {
                     self.runtimes.insert(source.id, runtime);
                 }
                 Err(error) => {
-                    source.runtime = errored_runtime_state(source, error.to_string());
+                    let message = error.to_string();
+                    source.runtime = errored_runtime_state(source, message.clone());
+                    first_error.get_or_insert(message);
                 }
             }
         }
+        first_error
     }
 
     #[cfg(test)]
@@ -406,14 +410,24 @@ pub fn list_output_devices() -> Vec<AudioOutputDevice> {
     }
     #[cfg(target_os = "linux")]
     {
-        match platform::linux::list_output_devices() {
-            Some(devices) if !devices.is_empty() => devices,
-            _ => cpal_output_devices(),
-        }
+        // Playback is owned by CPAL, so expose CPAL's device namespace here. PipeWire
+        // node ids are resolved separately by the Linux loopback-capture adapter.
+        cpal_output_devices()
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         cpal_output_devices()
+    }
+}
+
+pub fn system_audio_runtime_readiness() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        platform::linux::runtime_readiness()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(())
     }
 }
 
@@ -669,13 +683,20 @@ fn select_input_device(
     capture_device_id: Option<&str>,
 ) -> Result<cpal::Device, CaptureError> {
     if let Some(device_id) = capture_device_id {
-        if let Ok(devices) = host.input_devices() {
-            for device in devices {
-                if device.name().ok().as_deref() == Some(device_id) {
-                    return Ok(device);
-                }
+        let devices = host
+            .input_devices()
+            .map_err(|error| CaptureError::DeviceUnavailable {
+                message: format!("could not enumerate input devices: {error}"),
+            })?;
+        for device in devices {
+            if device.name().ok().as_deref() == Some(device_id) {
+                return Ok(device);
             }
         }
+
+        return Err(CaptureError::DeviceUnavailable {
+            message: format!("selected input device `{device_id}` was not found"),
+        });
     }
     host.default_input_device()
         .ok_or_else(|| CaptureError::DeviceUnavailable {
@@ -2496,6 +2517,27 @@ pub mod platform {
         const LOOPBACK_CHANNELS: u16 = 2;
         const LOOPBACK_FORMAT: AudioSampleFormat = AudioSampleFormat::F32;
 
+        pub fn runtime_readiness() -> Result<(), String> {
+            if !command_available("pw-record") {
+                return Err(
+                    "System audio needs PipeWire tools (`pw-record`). Install `pipewire-bin`."
+                        .to_string(),
+                );
+            }
+            match list_output_devices() {
+                Some(devices) if !devices.is_empty() => Ok(()),
+                _ => {
+                    Err("System audio needs a running PipeWire session and `pw-dump`.".to_string())
+                }
+            }
+        }
+
+        fn command_available(command: &str) -> bool {
+            std::env::var_os("PATH")
+                .map(|paths| std::env::split_paths(&paths).any(|path| path.join(command).is_file()))
+                .unwrap_or(false)
+        }
+
         #[derive(Debug)]
         struct PipeWireLoopbackRuntime {
             source_id: AudioSourceId,
@@ -2539,12 +2581,7 @@ pub mod platform {
         ) -> Result<Box<dyn AudioSourceRuntime>, CaptureError> {
             let signature = CaptureConfigSignature::from_source(&request.source);
             let source_id = request.source.id;
-            let target = request
-                .source
-                .capture_device_id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .map(ToOwned::to_owned);
+            let target = resolve_loopback_target(request.source.capture_device_id.as_deref())?;
 
             let mut processing_source = request.source.clone();
             processing_source.runtime.channel_count = Some(LOOPBACK_CHANNELS);
@@ -2748,6 +2785,36 @@ pub mod platform {
                 }
             }
             Some(devices)
+        }
+
+        fn resolve_loopback_target(
+            requested_device: Option<&str>,
+        ) -> Result<Option<String>, CaptureError> {
+            let Some(requested_device) = requested_device.filter(|value| !value.trim().is_empty())
+            else {
+                return Ok(None);
+            };
+            let devices = list_output_devices().ok_or_else(|| CaptureError::DeviceUnavailable {
+                message: "PipeWire output devices could not be enumerated with pw-dump".to_string(),
+            })?;
+            let requested_is_default = cpal::default_host()
+                .default_output_device()
+                .and_then(|device| device.name().ok())
+                .map(|name| name.eq_ignore_ascii_case(requested_device))
+                .unwrap_or(false);
+            devices
+                .into_iter()
+                .find(|device| {
+                    device.device_id.eq_ignore_ascii_case(requested_device)
+                        || device.name.eq_ignore_ascii_case(requested_device)
+                        || (requested_is_default && device.is_default)
+                })
+                .map(|device| Some(device.device_id))
+                .ok_or_else(|| CaptureError::DeviceUnavailable {
+                    message: format!(
+                        "selected output `{requested_device}` has no matching PipeWire sink"
+                    ),
+                })
         }
 
         fn default_sink_name() -> Option<String> {

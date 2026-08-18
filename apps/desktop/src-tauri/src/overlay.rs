@@ -6,18 +6,21 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 use thiserror::Error;
 
 pub const VOICE_OVERLAY_LABEL: &str = "voice-overlay";
 pub const VOICE_OVERLAY_EVENT: &str = "voice-overlay-state-changed";
+pub const VOICE_OVERLAY_SETTINGS_EVENT: &str = "voice-overlay-settings-changed";
 pub const DEFAULT_OVERLAY_HOTKEY: &str = "Alt+F8";
 
 const SETTINGS_FILE_NAME: &str = "voice-overlay-settings.json";
-const OVERLAY_WIDTH: i32 = 280;
-const OVERLAY_HEIGHT: i32 = 360;
+const VERTICAL_OVERLAY_WIDTH: i32 = 280;
+const VERTICAL_OVERLAY_HEIGHT: i32 = 360;
+const HORIZONTAL_OVERLAY_WIDTH: i32 = 320;
+const HORIZONTAL_OVERLAY_HEIGHT: i32 = 112;
 const DEFAULT_MONITOR_OFFSET: i32 = 24;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +28,8 @@ const DEFAULT_MONITOR_OFFSET: i32 = 24;
 pub struct VoiceOverlaySettings {
     pub enabled: bool,
     pub hotkey: String,
+    pub layout: VoiceOverlayLayout,
+    pub show_names: bool,
     pub position: Option<VoiceOverlayPosition>,
 }
 
@@ -33,9 +38,19 @@ impl Default for VoiceOverlaySettings {
         Self {
             enabled: true,
             hotkey: DEFAULT_OVERLAY_HOTKEY.to_string(),
+            layout: VoiceOverlayLayout::Vertical,
+            show_names: true,
             position: None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VoiceOverlayLayout {
+    #[default]
+    Vertical,
+    Horizontal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +65,7 @@ pub struct VoiceOverlayPosition {
 pub struct VoiceOverlaySnapshot {
     pub nest_id: Option<String>,
     pub nest_name: Option<String>,
+    pub location_label: String,
     pub connected: bool,
     pub participants: Vec<VoiceOverlayParticipant>,
 }
@@ -62,9 +78,11 @@ pub struct VoiceOverlayParticipant {
     pub avatar_url: Option<String>,
     pub is_local: bool,
     pub speaking: bool,
+    pub speaking_level: u8,
     pub muted: bool,
     pub deafened: bool,
     pub screen_sharing: bool,
+    pub camera_on: bool,
 }
 
 #[derive(Debug)]
@@ -81,6 +99,8 @@ pub struct VoiceOverlaySettingsView {
     pub supported: bool,
     pub enabled: bool,
     pub hotkey: String,
+    pub layout: VoiceOverlayLayout,
+    pub show_names: bool,
     pub position: Option<VoiceOverlayPosition>,
     pub registration_error: Option<String>,
 }
@@ -90,6 +110,8 @@ pub struct VoiceOverlaySettingsView {
 pub struct VoiceOverlaySettingsPatch {
     pub enabled: Option<bool>,
     pub hotkey: Option<String>,
+    pub layout: Option<VoiceOverlayLayout>,
+    pub show_names: Option<bool>,
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -162,8 +184,15 @@ pub fn overlay_update_settings(
     save_settings(&app, &next)?;
     if !next.enabled {
         hide_existing_overlay_window(&app)?;
+    } else if let Some(window) = app.get_webview_window(VOICE_OVERLAY_LABEL) {
+        apply_overlay_dimensions(&window, next.layout)?;
+        restore_overlay_position(&window, &next)?;
     }
-    settings_view(&state, &next)
+    let view = settings_view(&state, &next)?;
+    if let Some(window) = app.get_webview_window(VOICE_OVERLAY_LABEL) {
+        let _ = window.emit(VOICE_OVERLAY_SETTINGS_EVENT, view.clone());
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -271,6 +300,12 @@ fn apply_settings_patch(
             trimmed.to_string()
         };
     }
+    if let Some(layout) = patch.layout {
+        next.layout = layout;
+    }
+    if let Some(show_names) = patch.show_names {
+        next.show_names = show_names;
+    }
     next
 }
 
@@ -283,6 +318,8 @@ fn settings_view(
         supported,
         enabled: supported && settings.enabled,
         hotkey: settings.hotkey.clone(),
+        layout: settings.layout,
+        show_names: settings.show_names,
         position: settings.position,
         registration_error: state
             .registration_error
@@ -363,15 +400,16 @@ fn ensure_overlay_window(
         return Ok(window);
     }
 
+    let (width, height) = overlay_dimensions(settings.layout);
     let window = WebviewWindowBuilder::new(
         app,
         VOICE_OVERLAY_LABEL,
         WebviewUrl::App("/#/overlay".into()),
     )
     .title("Raven Voice Overlay")
-    .inner_size(OVERLAY_WIDTH as f64, OVERLAY_HEIGHT as f64)
-    .min_inner_size(OVERLAY_WIDTH as f64, OVERLAY_HEIGHT as f64)
-    .max_inner_size(OVERLAY_WIDTH as f64, OVERLAY_HEIGHT as f64)
+    .inner_size(width as f64, height as f64)
+    .min_inner_size(width as f64, height as f64)
+    .max_inner_size(width as f64, height as f64)
     .resizable(false)
     .decorations(false)
     .transparent(true)
@@ -387,12 +425,39 @@ fn ensure_overlay_window(
     Ok(window)
 }
 
+fn overlay_dimensions(layout: VoiceOverlayLayout) -> (i32, i32) {
+    match layout {
+        VoiceOverlayLayout::Vertical => (VERTICAL_OVERLAY_WIDTH, VERTICAL_OVERLAY_HEIGHT),
+        VoiceOverlayLayout::Horizontal => (HORIZONTAL_OVERLAY_WIDTH, HORIZONTAL_OVERLAY_HEIGHT),
+    }
+}
+
+fn apply_overlay_dimensions(
+    window: &WebviewWindow,
+    layout: VoiceOverlayLayout,
+) -> Result<(), VoiceOverlayError> {
+    let (width, height) = overlay_dimensions(layout);
+    let size = PhysicalSize::new(width as u32, height as u32);
+    window
+        .set_min_size(None::<PhysicalSize<u32>>)
+        .map_err(window_error)?;
+    window
+        .set_max_size(None::<PhysicalSize<u32>>)
+        .map_err(window_error)?;
+    window
+        .set_size(Size::Physical(size))
+        .map_err(window_error)?;
+    window.set_min_size(Some(size)).map_err(window_error)?;
+    window.set_max_size(Some(size)).map_err(window_error)
+}
+
 fn restore_overlay_position(
     window: &WebviewWindow,
     settings: &VoiceOverlaySettings,
 ) -> Result<(), VoiceOverlayError> {
     let monitors = window.available_monitors().map_err(window_error)?;
-    let position = clamp_overlay_position(settings.position, &monitors);
+    let (width, height) = overlay_dimensions(settings.layout);
+    let position = clamp_overlay_position(settings.position, &monitors, width, height);
     window
         .set_position(Position::Physical(PhysicalPosition::new(
             position.x, position.y,
@@ -403,6 +468,8 @@ fn restore_overlay_position(
 fn clamp_overlay_position(
     position: Option<VoiceOverlayPosition>,
     monitors: &[tauri::Monitor],
+    overlay_width: i32,
+    overlay_height: i32,
 ) -> VoiceOverlayPosition {
     if monitors.is_empty() {
         return position.unwrap_or(VoiceOverlayPosition {
@@ -428,7 +495,15 @@ fn clamp_overlay_position(
         let right = left + monitor_size.width as i32;
         let bottom = top + monitor_size.height as i32;
         if position.x >= left && position.x < right && position.y >= top && position.y < bottom {
-            return clamp_to_monitor(position, left, top, right, bottom);
+            return clamp_to_monitor(
+                position,
+                left,
+                top,
+                right,
+                bottom,
+                overlay_width,
+                overlay_height,
+            );
         }
     }
 
@@ -440,6 +515,8 @@ fn clamp_overlay_position(
         monitor_position.y,
         monitor_position.x + monitor_size.width as i32,
         monitor_position.y + monitor_size.height as i32,
+        overlay_width,
+        overlay_height,
     )
 }
 
@@ -449,9 +526,11 @@ fn clamp_to_monitor(
     top: i32,
     right: i32,
     bottom: i32,
+    overlay_width: i32,
+    overlay_height: i32,
 ) -> VoiceOverlayPosition {
-    let max_x = (right - OVERLAY_WIDTH).max(left);
-    let max_y = (bottom - OVERLAY_HEIGHT).max(top);
+    let max_x = (right - overlay_width).max(left);
+    let max_y = (bottom - overlay_height).max(top);
     VoiceOverlayPosition {
         x: position.x.clamp(left, max_x),
         y: position.y.clamp(top, max_y),
@@ -595,6 +674,8 @@ mod tests {
         let settings = VoiceOverlaySettings {
             enabled: false,
             hotkey: "Control+Alt+O".to_string(),
+            layout: VoiceOverlayLayout::Horizontal,
+            show_names: false,
             position: Some(VoiceOverlayPosition { x: 100, y: 120 }),
         };
 
@@ -603,6 +684,31 @@ mod tests {
 
         assert_eq!(loaded, settings);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_settings_receive_overlay_display_defaults() {
+        let settings: VoiceOverlaySettings =
+            serde_json::from_str(r#"{"enabled":false,"hotkey":"Alt+F9","position":{"x":4,"y":5}}"#)
+                .expect("legacy settings should deserialize");
+
+        assert_eq!(settings.layout, VoiceOverlayLayout::Vertical);
+        assert!(settings.show_names);
+        assert_eq!(settings.position, Some(VoiceOverlayPosition { x: 4, y: 5 }));
+    }
+
+    #[test]
+    fn participant_speaking_level_is_backward_compatible() {
+        let legacy: VoiceOverlayParticipant =
+            serde_json::from_str(r#"{"userId":"person","displayName":"Person","speaking":true}"#)
+                .expect("legacy participant should deserialize");
+        assert_eq!(legacy.speaking_level, 0);
+
+        let current: VoiceOverlayParticipant = serde_json::from_str(
+            r#"{"userId":"person","displayName":"Person","speaking":true,"speakingLevel":73}"#,
+        )
+        .expect("current participant should deserialize");
+        assert_eq!(current.speaking_level, 73);
     }
 
     #[test]
@@ -625,17 +731,32 @@ mod tests {
             &VoiceOverlaySettings {
                 enabled: false,
                 hotkey: "Alt+F9".to_string(),
+                layout: VoiceOverlayLayout::Vertical,
+                show_names: true,
                 position: Some(VoiceOverlayPosition { x: 2, y: 3 }),
             },
             VoiceOverlaySettingsPatch {
                 enabled: Some(true),
                 hotkey: Some("   ".to_string()),
+                layout: Some(VoiceOverlayLayout::Horizontal),
+                show_names: Some(false),
             },
         );
 
         assert!(settings.enabled);
         assert_eq!(settings.hotkey, DEFAULT_OVERLAY_HOTKEY);
+        assert_eq!(settings.layout, VoiceOverlayLayout::Horizontal);
+        assert!(!settings.show_names);
         assert_eq!(settings.position, Some(VoiceOverlayPosition { x: 2, y: 3 }));
+    }
+
+    #[test]
+    fn layout_dimensions_are_fixed_per_orientation() {
+        assert_eq!(overlay_dimensions(VoiceOverlayLayout::Vertical), (280, 360));
+        assert_eq!(
+            overlay_dimensions(VoiceOverlayLayout::Horizontal),
+            (320, 112)
+        );
     }
 
     #[test]

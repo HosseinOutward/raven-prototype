@@ -22,6 +22,8 @@ import type {
   ServerProperties,
   UILabelPreference,
   UserPreferences,
+  UserPresenceState,
+  UserReachability,
 } from "@/lib/api";
 
 export type Presence = "open" | "around" | "focused" | "dnd" | "invisible";
@@ -172,13 +174,26 @@ export function displayNameFor(person: { displayName?: string | null; username?:
   return person.displayName?.trim() || person.username?.trim() || "Unknown";
 }
 
-export function presenceFromApi(presence?: UserPresence | null): Presence {
+export function presenceFromApi(presence?: Pick<UserPresence, "state" | "reachability"> | null): Presence {
   if (!presence) return "invisible";
   if (presence.state === "dnd") return "dnd";
   if (presence.state === "invisible" || presence.state === "offline") return "invisible";
   if (presence.reachability === "open") return "open";
   if (presence.reachability === "focused") return "focused";
   return "around";
+}
+
+export function presenceForActiveNest(presence?: Partial<Pick<UserPresence, "state" | "reachability">> | null): {
+  state: UserPresenceState;
+  reachability: UserReachability;
+} {
+  if (presence?.state === "dnd") return { state: "dnd", reachability: "unavailable" };
+  if (presence?.state === "invisible") return { state: "invisible", reachability: "unavailable" };
+  const reachability = presence?.reachability;
+  return {
+    state: "in_nest",
+    reachability: reachability === "open" || reachability === "focused" || reachability === "around" ? reachability : "around",
+  };
 }
 
 export function lifecycleLabel(nest: Pick<Nest, "lifecycleState" | "type">) {

@@ -2,20 +2,45 @@ package http
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"raven/services/api/internal/database"
+	profilemedia "raven/services/api/internal/media"
 )
+
+type memoryProfileMedia struct {
+	objects map[string]profilemedia.Object
+}
+
+func (m *memoryProfileMedia) Put(_ context.Context, key string, body []byte, contentType string) error {
+	m.objects[key] = profilemedia.Object{Bytes: append([]byte(nil), body...), ContentType: contentType}
+	return nil
+}
+
+func (m *memoryProfileMedia) Get(_ context.Context, key string) (profilemedia.Object, error) {
+	object, ok := m.objects[key]
+	if !ok {
+		return profilemedia.Object{}, sql.ErrNoRows
+	}
+	return object, nil
+}
+
+func (m *memoryProfileMedia) Delete(_ context.Context, key string) error {
+	delete(m.objects, key)
+	return nil
+}
 
 func TestServerPropertiesArePublicAndNeutral(t *testing.T) {
 	t.Setenv("RAVEN_SERVER_NAME", "Raven Lab")
 	t.Setenv("RAVEN_SERVER_DESCRIPTION", "Private desktop RTC")
 	t.Setenv("RAVEN_SERVER_AVATAR", "https://example.test/avatar.png")
-	t.Setenv("RAVEN_ADVERTISE_URL", "https://raven.example.test")
 	t.Setenv("LIVEKIT_URL", "wss://rtc.example.test")
 
 	server, _ := newTestServer(t)
@@ -27,7 +52,7 @@ func TestServerPropertiesArePublicAndNeutral(t *testing.T) {
 	if properties.Name != "Raven Lab" || properties.Description != "Private desktop RTC" || properties.Avatar == "" {
 		t.Fatalf("unexpected server properties: %+v", properties)
 	}
-	if properties.RTCServerURL != "wss://rtc.example.test" || properties.AdvertiseURL != "https://raven.example.test" {
+	if properties.RTCServerURL != "wss://rtc.example.test" {
 		t.Fatalf("unexpected server urls: %+v", properties)
 	}
 }
@@ -219,7 +244,7 @@ func TestDisconnectRemovesUserFromNestMembershipAndSession(t *testing.T) {
 
 	postJSON(t, server, token, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
 	postJSON(t, server, token, "/v1/nests/"+nestID+"/presence/join", nil, http.StatusNoContent)
-	postJSON(t, server, token, "/v1/presence", map[string]string{"state": "in_nest", "reachability": "around", "activeNestId": nestID}, http.StatusOK)
+	postJSON(t, server, token, "/v1/presence", map[string]string{"state": "in_nest", "reachability": "focused", "activeNestId": nestID}, http.StatusOK)
 	postJSON(t, server, token, "/v1/nests/"+nestID+"/session/disconnect", nil, http.StatusOK)
 
 	var memberState string
@@ -247,13 +272,13 @@ func TestDisconnectRemovesUserFromNestMembershipAndSession(t *testing.T) {
 		t.Fatalf("session participant still active after disconnect: %d", activeParticipants)
 	}
 
-	var presenceState string
+	var presenceState, reachability string
 	var activeNestID *string
-	if err := server.db.QueryRow(`SELECT state, active_nest_id FROM user_presence WHERE user_id = ?`, aliceUserID(t, server)).Scan(&presenceState, &activeNestID); err != nil {
+	if err := server.db.QueryRow(`SELECT state, reachability, active_nest_id FROM user_presence WHERE user_id = ?`, aliceUserID(t, server)).Scan(&presenceState, &reachability, &activeNestID); err != nil {
 		t.Fatal(err)
 	}
-	if presenceState != "available" || activeNestID != nil {
-		t.Fatalf("user presence should be available outside a Nest, state=%s activeNest=%v", presenceState, activeNestID)
+	if presenceState != "available" || reachability != "focused" || activeNestID != nil {
+		t.Fatalf("user presence should retain the selected status outside a Nest, state=%s reachability=%s activeNest=%v", presenceState, reachability, activeNestID)
 	}
 }
 
@@ -435,6 +460,36 @@ func TestTreeSearchJoinPoliciesAndPrivacy(t *testing.T) {
 	getJSON(t, server, charlieToken, "/v1/trees/"+publicPayload.Tree.ID, http.StatusOK)
 }
 
+func TestTreeMembersIncludePersistedPresence(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	_, bobToken := createTestUser(t, server, "bob")
+
+	treeResponse := postJSON(t, server, aliceToken, "/v1/trees", map[string]string{"name": "Presence Tree"}, http.StatusCreated)
+	var created struct {
+		Tree Tree `json:"tree"`
+	}
+	if err := json.Unmarshal(treeResponse, &created); err != nil {
+		t.Fatal(err)
+	}
+	postJSON(t, server, aliceToken, "/v1/trees/"+created.Tree.ID+"/members", map[string]string{"username": "bob", "role": "member"}, http.StatusCreated)
+	postJSON(t, server, bobToken, "/v1/presence", map[string]string{"state": "dnd", "reachability": "unavailable"}, http.StatusOK)
+
+	detailsResponse := getJSON(t, server, aliceToken, "/v1/trees/"+created.Tree.ID, http.StatusOK)
+	var details TreeDetails
+	if err := json.Unmarshal(detailsResponse, &details); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range details.Members {
+		if member.Username == "bob" {
+			if member.PresenceState != "dnd" || member.Reachability != "unavailable" {
+				t.Fatalf("Tree member presence did not match the persisted status: %+v", member)
+			}
+			return
+		}
+	}
+	t.Fatal("bob was not returned in Tree members")
+}
+
 func TestKnockLifecycleAndPresence(t *testing.T) {
 	server, aliceToken := newTestServer(t)
 	bob, bobToken := createTestUser(t, server, "bob")
@@ -456,6 +511,14 @@ func TestKnockLifecycleAndPresence(t *testing.T) {
 	}
 	if presencePayload.Presence.State != "dnd" || presencePayload.Presence.Reachability != "unavailable" {
 		t.Fatalf("manual dnd presence update was not persisted: %+v", presencePayload.Presence)
+	}
+	homeResponse := getJSON(t, server, aliceToken, "/v1/home", http.StatusOK)
+	var home HomeState
+	if err := json.Unmarshal(homeResponse, &home); err != nil {
+		t.Fatal(err)
+	}
+	if home.Presence.State != "dnd" || home.Presence.Reachability != "unavailable" {
+		t.Fatalf("home bootstrap did not restore manual dnd presence: %+v", home.Presence)
 	}
 	knockResponse := postJSON(t, server, bobToken, "/v1/knocks", map[string]string{"toUserId": bob.ID, "message": "self"}, http.StatusBadRequest)
 	if len(knockResponse) == 0 {
@@ -650,6 +713,50 @@ func TestDeleteTreeRequiresOwnerAndConfirmation(t *testing.T) {
 	_ = bob
 }
 
+func TestProfileImagesUseStoredMediaAndEnforceOwnership(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	media := &memoryProfileMedia{objects: map[string]profilemedia.Object{}}
+	server.profileMedia = media
+	alice := currentTestUser(t, server, "alice")
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}
+
+	postImage(t, server, aliceToken, "/v1/profile/avatar", "image/png", png, http.StatusOK)
+	storedUserImage := getJSON(t, server, "", "/v1/media/users/"+alice.ID+"/avatar", http.StatusOK)
+	if !bytes.Equal(storedUserImage, png) {
+		t.Fatalf("stored user image differs: %x", storedUserImage)
+	}
+
+	treeBody := postJSON(t, server, aliceToken, "/v1/trees", map[string]string{"name": "Picture Tree"}, http.StatusCreated)
+	var treePayload struct {
+		Tree Tree `json:"tree"`
+	}
+	if err := json.Unmarshal(treeBody, &treePayload); err != nil {
+		t.Fatal(err)
+	}
+	treeID := treePayload.Tree.ID
+	postImage(t, server, aliceToken, "/v1/trees/"+treeID+"/avatar", "image/png", png, http.StatusOK)
+	getJSON(t, server, "", "/v1/media/trees/"+treeID+"/avatar", http.StatusOK)
+
+	_, bobToken := createTestUser(t, server, "bob")
+	postImage(t, server, bobToken, "/v1/trees/"+treeID+"/avatar", "image/png", png, http.StatusForbidden)
+	postImage(t, server, aliceToken, "/v1/admin/server/avatar", "image/png", png, http.StatusForbidden)
+
+	admin, err := server.CreateUser("admin", "secret", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminToken := loginTestUser(t, server, admin.Username)
+	postImage(t, server, adminToken, "/v1/admin/server/avatar", "image/png", png, http.StatusOK)
+	propertiesBody := getJSON(t, server, "", "/v1/server/properties", http.StatusOK)
+	var properties ServerProperties
+	if err := json.Unmarshal(propertiesBody, &properties); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(properties.Avatar, "/v1/media/server/avatar?v=") {
+		t.Fatalf("server image route was not advertised: %+v", properties)
+	}
+}
+
 func newTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	db, err := database.Open(filepath.Join(t.TempDir(), "raven-test.db"))
@@ -737,6 +844,29 @@ func getJSON(t *testing.T, server *Server, token, path string, expectedStatus in
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	setTestCompatibilityHeaders(req)
+	if token != "" {
+		req.Header.Set("X-Session-ID", token)
+	}
+	resp, err := server.app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	payload := new(bytes.Buffer)
+	if _, err := payload.ReadFrom(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != expectedStatus {
+		t.Fatalf("%s: got status %d, want %d, body=%s", path, resp.StatusCode, expectedStatus, payload.String())
+	}
+	return payload.Bytes()
+}
+
+func postImage(t *testing.T, server *Server, token, path, contentType string, body []byte, expectedStatus int) []byte {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	setTestCompatibilityHeaders(req)
+	req.Header.Set("Content-Type", contentType)
 	if token != "" {
 		req.Header.Set("X-Session-ID", token)
 	}
