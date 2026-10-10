@@ -293,6 +293,19 @@ export interface RemoteAudioTrackState {
   receiverChannelStrip: RemoteTrackChannelStripState;
   preference: RemoteTrackPreference;
   subscribed: boolean;
+  subscriptionStatus: AudioSubscriptionStatus;
+}
+
+export type AudioConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
+export type AudioPlaybackStatus = "stopped" | "starting" | "running" | "recovering" | "error";
+export type AudioSubscriptionStatus = "pending" | "subscribed" | "recovering" | "failed";
+
+export interface AudioSessionHealth {
+  connectionStatus: AudioConnectionStatus;
+  playbackStatus: AudioPlaybackStatus;
+  eligibleRemoteTrackCount: number;
+  activeRemoteTrackCount: number;
+  error: string | null;
 }
 
 export interface RemoteTrackPreference {
@@ -316,6 +329,7 @@ export interface AudioMixerState {
   remoteTracks: RemoteAudioTrackState[];
   remoteParticipants: RemoteParticipantAudioState[];
   trackEvents: TrackLifecycleEvent[];
+  session: AudioSessionHealth;
 }
 
 export interface AudioMeterUpdate {

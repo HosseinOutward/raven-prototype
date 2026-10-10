@@ -78,6 +78,26 @@ describe("participant voice activity", () => {
     });
   });
 
+  test("starts tracking a remote voice after its owner unmutes", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const muted = remoteMicrophone("track-1");
+    muted.track.muted = true;
+
+    expect(tracker.processMeter(mixerState([], [muted]), remoteMeter("track-1", -20), 0)).toEqual({});
+
+    const unmuted = {
+      ...muted,
+      track: { ...muted.track, muted: false },
+    };
+    expect(
+      tracker.processMeter(mixerState([], [unmuted]), remoteMeter("track-1", -20), 1)["remote-person"],
+    ).toEqual({
+      speaking: true,
+      intensity: 0.94,
+      meterObserved: true,
+    });
+  });
+
   test("clears speaking immediately when a microphone becomes muted", () => {
     const tracker = new ParticipantVoiceActivityTracker();
     const source = localMicrophone();

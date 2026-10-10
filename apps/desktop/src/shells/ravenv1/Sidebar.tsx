@@ -24,6 +24,8 @@ export function Sidebar({
   }).length;
   const serverName = data.serverProperties.name || "Raven";
   const serverDescription = data.serverProperties.description || "Desktop RTC";
+  const friends = data.people.filter((person) => person.relationship === "friend");
+  const peopleHere = data.people.filter((person) => person.relationship !== "friend");
 
   return (
     <Island className="relative flex min-h-0 flex-col">
@@ -86,26 +88,49 @@ export function Sidebar({
           </Section>
         ) : null}
 
-        <Section label="Active people" count={data.people.length} collapsed={collapsed}>
-          {data.people.length ? (
-            data.people.map((person) => (
-              <Row collapsed={collapsed} title={person.name}
+        <Section label="Friends" count={friends.length} collapsed={collapsed}>
+          {friends.length ? (
+            friends.map((person) => (
+              <Row collapsed={collapsed} title={`${person.name} — ${PRESENCE[person.presence].label}`}
                 key={person.id}
                 active={view.kind === "user" && view.id === person.id}
                 onClick={() => onNavigate({ kind: "user", id: person.id })}
               >
-                <Avatar name={person.name} src={`${data.apiServerUrl}/v1/media/users/${person.id}/avatar`} className="h-8 w-8 text-[10px]" />
+                <span className="relative shrink-0">
+                  <Avatar name={person.name} src={`${data.apiServerUrl}/v1/media/users/${person.id}/avatar`} className="h-8 w-8 text-[10px]" />
+                  <PresenceDot presence={person.presence} avatarBadge className="absolute -bottom-0.5 -right-0.5" />
+                </span>
                 <div className={cn("min-w-0 flex-1", collapsed && "hidden")}>
                   <div className="truncate text-xs font-medium">{person.name}</div>
                   <div className="truncate rv-mono text-[11px] text-muted-foreground">{PRESENCE[person.presence].label}</div>
                 </div>
-                {!collapsed ? <PresenceDot presence={person.presence} /> : null}
               </Row>
             ))
           ) : (
-            <EmptyRow text="No reachable people" collapsed={collapsed} />
+            <EmptyRow text="No friends yet" collapsed={collapsed} />
           )}
         </Section>
+
+        {peopleHere.length ? (
+          <Section label="People here" count={peopleHere.length} collapsed={collapsed}>
+            {peopleHere.map((person) => (
+              <Row collapsed={collapsed} title={`${person.name} — ${PRESENCE[person.presence].label}`}
+                key={person.id}
+                active={view.kind === "user" && view.id === person.id}
+                onClick={() => onNavigate({ kind: "user", id: person.id })}
+              >
+                <span className="relative shrink-0">
+                  <Avatar name={person.name} src={`${data.apiServerUrl}/v1/media/users/${person.id}/avatar`} className="h-8 w-8 text-[10px]" />
+                  <PresenceDot presence={person.presence} avatarBadge className="absolute -bottom-0.5 -right-0.5" />
+                </span>
+                <div className={cn("min-w-0 flex-1", collapsed && "hidden")}>
+                  <div className="truncate text-xs font-medium">{person.name}</div>
+                  <div className="truncate rv-mono text-[11px] text-muted-foreground">{PRESENCE[person.presence].label}</div>
+                </div>
+              </Row>
+            ))}
+          </Section>
+        ) : null}
 
         <Section label={data.labels.activeTrees} count={activeTreeCount} collapsed={collapsed}>
           {data.trees.length ? (

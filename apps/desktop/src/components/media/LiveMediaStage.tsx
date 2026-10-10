@@ -17,6 +17,8 @@ export function LiveMediaStage({
   phase = connected ? "connected" : "idle",
   error = "",
   errorAction = "",
+  audioNotice = "",
+  audioNoticeKind = null,
   videoState,
   speakingActivity,
   videoStreamEndpoint,
@@ -24,6 +26,7 @@ export function LiveMediaStage({
   followScreenShares = true,
   onFollowScreenSharesChange,
   onConnect,
+  onRetryAudio,
   roomLabel = "Nest",
   className,
 }: {
@@ -31,6 +34,8 @@ export function LiveMediaStage({
   phase?: StagePhase;
   error?: string;
   errorAction?: string;
+  audioNotice?: string;
+  audioNoticeKind?: "recovering" | "error" | null;
   videoState: VideoMixerState | null;
   speakingActivity: ParticipantVoiceActivityMap;
   videoStreamEndpoint: VideoStreamEndpoint | null;
@@ -38,6 +43,7 @@ export function LiveMediaStage({
   followScreenShares?: boolean;
   onFollowScreenSharesChange?: (follow: boolean) => void;
   onConnect?: () => void;
+  onRetryAudio?: () => void;
   roomLabel?: string;
   className?: string;
 }) {
@@ -235,6 +241,21 @@ export function LiveMediaStage({
       ) : null}
       {notice ? (
         <div role="status" className="pointer-events-none absolute left-1/2 top-14 z-20 -translate-x-1/2 rounded-full bg-popover/95 px-3 py-1.5 text-[11px] text-foreground/80 shadow-lg backdrop-blur">{notice}</div>
+      ) : null}
+      {connected && audioNotice ? (
+        <div
+          role={audioNoticeKind === "error" ? "alert" : "status"}
+          className={cn(
+            "absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full px-3 py-1.5 text-[11px] shadow-lg backdrop-blur",
+            audioNoticeKind === "error" ? "bg-destructive/90 text-destructive-foreground" : "bg-amber-200/95 text-black",
+          )}
+        >
+          {audioNoticeKind === "recovering" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          <span>{audioNotice}</span>
+          {audioNoticeKind === "error" && onRetryAudio ? (
+            <Button type="button" variant="secondary" size="sm" className="h-6 rounded-full px-2 text-[10px]" onClick={onRetryAudio}>Retry audio</Button>
+          ) : null}
+        </div>
       ) : null}
 
     </section>

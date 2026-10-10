@@ -101,6 +101,13 @@ const emptyMixerState: AudioMixerState = {
   remoteTracks: [],
   remoteParticipants: [],
   trackEvents: [],
+  session: {
+    connectionStatus: "disconnected",
+    playbackStatus: "stopped",
+    eligibleRemoteTrackCount: 0,
+    activeRemoteTrackCount: 0,
+    error: null,
+  },
 };
 
 type ChannelStripView =

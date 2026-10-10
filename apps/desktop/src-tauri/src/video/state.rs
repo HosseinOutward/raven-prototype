@@ -31,7 +31,8 @@ use crate::video::domain::{
     VideoSourceId, VideoSourceKind, VideoSourceState, VideoTrackSource, WindowTarget,
 };
 use crate::video::engine::{
-    measure_video_network_totals, stable_video_track_id, VideoEngine, VideoNetworkTotals,
+    measure_video_network_totals, measure_video_quality_report, stable_video_track_id, VideoEngine,
+    VideoNetworkTotals, VideoQualityReport,
 };
 use crate::video::preview::VideoPreviewController;
 use crate::video::stream::{VideoFrameHub, VideoFrameService, VideoStreamEndpoint};
@@ -107,7 +108,10 @@ impl VideoEngineState {
         source.process_id = process_id;
         source.linked_audio_source_id = linked_audio_source_id;
         source.publishing = true;
-        source.profile = profile.normalized();
+        // The command boundary has already normalized camera/custom profiles and resolved
+        // display/window profiles to their real source aspect ratio. Preserve that resolved
+        // profile through capture and publishing.
+        source.profile = profile;
         let track_id = PublishedVideoTrackId::new();
         source.published_track = Some(PublishedVideoTrack {
             track_id,
@@ -186,6 +190,22 @@ pub async fn video_get_network_totals(
         )
     };
     measure_video_network_totals(published_tracks, subscribed_tracks)
+        .await
+        .map_err(|message| VideoStateError::EngineFailed { message })
+}
+
+#[tauri::command]
+pub async fn video_get_quality_report(
+    state: State<'_, SharedVideoEngineState>,
+) -> Result<VideoQualityReport, VideoStateError> {
+    let (published_screen_shares, subscribed_screen_shares) = {
+        let guard = state.read().map_err(|_| VideoStateError::StatePoisoned)?;
+        (
+            guard.engine.published_screen_share_tracks(),
+            guard.engine.subscribed_screen_share_tracks(),
+        )
+    };
+    measure_video_quality_report(published_screen_shares, subscribed_screen_shares)
         .await
         .map_err(|message| VideoStateError::EngineFailed { message })
 }
@@ -404,7 +424,7 @@ pub fn video_start_display_share(
         None
     };
 
-    mutate_video_state(&app, &state, |engine| {
+    let result = mutate_video_state(&app, &state, |engine| {
         engine.add_publishing_source(
             VideoSourceKind::Display,
             display_name,
@@ -414,7 +434,13 @@ pub fn video_start_display_share(
             profile.resolved_for_source(source_width, source_height),
         );
         Ok(())
-    })
+    });
+    if result.is_err() {
+        if let Some(audio_id) = linked_audio {
+            let _ = remove_shared_audio_source(&app, audio_state.inner(), audio_id);
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -444,7 +470,7 @@ pub fn video_start_window_share(
         None
     };
 
-    mutate_video_state(&app, &state, |engine| {
+    let result = mutate_video_state(&app, &state, |engine| {
         engine.add_publishing_source(
             VideoSourceKind::Window,
             display_name,
@@ -454,7 +480,13 @@ pub fn video_start_window_share(
             profile.resolved_for_source(source_width, source_height),
         );
         Ok(())
-    })
+    });
+    if result.is_err() {
+        if let Some(audio_id) = linked_audio {
+            let _ = remove_shared_audio_source(&app, audio_state.inner(), audio_id);
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -520,7 +552,12 @@ fn mutate_video_state(
         // Publish/unpublish LiveKit tracks first so the capture manager can attach the
         // matching publish sinks to the capture threads it starts.
         let publication_error = engine.reconcile_publications(&mixer.local_sources).err();
-        let sinks = preview.wrap_publish_sinks(engine.sink_map());
+        let source_types = mixer
+            .local_sources
+            .iter()
+            .map(|source| (source.id, VideoTrackSource::from_kind(source.kind)))
+            .collect();
+        let sinks = preview.wrap_publish_sinks(engine.sink_map(), &source_types);
         let capture_error = capture.reconcile(&mut mixer.local_sources, &sinks);
         (
             guard.snapshot(),

@@ -3,6 +3,8 @@ import {
   createNetworkSamplingPlan,
   createZeroNetworkCounters,
   ratesFromNetworkSamples,
+  receivedScreenShareQualityNotice,
+  screenShareQualityNotice,
   type NetworkActivitySettings,
   type NetworkSample,
 } from "./networkActivity";
@@ -14,6 +16,7 @@ const settings = (
 
 const sample = (): NetworkSample => ({
   counters: createZeroNetworkCounters(),
+  screenShareQuality: null,
 });
 
 describe("network activity sampling", () => {
@@ -57,5 +60,28 @@ describe("network activity sampling", () => {
     const next = sample();
     next.counters.audio.outgoing = 100;
     expect(ratesFromNetworkSamples(previous, next, 2).audio.outgoing).toBe(0);
+  });
+
+  test("explains when the screen-share encoder is below the requested profile", () => {
+    expect(screenShareQualityNotice({
+      screenShareTransmit: {
+        configured: { width: 1920, height: 1080, fps: 10 },
+        maxBitrateBps: 4_000_000,
+        outbound: { width: 1280, height: 720, fps: 8, targetBitrateBps: 1_200_000, limitation: "bandwidth" },
+        remoteLossFraction: 0.02,
+        roundTripTimeMs: 95,
+      },
+      screenShareReceive: null,
+    })).toBe("Sharing 1280×720 @ 8 FPS; requested 1920×1080 @ 10 FPS · max 4.0 Mbps. Encoder limit: bandwidth. remote loss 2.0% · RTT 95 ms.");
+  });
+
+  test("reports the local decode dimensions for received screen shares", () => {
+    expect(receivedScreenShareQualityNotice({
+      screenShareTransmit: null,
+      screenShareReceive: {
+        inbound: { width: 1920, height: 1080, fps: 10 },
+        lossFraction: 0.005,
+      },
+    })).toBe("Receiving 1920×1080 @ 10 FPS · packet loss 0.5%.");
   });
 });

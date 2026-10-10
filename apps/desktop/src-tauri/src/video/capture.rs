@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::video::convert::{resize_i420_nearest, I420Frame};
+use crate::video::convert::{resize_i420_filtered, I420Frame};
 use crate::video::domain::{
     CameraDevice, DisplayTarget, VideoQualityProfile, VideoSourceId, VideoSourceKind,
     VideoSourceRuntimeState, VideoSourceRuntimeStatus, VideoSourceState, WindowTarget,
@@ -52,7 +52,7 @@ impl VideoCaptureSignature {
             source_id: source.id,
             kind: source.kind,
             target_id: source.target_id.clone(),
-            profile: source.profile.clone().normalized(),
+            profile: source.profile.clone(),
         }
     }
 }
@@ -68,7 +68,7 @@ impl ProfiledVideoFrameSink {
     fn new(inner: Arc<dyn VideoFrameSink>, profile: VideoQualityProfile) -> Self {
         Self {
             inner,
-            profile: profile.normalized(),
+            profile,
             last_frame: Mutex::new(None),
         }
     }
@@ -111,7 +111,7 @@ fn scale_frame_to_profile(frame: I420Frame, profile: &VideoQualityProfile) -> I4
         return frame;
     }
 
-    resize_i420_nearest(&frame, target_width, target_height)
+    resize_i420_filtered(&frame, target_width, target_height)
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Serialize)]
@@ -513,7 +513,7 @@ mod camera {
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
         let source_id = source.id;
         let target = source.target_id.clone();
-        let profile = source.profile.clone().normalized();
+        let profile = source.profile.clone();
         let runtime_state = super::running_runtime_state(&profile);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -737,7 +737,7 @@ mod screen {
         sink: Arc<dyn VideoFrameSink>,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
         let flags = CaptureFlags { sink };
-        let runtime_state = super::running_runtime_state(&source.profile.clone().normalized());
+        let runtime_state = super::running_runtime_state(&source.profile);
         // NOTE: the exact `Settings::new` argument list is sensitive to the resolved
         // `windows-capture` version; adjust here if the build flags a signature mismatch.
         let control = match source.kind {
@@ -1311,7 +1311,7 @@ mod screen {
         signature: VideoCaptureSignature,
         sink: Arc<dyn VideoFrameSink>,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
-        let profile = source.profile.clone().normalized();
+        let profile = source.profile.clone();
         let selection = open_portal_selection(source.kind)?;
         let (child, stdout) = spawn_gstreamer_i420_pipeline(&selection, &profile)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -1629,7 +1629,7 @@ mod screen {
         signature: VideoCaptureSignature,
         sink: Arc<dyn VideoFrameSink>,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
-        let profile = source.profile.clone().normalized();
+        let profile = source.profile.clone();
         let filter = content_filter_for_source(source)?;
         let config = SCStreamConfiguration::new()
             .with_width(profile.width)

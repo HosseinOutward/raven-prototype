@@ -77,10 +77,13 @@ type PublicUser struct {
 }
 
 type Friend struct {
-	UserID      string `json:"userId"`
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName"`
-	CreatedAt   string `json:"createdAt"`
+	UserID        string  `json:"userId"`
+	Username      string  `json:"username"`
+	DisplayName   string  `json:"displayName"`
+	CreatedAt     string  `json:"createdAt"`
+	PresenceState string  `json:"presenceState"`
+	Reachability  string  `json:"reachability"`
+	ActiveNestID  *string `json:"activeNestId,omitempty"`
 }
 
 type FriendRequest struct {
@@ -899,12 +902,26 @@ func (s *Server) updatePresence(c *fiber.Ctx) error {
 
 func (s *Server) presenceHeartbeat(c *fiber.Ctx) error {
 	user := currentUser(c)
-	presence, err := s.presenceForUser(user)
+	var body struct {
+		NestHeartbeat *bool `json:"nestHeartbeat"`
+	}
+	if len(c.Body()) > 0 {
+		if err := c.BodyParser(&body); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid presence heartbeat payload")
+		}
+	}
+	nestHeartbeat := body.NestHeartbeat == nil || *body.NestHeartbeat
+	presence, err := s.storedPresenceForUser(user)
 	if err != nil {
 		return err
 	}
+	wasOffline := effectiveUserPresence(presence, time.Now().UTC()).State == "offline"
 	if presence.State == "offline" {
 		presence, err = s.upsertPresence(user, "available", "around", nil)
+	} else if presence.State == "in_nest" && !nestHeartbeat && !wasOffline {
+		return c.JSON(fiber.Map{"presence": effectiveUserPresence(presence, time.Now().UTC())})
+	} else if presence.State == "in_nest" && !nestHeartbeat {
+		presence, err = s.upsertPresence(user, "available", presence.Reachability, nil)
 	} else {
 		presence, err = s.upsertPresence(user, presence.State, presence.Reachability, presence.ActiveNestID)
 	}
@@ -915,6 +932,9 @@ func (s *Server) presenceHeartbeat(c *fiber.Ctx) error {
 		if err := s.heartbeatNestActivity(user.ID, *presence.ActiveNestID); err != nil {
 			return err
 		}
+	}
+	if wasOffline {
+		s.events.publish(LiveUpdate{Type: "presence.changed", At: database.Now()})
 	}
 	return c.JSON(fiber.Map{"presence": presence})
 }
@@ -1150,7 +1170,7 @@ func (s *Server) findTree(treeID string) (Tree, error) {
 func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	rows, err := s.db.Query(
 		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
-		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
 		 LEFT JOIN user_preferences pref ON pref.user_id = u.id
@@ -1166,9 +1186,11 @@ func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	members := []TreeMember{}
 	for rows.Next() {
 		var member TreeMember
-		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID); err != nil {
+		var presenceUpdatedAt sql.NullString
+		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt); err != nil {
 			return nil, err
 		}
+		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
 		members = append(members, member)
 	}
 	return members, rows.Err()
@@ -1176,16 +1198,20 @@ func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 
 func (s *Server) findTreeMember(treeID, userID string) (TreeMember, error) {
 	var member TreeMember
+	var presenceUpdatedAt sql.NullString
 	err := s.db.QueryRow(
 		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
-		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
 		 LEFT JOIN user_preferences pref ON pref.user_id = u.id
 		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ? AND tm.user_id = ? AND tm.state = 'joined'`,
 		treeID, userID,
-	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID)
+	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt)
+	if err == nil {
+		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
+	}
 	return member, err
 }
 
@@ -1201,16 +1227,20 @@ func (s *Server) addTreeMemberRecord(treeID, userID, role string) (TreeMember, e
 		return TreeMember{}, err
 	}
 	var member TreeMember
+	var presenceUpdatedAt sql.NullString
 	err = s.db.QueryRow(
 		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
-		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
 		 LEFT JOIN user_preferences pref ON pref.user_id = u.id
 		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ? AND tm.user_id = ?`,
 		treeID, userID,
-	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID)
+	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt)
+	if err == nil {
+		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
+	}
 	return member, err
 }
 
@@ -1283,10 +1313,12 @@ func (s *Server) treeJoinRequests(treeID string) ([]TreeJoinRequest, error) {
 
 func (s *Server) friendsForUser(userID string) ([]Friend, error) {
 	rows, err := s.db.Query(
-		`SELECT f.friend_user_id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), f.created_at
+		`SELECT f.friend_user_id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), f.created_at,
+		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM friendships f
 		 JOIN users u ON u.id = f.friend_user_id
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
+		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE f.user_id = ?
 		 ORDER BY u.username`,
 		userID,
@@ -1298,9 +1330,19 @@ func (s *Server) friendsForUser(userID string) ([]Friend, error) {
 	friends := []Friend{}
 	for rows.Next() {
 		var friend Friend
-		if err := rows.Scan(&friend.UserID, &friend.Username, &friend.DisplayName, &friend.CreatedAt); err != nil {
+		var presenceUpdatedAt sql.NullString
+		if err := rows.Scan(&friend.UserID, &friend.Username, &friend.DisplayName, &friend.CreatedAt, &friend.PresenceState, &friend.Reachability, &friend.ActiveNestID, &presenceUpdatedAt); err != nil {
 			return nil, err
 		}
+		effective := effectiveUserPresence(UserPresence{
+			State:        friend.PresenceState,
+			Reachability: friend.Reachability,
+			ActiveNestID: friend.ActiveNestID,
+			UpdatedAt:    presenceUpdatedAt.String,
+		}, time.Now().UTC())
+		friend.PresenceState = effective.State
+		friend.Reachability = effective.Reachability
+		friend.ActiveNestID = effective.ActiveNestID
 		friends = append(friends, friend)
 	}
 	return friends, rows.Err()
@@ -1390,6 +1432,14 @@ func (s *Server) relationshipToUser(userID, targetUserID string) (string, string
 }
 
 func (s *Server) presenceForUser(user User) (UserPresence, error) {
+	presence, err := s.storedPresenceForUser(user)
+	if err != nil {
+		return UserPresence{}, err
+	}
+	return effectiveUserPresence(presence, time.Now().UTC()), nil
+}
+
+func (s *Server) storedPresenceForUser(user User) (UserPresence, error) {
 	var presence UserPresence
 	err := s.db.QueryRow(
 		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), COALESCE(up.state, 'offline'), COALESCE(up.reachability, 'unavailable'), up.active_nest_id, COALESCE(up.updated_at, u.updated_at)
@@ -1400,6 +1450,35 @@ func (s *Server) presenceForUser(user User) (UserPresence, error) {
 		user.ID,
 	).Scan(&presence.UserID, &presence.Username, &presence.DisplayName, &presence.State, &presence.Reachability, &presence.ActiveNestID, &presence.UpdatedAt)
 	return presence, err
+}
+
+const presenceHeartbeatTTL = time.Minute
+
+func effectiveUserPresence(presence UserPresence, now time.Time) UserPresence {
+	if presence.State == "offline" {
+		presence.Reachability = "unavailable"
+		presence.ActiveNestID = nil
+		return presence
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, presence.UpdatedAt)
+	if err != nil || now.Sub(updatedAt) > presenceHeartbeatTTL {
+		presence.State = "offline"
+		presence.Reachability = "unavailable"
+		presence.ActiveNestID = nil
+	}
+	return presence
+}
+
+func applyEffectiveTreeMemberPresence(member *TreeMember, updatedAt string) {
+	effective := effectiveUserPresence(UserPresence{
+		State:        member.PresenceState,
+		Reachability: member.Reachability,
+		ActiveNestID: member.ActiveNestID,
+		UpdatedAt:    updatedAt,
+	}, time.Now().UTC())
+	member.PresenceState = effective.State
+	member.Reachability = effective.Reachability
+	member.ActiveNestID = effective.ActiveNestID
 }
 
 func (s *Server) upsertPresence(user User, state, reachability string, activeNestID *string) (UserPresence, error) {

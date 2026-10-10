@@ -1021,6 +1021,8 @@ function ActiveNestView({
             phase={media.phase}
             error={media.error}
             errorAction={media.lastError?.action}
+            audioNotice={media.audioNotice}
+            audioNoticeKind={media.audioNoticeKind}
             videoState={media.videoState}
             speakingActivity={media.speakingActivity}
             videoStreamEndpoint={media.videoStreamEndpoint}
@@ -1028,6 +1030,7 @@ function ActiveNestView({
             followScreenShares={data.preferences.followScreenShares}
             onFollowScreenSharesChange={(followScreenShares) => void data.updatePreferences({ followScreenShares })}
             onConnect={() => void connect()}
+            onRetryAudio={() => void media.retryIncomingAudio()}
             roomLabel={data.labels.nestSingular}
             className="flex-1"
           />

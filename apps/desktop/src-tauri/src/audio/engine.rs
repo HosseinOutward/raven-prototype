@@ -16,19 +16,20 @@
 //! The JS `livekit-client` keeps the camera/screenshare video participant; this engine
 //! never touches video. See the project plan for the full topology.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle as ThreadJoinHandle};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Device;
+use cpal::{Device, Stream};
 use futures_util::StreamExt;
 use livekit::options::TrackPublishOptions;
 use livekit::prelude::{
-    LocalAudioTrack, LocalTrack, RemoteTrack, Room, RoomEvent, RoomOptions, TrackKind, TrackSource,
+    LocalAudioTrack, LocalTrack, Participant, RemoteParticipant, RemoteTrack,
+    RemoteTrackPublication, Room, RoomEvent, RoomOptions, TrackKind, TrackPublication, TrackSource,
 };
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
@@ -43,8 +44,9 @@ use tokio::task::JoinHandle;
 use crate::audio::capture::list_output_devices;
 use crate::audio::capture::ProcessedSampleSink;
 use crate::audio::domain::{
-    AudioMeterUpdate, AudioOutputDevice, AudioSourceId, AudioSourceState, AudioSourceType, GainDb,
-    MeterState, ParticipantId, ProcessorChainState, PublishedTrackId, PublishedTrackMetadata,
+    AudioConnectionStatus, AudioMeterUpdate, AudioOutputDevice, AudioPlaybackStatus, AudioSourceId,
+    AudioSourceState, AudioSourceType, AudioSubscriptionStatus, GainDb, MeterState, ParticipantId,
+    ProcessorChainState, PublishedTrackId, PublishedTrackMetadata,
 };
 use crate::audio::processor::{
     meter_samples, AudioBuffer, AudioProcessorPrepareConfig, ProcessorChainRuntime,
@@ -96,6 +98,11 @@ const RECEIVER_CONTROL_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
 /// Upper bound on the per-block frame count fed to a receiver processor chain. LiveKit
 /// audio frames are ~10 ms, well under this.
 const RECEIVER_MAX_BLOCK: usize = 4096;
+const RECOVERY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+];
 
 /// Run a synchronous LiveKit operation with the audio engine's Tokio reactor installed.
 ///
@@ -122,6 +129,60 @@ mod runtime_context_tests {
         let task = within_runtime_context(&runtime, || tokio::spawn(async { 42 }));
 
         assert_eq!(runtime.block_on(task).expect("spawned task"), 42);
+    }
+}
+
+#[cfg(test)]
+mod subscription_policy_tests {
+    use super::*;
+
+    #[test]
+    fn late_join_snapshot_subscribes_existing_remote_raven_audio() {
+        assert!(desired_remote_audio_subscription(
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222#audio",
+            "raven-audio-33333333-3333-4333-8333-333333333333",
+            TrackKind::Audio,
+            true,
+        ));
+    }
+
+    #[test]
+    fn subscription_policy_excludes_self_sidecars_non_raven_tracks_and_deafen() {
+        let local = "11111111-1111-4111-8111-111111111111";
+        assert!(!desired_remote_audio_subscription(
+            local,
+            "11111111-1111-4111-8111-111111111111#video",
+            "raven-audio-33333333-3333-4333-8333-333333333333",
+            TrackKind::Audio,
+            true,
+        ));
+        assert!(!desired_remote_audio_subscription(
+            local,
+            "22222222-2222-4222-8222-222222222222#audio",
+            "browser-microphone",
+            TrackKind::Audio,
+            true,
+        ));
+        assert!(!desired_remote_audio_subscription(
+            local,
+            "22222222-2222-4222-8222-222222222222#audio",
+            "raven-audio-33333333-3333-4333-8333-333333333333",
+            TrackKind::Audio,
+            false,
+        ));
+    }
+
+    #[test]
+    fn recovery_backoff_is_bounded_and_ordered() {
+        assert_eq!(
+            RECOVERY_DELAYS,
+            [
+                Duration::from_millis(250),
+                Duration::from_secs(1),
+                Duration::from_secs(3),
+            ]
+        );
     }
 }
 
@@ -342,7 +403,7 @@ impl Default for RenderReference {
 }
 
 impl RenderReference {
-    fn push_stereo(&self, interleaved_stereo: &[f32], sample_rate: u32) {
+    pub(crate) fn push_stereo(&self, interleaved_stereo: &[f32], sample_rate: u32) {
         if interleaved_stereo.is_empty() {
             return;
         }
@@ -425,6 +486,8 @@ pub struct OutputMixer {
     worker: Mutex<Option<ThreadJoinHandle<()>>>,
 }
 
+type OpenOutputStream = (Stream, Arc<Mutex<Option<String>>>);
+
 impl std::fmt::Debug for OutputMixer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OutputMixer")
@@ -449,103 +512,105 @@ impl OutputMixer {
         self.sample_rate.load(Ordering::Relaxed)
     }
 
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
     pub fn render_reference(&self) -> Arc<RenderReference> {
         Arc::clone(&self.render_reference)
     }
 
-    fn start(self: &Arc<Self>) {
+    fn start(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        shared: &SharedAudioEngineState,
+    ) -> Result<(), String> {
         if self.running.swap(true, Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
-        let selected_device_id = self
-            .selected_device_id
-            .lock()
-            .ok()
-            .and_then(|id| id.clone());
-        let resolved = resolve_output_device(selected_device_id.as_deref());
-        let rate = resolved
-            .as_ref()
-            .ok()
-            .and_then(|(device, _)| device.default_output_config().ok())
-            .map(|config| config.sample_rate().0)
-            .unwrap_or(48_000);
-        self.sample_rate.store(rate, Ordering::SeqCst);
-
         let tracks = Arc::clone(&self.tracks);
         let render_reference = Arc::clone(&self.render_reference);
         let running = Arc::clone(&self.running);
+        let sample_rate = Arc::clone(&self.sample_rate);
         let selected_device_id = Arc::clone(&self.selected_device_id);
+        let app = app.clone();
+        let shared = Arc::clone(shared);
+        let (ready_sender, ready_receiver) = std_mpsc::sync_channel::<Result<(), String>>(1);
         let worker = thread::spawn(move || {
-            let device = resolved
-                .ok()
-                .map(|(device, selected)| {
-                    if let Ok(mut guard) = selected_device_id.lock() {
-                        *guard = selected;
+            let mut ready_sender = Some(ready_sender);
+            let mut recovering = false;
+            while running.load(Ordering::SeqCst) {
+                let mut last_error = String::new();
+                let mut opened: Option<(Stream, Arc<Mutex<Option<String>>>)> = None;
+                for attempt in 0..=RECOVERY_DELAYS.len() {
+                    if !running.load(Ordering::SeqCst) {
+                        break;
                     }
-                    device
-                })
-                .or_else(|| cpal::default_host().default_output_device());
-            let Some(device) = device else {
-                running.store(false, Ordering::SeqCst);
-                return;
-            };
-            let config = cpal::StreamConfig {
-                channels: PUBLISH_CHANNELS as u16,
-                sample_rate: cpal::SampleRate(rate),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            let cb_tracks = Arc::clone(&tracks);
-            let cb_render_reference = Arc::clone(&render_reference);
-            let stream = device.build_output_stream(
-                &config,
-                move |data: &mut [f32], _| {
-                    {
-                        let mut guard = match cb_tracks.lock() {
-                            Ok(guard) => guard,
-                            Err(_) => {
-                                data.fill(0.0);
-                                return;
-                            }
-                        };
-                        for frame in data.chunks_mut(PUBLISH_CHANNELS) {
-                            let mut left = 0.0_f32;
-                            let mut right = 0.0_f32;
-                            for queue in guard.values_mut() {
-                                if let Some(sample) = queue.pop_front() {
-                                    left += sample;
-                                }
-                                if let Some(sample) = queue.pop_front() {
-                                    right += sample;
-                                }
-                            }
-                            if let [l, r, ..] = frame {
-                                *l = left.clamp(-1.0, 1.0);
-                                *r = right.clamp(-1.0, 1.0);
+                    let selected = selected_device_id.lock().ok().and_then(|id| id.clone());
+                    match open_output_stream(
+                        selected.as_deref(),
+                        Arc::clone(&tracks),
+                        Arc::clone(&render_reference),
+                        Arc::clone(&sample_rate),
+                    ) {
+                        Ok(value) => {
+                            opened = Some(value);
+                            break;
+                        }
+                        Err(error) => {
+                            last_error = error;
+                            if let Some(delay) = RECOVERY_DELAYS.get(attempt) {
+                                thread::sleep(*delay);
                             }
                         }
-                    };
-                    cb_render_reference.push_stereo(data, rate);
-                },
-                |error| {
-                    eprintln!("[audio-engine] output stream error: {error}");
-                },
-                None,
-            );
-            let stream = match stream {
-                Ok(stream) => stream,
-                Err(error) => {
-                    eprintln!("[audio-engine] failed to open output stream: {error}");
-                    running.store(false, Ordering::SeqCst);
-                    return;
+                    }
                 }
-            };
-            let _ = stream.play();
-            while running.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(100));
+
+                let Some((stream, stream_error)) = opened else {
+                    running.store(false, Ordering::SeqCst);
+                    if let Some(sender) = ready_sender.take() {
+                        let _ = sender.send(Err(last_error));
+                    } else {
+                        update_playback_health(
+                            &app,
+                            &shared,
+                            AudioPlaybackStatus::Error,
+                            Some(last_error),
+                        );
+                    }
+                    break;
+                };
+
+                if let Some(sender) = ready_sender.take() {
+                    let _ = sender.send(Ok(()));
+                } else if recovering {
+                    update_playback_health(&app, &shared, AudioPlaybackStatus::Running, None);
+                }
+                recovering = false;
+
+                while running.load(Ordering::SeqCst) {
+                    let error = stream_error.lock().ok().and_then(|mut error| error.take());
+                    if let Some(error) = error {
+                        eprintln!("[audio-engine] output stream error: {error}");
+                        update_playback_health(
+                            &app,
+                            &shared,
+                            AudioPlaybackStatus::Recovering,
+                            Some(error),
+                        );
+                        recovering = true;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                drop(stream);
             }
-            // `stream` is dropped here, stopping playback.
         });
         *self.worker.lock().unwrap() = Some(worker);
+        match ready_receiver.recv() {
+            Ok(result) => result,
+            Err(error) => Err(format!("speaker worker stopped before startup: {error}")),
+        }
     }
 
     fn stop(&self) {
@@ -556,16 +621,22 @@ impl OutputMixer {
         self.tracks.lock().unwrap().clear();
     }
 
-    fn restart_if_running(self: &Arc<Self>) {
+    fn restart_if_running(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        shared: &SharedAudioEngineState,
+    ) -> Result<(), String> {
         if !self.running.load(Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
         self.stop();
-        self.start();
+        self.start(app, shared)
     }
 
     fn set_device(
         self: &Arc<Self>,
+        app: &AppHandle,
+        shared: &SharedAudioEngineState,
         device_id: Option<String>,
     ) -> Result<Option<AudioOutputDevice>, String> {
         let normalized = device_id.and_then(|value| {
@@ -584,7 +655,7 @@ impl OutputMixer {
                 .lock()
                 .map_err(|_| "Audio output state is unavailable.".to_string())? =
                 Some(selected.device_id.clone());
-            self.restart_if_running();
+            self.restart_if_running(app, shared)?;
             Ok(Some(selected))
         } else {
             resolve_output_device(None)?;
@@ -592,7 +663,7 @@ impl OutputMixer {
                 .selected_device_id
                 .lock()
                 .map_err(|_| "Audio output state is unavailable.".to_string())? = None;
-            self.restart_if_running();
+            self.restart_if_running(app, shared)?;
             Ok(default_output_device())
         }
     }
@@ -644,6 +715,97 @@ impl OutputMixer {
     }
 }
 
+fn open_output_stream(
+    selected_device_id: Option<&str>,
+    tracks: Arc<Mutex<HashMap<String, VecDeque<f32>>>>,
+    render_reference: Arc<RenderReference>,
+    sample_rate: Arc<AtomicU32>,
+) -> Result<OpenOutputStream, String> {
+    let (device, _) = resolve_output_device(selected_device_id)?;
+    let rate = device
+        .default_output_config()
+        .map_err(|error| format!("Speaker format is unavailable: {error}"))?
+        .sample_rate()
+        .0;
+    sample_rate.store(rate, Ordering::SeqCst);
+    let config = cpal::StreamConfig {
+        channels: PUBLISH_CHANNELS as u16,
+        sample_rate: cpal::SampleRate(rate),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let callback_tracks = Arc::clone(&tracks);
+    let callback_reference = Arc::clone(&render_reference);
+    let stream_error = Arc::new(Mutex::new(None));
+    let callback_error = Arc::clone(&stream_error);
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |data: &mut [f32], _| {
+                let mut guard = match callback_tracks.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        data.fill(0.0);
+                        return;
+                    }
+                };
+                for frame in data.chunks_mut(PUBLISH_CHANNELS) {
+                    let mut left = 0.0_f32;
+                    let mut right = 0.0_f32;
+                    for queue in guard.values_mut() {
+                        if let Some(sample) = queue.pop_front() {
+                            left += sample;
+                        }
+                        if let Some(sample) = queue.pop_front() {
+                            right += sample;
+                        }
+                    }
+                    if let [left_out, right_out, ..] = frame {
+                        *left_out = left.clamp(-1.0, 1.0);
+                        *right_out = right.clamp(-1.0, 1.0);
+                    }
+                }
+                drop(guard);
+                callback_reference.push_stereo(data, rate);
+            },
+            move |error| {
+                if let Ok(mut slot) = callback_error.lock() {
+                    *slot = Some(error.to_string());
+                }
+            },
+            None,
+        )
+        .map_err(|error| format!("Speaker could not be opened: {error}"))?;
+    stream
+        .play()
+        .map_err(|error| format!("Speaker playback could not start: {error}"))?;
+    Ok((stream, stream_error))
+}
+
+fn update_playback_health(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    status: AudioPlaybackStatus,
+    error: Option<String>,
+) {
+    let mut snapshot = None;
+    for _ in 0..20 {
+        if let Ok(mut guard) = shared.try_write() {
+            guard.mixer.session.playback_status = status.clone();
+            if guard.mixer.session.playback_status == AudioPlaybackStatus::Error {
+                guard.mixer.session.error = error.clone();
+            } else if guard.mixer.session.playback_status == AudioPlaybackStatus::Running {
+                guard.mixer.session.error = None;
+            }
+            snapshot = Some(guard.snapshot());
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    if let Some(snapshot) = snapshot {
+        let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
+    }
+}
+
 fn default_output_device() -> Option<AudioOutputDevice> {
     list_output_devices()
         .into_iter()
@@ -685,11 +847,25 @@ fn resolve_output_device(device_id: Option<&str>) -> Result<(Device, Option<Stri
 
 #[cfg(test)]
 mod output_device_tests {
-    use super::resolve_output_device;
+    use super::{open_output_stream, resolve_output_device, RenderReference};
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::AtomicU32;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn an_unknown_selected_speaker_is_rejected_instead_of_using_the_default() {
         let result = resolve_output_device(Some("raven-test-device-that-does-not-exist"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn output_startup_propagates_an_unopenable_selected_device() {
+        let result = open_output_stream(
+            Some("raven-test-device-that-does-not-exist"),
+            Arc::new(Mutex::new(HashMap::<String, VecDeque<f32>>::new())),
+            Arc::new(RenderReference::default()),
+            Arc::new(AtomicU32::new(48_000)),
+        );
         assert!(result.is_err());
     }
 }
@@ -754,6 +930,14 @@ struct RoomConnection {
     room: Arc<Room>,
     event_loop: JoinHandle<()>,
     readers: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    active: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Debug)]
+struct ReaderEnded {
+    participant_id: ParticipantId,
+    track_id: PublishedTrackId,
+    key: String,
 }
 
 /// The audio media engine. Stored inside `AudioEngineState` next to the capture manager.
@@ -825,7 +1009,7 @@ impl AudioEngine {
             self.disconnect();
         }
         self.published_meta.clear();
-        self.output.start();
+        self.output.start(app, shared)?;
 
         let mut options = RoomOptions::default();
         // Subscribe selectively in the event loop. The audio sidecar must never receive
@@ -835,7 +1019,10 @@ impl AudioEngine {
             let runtime = self.runtime();
             runtime
                 .block_on(Room::connect(url, token, options))
-                .map_err(|error| error.to_string())?
+                .map_err(|error| {
+                    self.output.stop();
+                    error.to_string()
+                })?
         };
         let room = Arc::new(room);
         let local_identity =
@@ -843,12 +1030,24 @@ impl AudioEngine {
 
         let readers: Arc<Mutex<HashMap<String, JoinHandle<()>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let event_loop = self.spawn_event_loop(app, shared, events, &readers, local_identity);
+        let retrying_subscriptions = Arc::new(Mutex::new(HashSet::new()));
+        let active = Arc::new(AtomicBool::new(true));
+        let event_loop = self.spawn_event_loop(
+            app,
+            shared,
+            Arc::clone(&room),
+            events,
+            &readers,
+            &retrying_subscriptions,
+            Arc::clone(&active),
+            local_identity,
+        );
 
         self.connection = Some(RoomConnection {
             room,
             event_loop,
             readers,
+            active,
         });
         Ok(())
     }
@@ -859,6 +1058,7 @@ impl AudioEngine {
             entry.drain.abort();
         }
         if let Some(connection) = self.connection.take() {
+            connection.active.store(false, Ordering::SeqCst);
             connection.event_loop.abort();
             for (_, reader) in connection.readers.lock().unwrap().drain() {
                 reader.abort();
@@ -877,9 +1077,15 @@ impl AudioEngine {
 
     pub fn set_output_device(
         &mut self,
+        app: &AppHandle,
+        shared: &SharedAudioEngineState,
         device_id: Option<String>,
     ) -> Result<Option<AudioOutputDevice>, String> {
-        self.output.set_device(device_id)
+        let selected = self.output.set_device(app, shared, device_id)?;
+        if self.connection.is_some() && !self.output.is_running() {
+            self.output.start(app, shared)?;
+        }
+        Ok(selected)
     }
 
     pub fn selected_output_device(&self) -> Option<AudioOutputDevice> {
@@ -898,11 +1104,13 @@ impl AudioEngine {
                     .to_string();
             let mut updates = Vec::new();
             for participant in connection.room.remote_participants().values() {
-                let is_self_sidecar =
-                    base_participant_identity(&participant.identity().0) == local_identity.as_str();
                 for publication in participant.track_publications().values() {
-                    let should_subscribe =
-                        enabled && !is_self_sidecar && publication.kind() == TrackKind::Audio;
+                    let should_subscribe = enabled
+                        && is_eligible_remote_publication(
+                            publication,
+                            participant,
+                            &local_identity,
+                        );
                     if publication.is_desired() != should_subscribe {
                         updates.push((publication.clone(), should_subscribe));
                     }
@@ -1096,34 +1304,137 @@ impl AudioEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_event_loop(
         &mut self,
         app: &AppHandle,
         shared: &SharedAudioEngineState,
+        room: Arc<Room>,
         mut events: mpsc::UnboundedReceiver<RoomEvent>,
         readers: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+        retrying_subscriptions: &Arc<Mutex<HashSet<String>>>,
+        active: Arc<AtomicBool>,
         local_identity: String,
     ) -> JoinHandle<()> {
         let app = app.clone();
         let shared = Arc::clone(shared);
         let readers = Arc::clone(readers);
+        let retrying_subscriptions = Arc::clone(retrying_subscriptions);
         let output = Arc::clone(&self.output);
         let receive_remote_audio = Arc::clone(&self.receive_remote_audio);
         let runtime_handle = self.runtime().handle().clone();
 
+        let (reader_ended_sender, mut reader_ended_receiver) = mpsc::unbounded_channel();
+
         self.runtime().spawn(async move {
-            while let Some(event) = events.recv().await {
+            loop {
+                let event = tokio::select! {
+                    event = events.recv() => event,
+                    ended = reader_ended_receiver.recv() => {
+                        if let Some(ended) = ended {
+                            handle_reader_ended(
+                                &app,
+                                &shared,
+                                &room,
+                                &readers,
+                                &retrying_subscriptions,
+                                &receive_remote_audio,
+                                &active,
+                                &local_identity,
+                                ended,
+                            );
+                            continue;
+                        }
+                        None
+                    }
+                };
+                let Some(event) = event else { break };
                 match event {
+                    RoomEvent::Connected {
+                        participants_with_tracks,
+                    } => {
+                        // LiveKit emits `Connected` while it is still completing its initial
+                        // participant/track dispatch. Calling `set_subscribed` inline can make
+                        // the subscription callback re-enter that dispatch, leaving callback
+                        // work on the stack while the initial room event is still active.
+                        //
+                        // Move the initial subscription pass onto the next runtime turn. Later
+                        // `TrackPublished` events remain idempotent, so racing a publication
+                        // with this snapshot is safe.
+                        let subscription_app = app.clone();
+                        let subscription_shared = Arc::clone(&shared);
+                        let subscription_room = Arc::clone(&room);
+                        let subscription_readers = Arc::clone(&readers);
+                        let subscription_receive_remote_audio = Arc::clone(&receive_remote_audio);
+                        let subscription_local_identity = local_identity.clone();
+                        runtime_handle.spawn(async move {
+                            tokio::task::yield_now().await;
+                            let receiving =
+                                subscription_receive_remote_audio.load(Ordering::SeqCst);
+                            for (participant, publications) in participants_with_tracks {
+                                for publication in publications {
+                                    reconcile_remote_publication(
+                                        &publication,
+                                        &participant,
+                                        &subscription_local_identity,
+                                        receiving,
+                                    );
+                                }
+                            }
+                            update_receive_health(
+                                &subscription_app,
+                                &subscription_shared,
+                                &subscription_room,
+                                &subscription_readers,
+                                &subscription_local_identity,
+                                receiving,
+                                None,
+                            );
+                        });
+                    }
                     RoomEvent::TrackPublished {
                         publication,
                         participant,
                     } => {
-                        let is_self_sidecar =
-                            base_participant_identity(&participant.identity().0) == local_identity;
-                        let should_subscribe = receive_remote_audio.load(Ordering::SeqCst)
-                            && !is_self_sidecar
-                            && publication.kind() == TrackKind::Audio;
-                        publication.set_subscribed(should_subscribe);
+                        reconcile_remote_publication(
+                            &publication,
+                            &participant,
+                            &local_identity,
+                            receive_remote_audio.load(Ordering::SeqCst),
+                        );
+                        update_receive_health(
+                            &app,
+                            &shared,
+                            &room,
+                            &readers,
+                            &local_identity,
+                            receive_remote_audio.load(Ordering::SeqCst),
+                            None,
+                        );
+                    }
+                    RoomEvent::TrackMuted {
+                        participant,
+                        publication,
+                    } => {
+                        update_remote_track_mute_state(
+                            &app,
+                            &shared,
+                            &participant,
+                            &publication,
+                            true,
+                        );
+                    }
+                    RoomEvent::TrackUnmuted {
+                        participant,
+                        publication,
+                    } => {
+                        update_remote_track_mute_state(
+                            &app,
+                            &shared,
+                            &participant,
+                            &publication,
+                            false,
+                        );
                     }
                     RoomEvent::TrackSubscribed {
                         track,
@@ -1204,6 +1515,7 @@ impl AudioEngine {
                         let reader_shared = Arc::clone(&shared);
                         let reader_app = app.clone();
                         let reader_key_str = key.clone();
+                        let reader_ended_sender = reader_ended_sender.clone();
                         let reader = runtime_handle.spawn(async move {
                             let mut meter_accum: Vec<f32> = Vec::new();
                             let mut last_meter = Instant::now();
@@ -1276,8 +1588,26 @@ impl AudioEngine {
                                 }
                             }
                             reader_output.remove_track(&reader_key_str);
+                            let _ = reader_ended_sender.send(ReaderEnded {
+                                participant_id,
+                                track_id,
+                                key: reader_key_str,
+                            });
                         });
-                        readers.lock().unwrap().insert(key, reader);
+                        if let Some(existing) = readers.lock().unwrap().insert(key.clone(), reader)
+                        {
+                            existing.abort();
+                        }
+                        retrying_subscriptions.lock().unwrap().remove(&key);
+                        update_receive_health(
+                            &app,
+                            &shared,
+                            &room,
+                            &readers,
+                            &local_identity,
+                            receive_remote_audio.load(Ordering::SeqCst),
+                            None,
+                        );
                     }
                     RoomEvent::TrackUnsubscribed {
                         publication,
@@ -1302,6 +1632,35 @@ impl AudioEngine {
                             }
                             output.remove_track(&key);
                             unregister_remote_track(&app, &shared, participant_id, track_id);
+                            update_receive_health(
+                                &app,
+                                &shared,
+                                &room,
+                                &readers,
+                                &local_identity,
+                                receive_remote_audio.load(Ordering::SeqCst),
+                                None,
+                            );
+                        }
+                    }
+                    RoomEvent::TrackSubscriptionFailed {
+                        participant,
+                        track_sid,
+                        error,
+                    } => {
+                        if let Some(publication) = participant.track_publications().get(&track_sid)
+                        {
+                            schedule_subscription_retry(
+                                &app,
+                                &shared,
+                                publication.clone(),
+                                participant,
+                                &retrying_subscriptions,
+                                Arc::clone(&receive_remote_audio),
+                                Arc::clone(&active),
+                                local_identity.clone(),
+                                format!("Incoming audio subscription failed: {error}"),
+                            );
                         }
                     }
                     RoomEvent::ParticipantDisconnected(participant) => {
@@ -1326,7 +1685,54 @@ impl AudioEngine {
                                 output.remove_track(&key);
                             }
                             unregister_participant(&app, &shared, participant_id);
+                            update_receive_health(
+                                &app,
+                                &shared,
+                                &room,
+                                &readers,
+                                &local_identity,
+                                receive_remote_audio.load(Ordering::SeqCst),
+                                None,
+                            );
                         }
+                    }
+                    RoomEvent::Reconnecting => {
+                        update_connection_health(
+                            &app,
+                            &shared,
+                            AudioConnectionStatus::Reconnecting,
+                            None,
+                        );
+                    }
+                    RoomEvent::Reconnected => {
+                        reconcile_room_subscriptions(
+                            &room,
+                            &local_identity,
+                            receive_remote_audio.load(Ordering::SeqCst),
+                        );
+                        update_connection_health(
+                            &app,
+                            &shared,
+                            AudioConnectionStatus::Connected,
+                            None,
+                        );
+                        update_receive_health(
+                            &app,
+                            &shared,
+                            &room,
+                            &readers,
+                            &local_identity,
+                            receive_remote_audio.load(Ordering::SeqCst),
+                            None,
+                        );
+                    }
+                    RoomEvent::Disconnected { reason } => {
+                        update_connection_health(
+                            &app,
+                            &shared,
+                            AudioConnectionStatus::Error,
+                            Some(format!("Realtime audio disconnected: {reason:?}")),
+                        );
                     }
                     RoomEvent::ParticipantMetadataChanged {
                         participant,
@@ -1355,6 +1761,284 @@ impl AudioEngine {
             }
         })
     }
+}
+
+fn is_eligible_remote_publication(
+    publication: &RemoteTrackPublication,
+    participant: &RemoteParticipant,
+    local_identity: &str,
+) -> bool {
+    desired_remote_audio_subscription(
+        local_identity,
+        &participant.identity().0,
+        &publication.name(),
+        publication.kind(),
+        true,
+    )
+}
+
+fn desired_remote_audio_subscription(
+    local_identity: &str,
+    remote_identity: &str,
+    track_name: &str,
+    kind: TrackKind,
+    receiving: bool,
+) -> bool {
+    receiving
+        && kind == TrackKind::Audio
+        && track_name.starts_with("raven-audio-")
+        && base_participant_identity(remote_identity) != local_identity
+}
+
+fn reconcile_remote_publication(
+    publication: &RemoteTrackPublication,
+    participant: &RemoteParticipant,
+    local_identity: &str,
+    receive_remote_audio: bool,
+) -> bool {
+    let should_subscribe = receive_remote_audio
+        && is_eligible_remote_publication(publication, participant, local_identity);
+    if publication.is_desired() != should_subscribe {
+        publication.set_subscribed(should_subscribe);
+    }
+    should_subscribe
+}
+
+fn reconcile_room_subscriptions(room: &Room, local_identity: &str, receive_remote_audio: bool) {
+    for participant in room.remote_participants().values() {
+        for publication in participant.track_publications().values() {
+            reconcile_remote_publication(
+                publication,
+                participant,
+                local_identity,
+                receive_remote_audio,
+            );
+        }
+    }
+}
+
+fn remote_publication_ids(
+    publication: &RemoteTrackPublication,
+    participant: &RemoteParticipant,
+) -> Option<(ParticipantId, PublishedTrackId, String)> {
+    let publication_name = publication.name();
+    let uuid = publication_name.strip_prefix("raven-audio-")?;
+    let base = base_participant_identity(&participant.identity().0).to_string();
+    Some((
+        ParticipantId::parse(&base)?,
+        PublishedTrackId::parse(uuid)?,
+        reader_key(&base, uuid),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_subscription_retry(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    publication: RemoteTrackPublication,
+    participant: RemoteParticipant,
+    retrying: &Arc<Mutex<HashSet<String>>>,
+    receive_remote_audio: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    local_identity: String,
+    initial_error: String,
+) {
+    let Some((participant_id, track_id, key)) = remote_publication_ids(&publication, &participant)
+    else {
+        return;
+    };
+    if !is_eligible_remote_publication(&publication, &participant, &local_identity) {
+        return;
+    }
+    if !retrying.lock().unwrap().insert(key.clone()) {
+        return;
+    }
+    update_remote_subscription_status(
+        app,
+        shared,
+        participant_id,
+        track_id,
+        AudioSubscriptionStatus::Recovering,
+        Some(initial_error),
+    );
+
+    let app = app.clone();
+    let shared = Arc::clone(shared);
+    let retrying = Arc::clone(retrying);
+    tokio::spawn(async move {
+        let mut last_error = "Incoming audio could not be restored.".to_string();
+        for delay in RECOVERY_DELAYS {
+            if !active.load(Ordering::SeqCst) || !receive_remote_audio.load(Ordering::SeqCst) {
+                retrying.lock().unwrap().remove(&key);
+                return;
+            }
+            if !retrying.lock().unwrap().contains(&key) {
+                return;
+            }
+            if !participant
+                .track_publications()
+                .contains_key(&publication.sid())
+            {
+                retrying.lock().unwrap().remove(&key);
+                return;
+            }
+            publication.set_subscribed(false);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            publication.set_subscribed(true);
+            tokio::time::sleep(delay).await;
+            if publication.is_subscribed() {
+                retrying.lock().unwrap().remove(&key);
+                return;
+            }
+            last_error = format!(
+                "Incoming audio from {} is still unavailable.",
+                participant.name()
+            );
+        }
+        retrying.lock().unwrap().remove(&key);
+        update_remote_subscription_status(
+            &app,
+            &shared,
+            participant_id,
+            track_id,
+            AudioSubscriptionStatus::Failed,
+            Some(last_error),
+        );
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_reader_ended(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    room: &Room,
+    readers: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    retrying: &Arc<Mutex<HashSet<String>>>,
+    receive_remote_audio: &Arc<AtomicBool>,
+    active: &Arc<AtomicBool>,
+    local_identity: &str,
+    ended: ReaderEnded,
+) {
+    readers.lock().unwrap().remove(&ended.key);
+    if !active.load(Ordering::SeqCst) || !receive_remote_audio.load(Ordering::SeqCst) {
+        return;
+    }
+    update_remote_subscription_status(
+        app,
+        shared,
+        ended.participant_id,
+        ended.track_id,
+        AudioSubscriptionStatus::Recovering,
+        Some("Incoming audio stopped and Raven is restoring it.".to_string()),
+    );
+    let track_name = format!("raven-audio-{}", ended.track_id);
+    for participant in room.remote_participants().values() {
+        if base_participant_identity(&participant.identity().0) == local_identity {
+            continue;
+        }
+        if let Some(publication) = participant
+            .track_publications()
+            .values()
+            .find(|publication| publication.name() == track_name)
+        {
+            schedule_subscription_retry(
+                app,
+                shared,
+                publication.clone(),
+                participant.clone(),
+                retrying,
+                Arc::clone(receive_remote_audio),
+                Arc::clone(active),
+                local_identity.to_string(),
+                "Incoming audio stream ended unexpectedly.".to_string(),
+            );
+            break;
+        }
+    }
+}
+
+fn update_remote_subscription_status(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    participant_id: ParticipantId,
+    track_id: PublishedTrackId,
+    status: AudioSubscriptionStatus,
+    error: Option<String>,
+) {
+    let snapshot = {
+        let Ok(mut guard) = shared.write() else {
+            return;
+        };
+        let failed = status == AudioSubscriptionStatus::Failed;
+        guard.set_remote_track_subscription_status(participant_id, track_id, status);
+        if failed {
+            guard.mixer.session.error = error;
+        }
+        guard.snapshot()
+    };
+    let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
+}
+
+fn update_connection_health(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    status: AudioConnectionStatus,
+    error: Option<String>,
+) {
+    let snapshot = {
+        let Ok(mut guard) = shared.write() else {
+            return;
+        };
+        guard.mixer.session.connection_status = status;
+        guard.mixer.session.error = error;
+        guard.snapshot()
+    };
+    let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
+}
+
+fn update_receive_health(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    room: &Room,
+    readers: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    local_identity: &str,
+    receive_remote_audio: bool,
+    error: Option<String>,
+) {
+    let eligible = if receive_remote_audio {
+        room.remote_participants()
+            .values()
+            .map(|participant| {
+                participant
+                    .track_publications()
+                    .values()
+                    .filter(|publication| {
+                        is_eligible_remote_publication(publication, participant, local_identity)
+                    })
+                    .count()
+            })
+            .sum()
+    } else {
+        0
+    };
+    let active = readers.lock().map(|readers| readers.len()).unwrap_or(0);
+    let snapshot = {
+        let Ok(mut guard) = shared.write() else {
+            return;
+        };
+        guard.mixer.session.eligible_remote_track_count = eligible;
+        guard.mixer.session.active_remote_track_count = active;
+        if let Some(error) = error {
+            guard.mixer.session.error = Some(error);
+        } else if eligible == active
+            && guard.mixer.session.connection_status == AudioConnectionStatus::Connected
+            && guard.mixer.session.playback_status == AudioPlaybackStatus::Running
+        {
+            guard.mixer.session.error = None;
+        }
+        guard.snapshot()
+    };
+    let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
 }
 
 fn apply_participant_metadata(
@@ -1500,4 +2184,36 @@ fn update_remote_meter(
         AUDIO_METER_CHANGED_EVENT,
         AudioMeterUpdate::remote(participant_id, track_id, meter),
     );
+}
+
+fn update_remote_track_mute_state(
+    app: &AppHandle,
+    shared: &SharedAudioEngineState,
+    participant: &Participant,
+    publication: &TrackPublication,
+    muted: bool,
+) {
+    if publication.kind() != TrackKind::Audio {
+        return;
+    }
+    let publication_name = publication.name();
+    let Some(uuid) = publication_name.strip_prefix("raven-audio-") else {
+        return;
+    };
+    let identity = participant.identity();
+    let base = base_participant_identity(&identity.0);
+    let (Some(participant_id), Some(track_id)) =
+        (ParticipantId::parse(base), PublishedTrackId::parse(uuid))
+    else {
+        return;
+    };
+
+    let snapshot = {
+        let Ok(mut guard) = shared.write() else {
+            return;
+        };
+        guard.set_remote_track_muted(participant_id, track_id, muted);
+        guard.snapshot()
+    };
+    let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, HomeState, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
-import type { PendingItem, Presence, RavenShellData, ShellPerson, UILabelCopy } from "./state";
+import type { PendingItem, RavenShellData, SelectablePresence, ShellPerson, UILabelCopy } from "./state";
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
 
 function messageFromError(error: unknown, fallback = "Request failed") {
@@ -99,6 +99,11 @@ export function useRavenShellData(): RavenShellData {
     return operation;
   }, [hydrateNests, hydrateTrees, refreshServerProperties]);
 
+  const refreshFriends = useCallback(async () => {
+    const nextFriends = await api.friends();
+    setHome((current) => current ? { ...current, ...nextFriends } : current);
+  }, []);
+
   const refreshNestUpdates = useCallback(async (updates: NestLiveUpdate[]) => {
     const nestIds = [...new Set(updates.map((update) => update.nestId).filter((id): id is string => Boolean(id)))];
     if (nestIds.length === 0) return;
@@ -194,6 +199,44 @@ export function useRavenShellData(): RavenShellData {
       mounted = false;
     };
   }, [hydrateNests, hydrateTrees, refreshServerProperties]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    let requestController: AbortController | null = null;
+
+    const heartbeat = async () => {
+      requestController = new AbortController();
+      const controller = requestController;
+      const timeout = window.setTimeout(() => controller.abort(), 8_000);
+      try {
+        const [presenceResult, nextFriends] = await Promise.all([
+          api.presenceHeartbeat(controller.signal, false),
+          api.friends(),
+        ]);
+        if (cancelled) return;
+        setHome((current) => current ? {
+          ...current,
+          presence: presenceResult.presence,
+          ...nextFriends,
+        } : current);
+      } catch {
+        // A later heartbeat or the live event stream will reconcile presence.
+      } finally {
+        window.clearTimeout(timeout);
+        if (requestController === controller) requestController = null;
+        if (!cancelled) timer = window.setTimeout(() => void heartbeat(), 15_000);
+      }
+    };
+
+    void heartbeat();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      requestController?.abort();
+    };
+  }, [authenticated, refreshFriends]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -459,7 +502,7 @@ export function useRavenShellData(): RavenShellData {
   const cancelFriendRequest = useCallback((requestId: string) => runMutation(() => api.cancelFriendRequest(requestId).then(() => undefined)), [runMutation]);
   const removeFriend = useCallback((userId: string) => runMutation(() => api.removeFriend(userId)), [runMutation]);
   const setPresence = useCallback(
-    (presence: Presence) =>
+    (presence: SelectablePresence) =>
       runMutation(async () => {
         const activeNestId = home?.presence.activeNestId ?? null;
         switch (presence) {
@@ -546,14 +589,14 @@ export function useRavenShellData(): RavenShellData {
   };
 }
 
-function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDetails>): ShellPerson[] {
+export function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDetails>): ShellPerson[] {
   if (!home) return [];
   const people = new Map<string, ShellPerson>();
 
   const ensure = (userId: string, name: string): ShellPerson => {
     const current = people.get(userId);
     if (current) return current;
-    const next: ShellPerson = { id: userId, name, presence: "around", treeIds: [], activeNestIds: [], relationship: "context" };
+    const next: ShellPerson = { id: userId, name, presence: "offline", treeIds: [], activeNestIds: [], relationship: "context" };
     people.set(userId, next);
     return next;
   };
@@ -561,13 +604,17 @@ function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDe
   for (const friend of home.friends) {
     const person = ensure(friend.userId, displayNameFor(friend));
     person.relationship = "friend";
+    person.presence = presenceFromApi({ state: friend.presenceState, reachability: friend.reachability });
+    if (friend.activeNestId && !person.activeNestIds.includes(friend.activeNestId)) person.activeNestIds.push(friend.activeNestId);
   }
 
   for (const details of Object.values(treeDetails)) {
     for (const member of details.members) {
       if (member.userId === home.user.id) continue;
       const person = ensure(member.userId, displayNameFor(member));
-      person.presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
+      if (person.relationship !== "friend") {
+        person.presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
+      }
       if (!person.treeIds.includes(details.tree.id)) person.treeIds.push(details.tree.id);
     }
   }
@@ -576,7 +623,7 @@ function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDe
     for (const participant of nest.currentParticipants) {
       if (participant.userId === home.user.id) continue;
       const person = ensure(participant.userId, displayNameFor(participant));
-      person.presence = "open";
+      if (person.relationship !== "friend" && person.presence === "offline") person.presence = "open";
       if (!person.activeNestIds.includes(nest.id)) person.activeNestIds.push(nest.id);
     }
   }
@@ -584,7 +631,7 @@ function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDe
   for (const knock of home.pendingKnocks) {
     if (knock.fromUserId === home.user.id) continue;
     const person = ensure(knock.fromUserId, knock.fromDisplayName || knock.fromUsername);
-    person.presence = "open";
+    if (person.relationship !== "friend" && person.presence === "offline") person.presence = "open";
   }
 
   for (const request of [...home.incomingFriendRequests, ...home.outgoingFriendRequests]) {
@@ -595,9 +642,15 @@ function derivePeople(home: HomeState | null, treeDetails: Record<string, TreeDe
 
   return [...people.values()].sort((a, b) => {
     if (a.relationship !== b.relationship) return a.relationship === "friend" ? -1 : 1;
+    const presenceDelta = presenceSortRank(a.presence) - presenceSortRank(b.presence);
+    if (presenceDelta) return presenceDelta;
     const activeDelta = b.activeNestIds.length - a.activeNestIds.length;
     return activeDelta || a.name.localeCompare(b.name);
   });
+}
+
+export function presenceSortRank(presence: ShellPerson["presence"]) {
+  return { open: 0, around: 1, focused: 2, dnd: 3, invisible: 4, offline: 5 }[presence];
 }
 
 function derivePending(home: HomeState | null, nestDetails: Record<string, NestDetails>, labels: UILabelCopy): PendingItem[] {

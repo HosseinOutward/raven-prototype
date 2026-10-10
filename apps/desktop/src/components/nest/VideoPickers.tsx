@@ -138,7 +138,7 @@ export function CameraPickerDialog({
         customDraft={customDraft}
         onProfileIdChange={setProfileId}
         onCustomDraftChange={setCustomDraft}
-        summary={`Max ${profile.width}x${profile.height} @ ${Math.round(profile.fps)} FPS`}
+        summary={`Target ${profile.width}x${profile.height} @ ${Math.round(profile.fps)} FPS`}
       />
 
       <div className="mt-3 flex justify-between">
@@ -327,8 +327,8 @@ export function ScreenSharePickerDialog({
         onCustomDraftChange={setCustomDraft}
         summary={
           output
-            ? `Output ${output.width}x${output.height} @ ${Math.round(profile.fps)} FPS`
-            : `Max ${profile.width}x${profile.height} @ ${Math.round(profile.fps)} FPS`
+            ? `Target ${output.width}x${output.height} @ ${Math.round(profile.fps)} FPS`
+            : `Target ${profile.width}x${profile.height} @ ${Math.round(profile.fps)} FPS`
         }
       />
 

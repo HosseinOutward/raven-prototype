@@ -637,6 +637,75 @@ func TestFriendRequestFlowAndMinimalUserSearch(t *testing.T) {
 	}
 }
 
+func TestFriendsExposePresenceAndHeartbeatRestoresSelectedStatus(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	bob, bobToken := createTestUser(t, server, "bob")
+
+	requestResponse := postJSON(t, server, aliceToken, "/v1/friend-requests", map[string]string{"toUserId": bob.ID}, http.StatusCreated)
+	var created struct {
+		FriendRequest FriendRequest `json:"friendRequest"`
+	}
+	if err := json.Unmarshal(requestResponse, &created); err != nil {
+		t.Fatal(err)
+	}
+	postJSON(t, server, bobToken, "/v1/friend-requests/"+created.FriendRequest.ID+"/accept", nil, http.StatusOK)
+
+	postJSON(t, server, bobToken, "/v1/presence", map[string]string{"state": "dnd", "reachability": "unavailable"}, http.StatusOK)
+	friendsResponse := getJSON(t, server, aliceToken, "/v1/friends", http.StatusOK)
+	var friends struct {
+		Friends []Friend `json:"friends"`
+	}
+	if err := json.Unmarshal(friendsResponse, &friends); err != nil {
+		t.Fatal(err)
+	}
+	if len(friends.Friends) != 1 || friends.Friends[0].PresenceState != "dnd" || friends.Friends[0].Reachability != "unavailable" {
+		t.Fatalf("DND friend presence = %+v", friends.Friends)
+	}
+
+	postJSON(t, server, bobToken, "/v1/presence", map[string]string{"state": "invisible", "reachability": "unavailable"}, http.StatusOK)
+	if _, err := server.db.Exec(`UPDATE user_presence SET updated_at = '2000-01-01T00:00:00Z' WHERE user_id = ?`, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	friendsResponse = getJSON(t, server, aliceToken, "/v1/friends", http.StatusOK)
+	if err := json.Unmarshal(friendsResponse, &friends); err != nil {
+		t.Fatal(err)
+	}
+	if friends.Friends[0].PresenceState != "offline" || friends.Friends[0].Reachability != "unavailable" || friends.Friends[0].ActiveNestID != nil {
+		t.Fatalf("stale friend should be offline, got %+v", friends.Friends[0])
+	}
+
+	postJSON(t, server, bobToken, "/v1/presence/heartbeat", nil, http.StatusOK)
+	friendsResponse = getJSON(t, server, aliceToken, "/v1/friends", http.StatusOK)
+	if err := json.Unmarshal(friendsResponse, &friends); err != nil {
+		t.Fatal(err)
+	}
+	if friends.Friends[0].PresenceState != "invisible" || friends.Friends[0].Reachability != "unavailable" {
+		t.Fatalf("heartbeat should restore selected invisible status, got %+v", friends.Friends[0])
+	}
+}
+
+func TestAppHeartbeatClearsStaleNestLocation(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	nestID := createTestNest(t, server, aliceToken, "/v1/nests/temporary", "Temp")
+	postJSON(t, server, aliceToken, "/v1/presence", map[string]string{
+		"state": "in_nest", "reachability": "focused", "activeNestId": nestID,
+	}, http.StatusOK)
+	if _, err := server.db.Exec(`UPDATE user_presence SET updated_at = '2000-01-01T00:00:00Z' WHERE user_id = ?`, aliceUserID(t, server)); err != nil {
+		t.Fatal(err)
+	}
+
+	heartbeatResponse := postJSON(t, server, aliceToken, "/v1/presence/heartbeat", map[string]bool{"nestHeartbeat": false}, http.StatusOK)
+	var payload struct {
+		Presence UserPresence `json:"presence"`
+	}
+	if err := json.Unmarshal(heartbeatResponse, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Presence.State != "available" || payload.Presence.Reachability != "focused" || payload.Presence.ActiveNestID != nil {
+		t.Fatalf("app heartbeat should clear a stale Nest location, got %+v", payload.Presence)
+	}
+}
+
 func TestFriendRequestDeclineAndCancel(t *testing.T) {
 	server, aliceToken := newTestServer(t)
 	bob, bobToken := createTestUser(t, server, "bob")

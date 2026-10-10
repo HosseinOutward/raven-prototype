@@ -36,6 +36,7 @@ import {
   isConfirmedVideoSourceActive,
   microphonesToMuteBeforeJoin,
 } from "./mediaState";
+import { normalizeSelectedDeviceId, selectedDeviceIdForSource } from "@/lib/mediaDevicePreference";
 import { presenceForActiveNest } from "./state";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
@@ -123,6 +124,8 @@ export interface RavenMediaAdapterState {
   outputLabel: string;
   visibilityLabel: string;
   deviceReadiness: string;
+  audioNotice: string;
+  audioNoticeKind: "recovering" | "error" | null;
   audioSupported: boolean;
   cameraSupported: boolean;
   screenShareSupported: boolean;
@@ -152,6 +155,7 @@ export interface RavenMediaAdapterState {
   setSelfMediaPreviewMode: (mode: SelfMediaPreviewMode) => Promise<void>;
   setVideoPresentationProfile: (profile: VideoPresentationProfile) => Promise<void>;
   setLocalPreviewSurfaceVisible: (visible: boolean) => Promise<void>;
+  retryIncomingAudio: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -186,6 +190,7 @@ export function useRavenMediaAdapter(
   const [preferredCameraId, setPreferredCameraId] = useState<string | null>(null);
   const [preferredCameraProfile, setPreferredCameraProfile] = useState<VideoQualityProfile>(DEFAULT_VIDEO_PROFILE);
   const initialSettings = useMemo(readMediaSettings, []);
+  const [selectedMicPreference, setSelectedMicPreference] = useState<string | null>(initialSettings.selectedMic ?? null);
   const [selfMediaPreviewMode, setSelfMediaPreviewModeState] = useState<SelfMediaPreviewMode>(initialSettings.selfMediaPreviewMode ?? "local");
   const [videoPresentationProfile, setVideoPresentationProfileState] = useState<VideoPresentationProfile>(initialSettings.videoPresentationProfile ?? "balanced");
   const [videoStreamEndpoint, setVideoStreamEndpoint] = useState<VideoStreamEndpoint | null>(null);
@@ -580,7 +585,7 @@ export function useRavenMediaAdapter(
     [applyVideoJoinDefaults, cleanupMediaOnly, deafenMode, deafened, leaveMediaSession, muteLocalMicrophones, nestLabel, onStateChanged, refreshMediaDevices, refreshNativeState, rtcServerUrl, setSafeError],
   );
 
-  const ensureDefaultMic = useCallback(async (): Promise<AudioSourceState> => {
+  const ensureDefaultMic = useCallback(async (restorePreference = true): Promise<AudioSourceState> => {
     let state = await audioCommands.getState();
     let mic = state.localSources.find((source) => source.sourceType === "microphone");
     if (!mic) {
@@ -589,9 +594,18 @@ export function useRavenMediaAdapter(
       mic = mics[mics.length - 1];
     }
     if (!mic) throw new Error("No microphone source is available.");
+
+    // A microphone source is created lazily, so apply the persisted native device
+    // before the first publish/processing operation. Existing sources retain their
+    // active choice (including an explicit Default selection).
+    if (restorePreference && !mic.captureDeviceId && selectedMicPreference) {
+      const micId = mic.id;
+      state = await audioCommands.setLocalSourceCaptureDevice(micId, selectedMicPreference);
+      mic = state.localSources.find((source) => source.id === micId) ?? mic;
+    }
     setAudioState(state);
     return mic;
-  }, []);
+  }, [selectedMicPreference]);
 
   const publishMic = useCallback(async () => {
     setError("");
@@ -600,7 +614,8 @@ export function useRavenMediaAdapter(
       return;
     }
     try {
-      const sources = micSources.length ? micSources : [await ensureDefaultMic()];
+      const primaryMic = await ensureDefaultMic();
+      const sources = micSources.length ? [primaryMic, ...micSources.slice(1)] : [primaryMic];
       let state: AudioMixerState | null = null;
       for (const source of sources) {
         if (source.channelStrip.mute.muted) state = await audioCommands.setLocalChannelMute(source.id, false);
@@ -638,12 +653,17 @@ export function useRavenMediaAdapter(
   const setMicDevice = useCallback(async (deviceId: string | null) => {
     setError("");
     try {
-      const mic = await ensureDefaultMic();
-      setAudioState(await audioCommands.setLocalSourceCaptureDevice(mic.id, deviceId));
+      // An explicit picker action must be able to replace a missing saved device;
+      // do not try to restore the stale preference first.
+      const mic = await ensureDefaultMic(false);
+      const state = await audioCommands.setLocalSourceCaptureDevice(mic.id, deviceId);
+      setAudioState(state);
+      setSelectedMicPreference(deviceId);
+      saveMediaSettings({ selectedMic: deviceId });
     } catch (err) {
       setSafeError(messageFromError(err, "Microphone input could not be changed"), "capture_failure", "Pick another input device or check OS microphone access.");
     }
-  }, [ensureDefaultMic, setSafeError]);
+  }, [ensureDefaultMic, saveMediaSettings, setSafeError]);
 
   const startCamera = useCallback(async (camera: CameraDevice, profile: VideoQualityProfile = DEFAULT_VIDEO_PROFILE) => {
     setError("");
@@ -940,6 +960,37 @@ export function useRavenMediaAdapter(
     }
   }, [ensureDefaultMic, setSafeError]);
 
+  const retryIncomingAudio = useCallback(async () => {
+    setError("");
+    try {
+      const selected = await audioCommands.setOutputDevice(selectedOutputPreference);
+      setSelectedOutputPreference(selected?.deviceId ?? null);
+      await audioCommands.setRemoteAudioReceiving(false);
+      setAudioState(await audioCommands.setRemoteAudioReceiving(true));
+    } catch (err) {
+      setNonFatalError(
+        messageFromError(err, "Incoming audio could not be restored"),
+        "rtc_failure",
+        "Check the selected speaker, then retry or leave and rejoin media.",
+      );
+    }
+  }, [selectedOutputPreference, setNonFatalError]);
+
+  const audioNotice = audioState?.session.error
+    ?? (audioState?.session.connectionStatus === "reconnecting"
+      ? "Restoring the realtime audio connection…"
+      : audioState?.session.playbackStatus === "recovering"
+        || (audioState?.session.eligibleRemoteTrackCount ?? 0) > (audioState?.session.activeRemoteTrackCount ?? 0)
+        ? "Restoring incoming audio…"
+        : "");
+  const audioNoticeKind: RavenMediaAdapterState["audioNoticeKind"] = audioNotice
+    ? audioState?.session.connectionStatus === "error"
+      || audioState?.session.playbackStatus === "error"
+      || Boolean(audioState?.session.error)
+      ? "error"
+      : "recovering"
+    : null;
+
   const selectedOutput = useMemo(
     () => outputDevices.find((device) => device.deviceId === selectedOutputPreference)?.deviceId
       ?? outputDevices.find((device) => device.isDefault)?.deviceId
@@ -970,7 +1021,7 @@ export function useRavenMediaAdapter(
     screenSharing,
     windowSharing,
     appAudioCapturing,
-    selectedMic: micSources[0]?.captureDeviceId ?? null,
+    selectedMic: selectedDeviceIdForSource(micSources[0]?.captureDeviceId, selectedMicPreference),
     selectedCamera: cameraSource?.targetId ?? preferredCameraId,
     selectedOutput,
     activeCameraProfile: cameraSource?.profile ?? null,
@@ -993,6 +1044,8 @@ export function useRavenMediaAdapter(
     outputLabel: deafened ? "Deafened" : "Sound on",
     visibilityLabel: activeNestId ? `Visible in ${nestLabel}` : `Not in a ${nestLabel}`,
     deviceReadiness: readinessLabel(audioCapabilities, videoCapabilities, phase, nestLabel),
+    audioNotice,
+    audioNoticeKind,
     audioSupported: audioCapabilities?.supportsMicrophone ?? false,
     cameraSupported: videoCapabilities?.supportsCamera ?? false,
     screenShareSupported: Boolean(videoCapabilities?.supportsDisplayCapture || videoCapabilities?.supportsWindowCapture),
@@ -1022,6 +1075,7 @@ export function useRavenMediaAdapter(
     setSelfMediaPreviewMode,
     setVideoPresentationProfile,
     setLocalPreviewSurfaceVisible,
+    retryIncomingAudio,
     clearError,
   };
 }
@@ -1070,6 +1124,7 @@ function classifyMediaError(error: unknown, fallback = "Media action failed"): M
 }
 
 type MediaSettings = {
+  selectedMic?: string | null;
   selectedOutput?: string | null;
   deafenMode?: DeafenMode;
   networkActivity?: NetworkActivitySettings;
@@ -1089,6 +1144,7 @@ function readMediaSettings(): MediaSettings {
     if (!raw) return {};
     const parsed = JSON.parse(raw) as MediaSettings;
     return {
+      selectedMic: normalizeSelectedDeviceId(parsed.selectedMic),
       selectedOutput: typeof parsed.selectedOutput === "string" ? parsed.selectedOutput : null,
       deafenMode: isDeafenMode(parsed.deafenMode) ? parsed.deafenMode : "instant",
       networkActivity: normalizeNetworkActivitySettings(parsed.networkActivity),

@@ -839,6 +839,7 @@ pub struct RemoteAudioTrackState {
     pub receiver_channel_strip: RemoteTrackChannelStripState,
     pub preference: RemoteTrackPreference,
     pub subscribed: bool,
+    pub subscription_status: AudioSubscriptionStatus,
 }
 
 impl RemoteAudioTrackState {
@@ -849,6 +850,7 @@ impl RemoteAudioTrackState {
             receiver_channel_strip: RemoteChannelStripState::default(),
             preference,
             subscribed: true,
+            subscription_status: AudioSubscriptionStatus::Subscribed,
         }
     }
 }
@@ -867,6 +869,48 @@ pub struct RemoteParticipantAudioState {
     pub tracks: Vec<RemoteAudioTrackState>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AudioConnectionStatus {
+    #[default]
+    Disconnected,
+    Connecting,
+    Connected,
+    Reconnecting,
+    Error,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AudioPlaybackStatus {
+    #[default]
+    Stopped,
+    Starting,
+    Running,
+    Recovering,
+    Error,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AudioSubscriptionStatus {
+    #[default]
+    Pending,
+    Subscribed,
+    Recovering,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AudioSessionHealth {
+    pub connection_status: AudioConnectionStatus,
+    pub playback_status: AudioPlaybackStatus,
+    pub eligible_remote_track_count: usize,
+    pub active_remote_track_count: usize,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AudioMixerState {
@@ -875,6 +919,7 @@ pub struct AudioMixerState {
     pub remote_tracks: Vec<RemoteAudioTrackState>,
     pub remote_participants: Vec<RemoteParticipantAudioState>,
     pub track_events: Vec<TrackLifecycleEvent>,
+    pub session: AudioSessionHealth,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -975,6 +1020,7 @@ mod tests {
             remote_tracks: vec![RemoteAudioTrackState::new(published_track)],
             remote_participants: Vec::new(),
             track_events: Vec::new(),
+            session: AudioSessionHealth::default(),
         };
 
         let serialized = serde_json::to_string(&state).expect("serialize mixer state");

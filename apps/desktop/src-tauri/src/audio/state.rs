@@ -14,12 +14,13 @@ use crate::audio::capture::{
     list_input_devices, list_output_devices, system_audio_runtime_readiness, CaptureRuntimeManager,
 };
 use crate::audio::domain::{
-    AudioInputDevice, AudioMixerState, AudioOutputDevice, AudioPreset, AudioPresetDefinition,
-    AudioPresetTarget, AudioProcessorId, AudioProcessorKind, AudioProcessorParameters,
-    AudioProcessorState, AudioSourceId, AudioSourceState, AudioSourceType, ChannelHealthState,
-    GainDb, MeterState, ParticipantId, ProcessorChainState, PublishedTrackId,
-    PublishedTrackMetadata, PublishedTrackMetadataPatch, RemoteAudioTrackState,
-    RemoteParticipantAudioState, TrackLifecycleEvent, WebRtcAudioProcessingSettings,
+    AudioConnectionStatus, AudioInputDevice, AudioMixerState, AudioOutputDevice,
+    AudioPlaybackStatus, AudioPreset, AudioPresetDefinition, AudioPresetTarget, AudioProcessorId,
+    AudioProcessorKind, AudioProcessorParameters, AudioProcessorState, AudioSourceId,
+    AudioSourceState, AudioSourceType, AudioSubscriptionStatus, ChannelHealthState, GainDb,
+    MeterState, ParticipantId, ProcessorChainState, PublishedTrackId, PublishedTrackMetadata,
+    PublishedTrackMetadataPatch, RemoteAudioTrackState, RemoteParticipantAudioState,
+    TrackLifecycleEvent, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{measure_audio_network_totals, AudioEngine, AudioNetworkTotals};
 use crate::audio::processor::{
@@ -673,6 +674,7 @@ impl AudioEngineState {
             }) {
             existing.track = metadata;
             existing.subscribed = true;
+            existing.subscription_status = AudioSubscriptionStatus::Subscribed;
             existing.clone()
         } else {
             let remote_track = RemoteAudioTrackState::new(metadata);
@@ -702,6 +704,38 @@ impl AudioEngineState {
             .retain(|remote| remote.track.participant_id != remote_participant_id);
         self.remote_owner_names.remove(&remote_participant_id);
         self.refresh_remote_participants();
+    }
+
+    pub fn set_remote_track_subscription_status(
+        &mut self,
+        remote_participant_id: ParticipantId,
+        remote_track_id: PublishedTrackId,
+        status: AudioSubscriptionStatus,
+    ) {
+        if let Some(remote) = self.mixer.remote_tracks.iter_mut().find(|remote| {
+            remote.track.participant_id == remote_participant_id
+                && remote.track.track_id == remote_track_id
+        }) {
+            remote.subscribed = status == AudioSubscriptionStatus::Subscribed;
+            remote.subscription_status = status;
+        }
+        self.refresh_remote_participants();
+    }
+
+    /// Keep the receiver's view of a remote publication in sync with LiveKit's
+    /// mute lifecycle. This is separate from the receiver-local mute control:
+    /// the former describes whether the owner is sending audio, while the latter
+    /// describes whether this peer chooses to hear it.
+    pub fn set_remote_track_muted(
+        &mut self,
+        remote_participant_id: ParticipantId,
+        remote_track_id: PublishedTrackId,
+        muted: bool,
+    ) {
+        if let Ok(remote) = self.remote_track_mut(remote_participant_id, remote_track_id) {
+            remote.track.muted = muted;
+            self.refresh_remote_participants();
+        }
     }
 
     /// Record a remote participant's LiveKit username so the Incoming Tracks group shows
@@ -1220,6 +1254,7 @@ impl Default for AudioEngineState {
                 remote_tracks: Vec::new(),
                 remote_participants: Vec::new(),
                 track_events: Vec::new(),
+                session: Default::default(),
             },
             publisher: PlaceholderMediaTrackPublisher::default(),
             user_presets: Vec::new(),
@@ -1389,14 +1424,27 @@ pub fn audio_list_output_devices() -> Result<Vec<AudioOutputDevice>, AudioStateE
 
 #[tauri::command]
 pub fn audio_set_output_device(
+    app: AppHandle,
     state: State<'_, SharedAudioEngineState>,
     device_id: Option<String>,
 ) -> Result<Option<AudioOutputDevice>, AudioStateError> {
-    let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
-    guard
-        .engine
-        .set_output_device(device_id)
-        .map_err(|message| AudioStateError::MediaPublisherFailed { message })
+    let shared = Arc::clone(state.inner());
+    let (selected, snapshot) = {
+        let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
+        let selected = guard
+            .engine
+            .set_output_device(&app, &shared, device_id)
+            .map_err(|message| AudioStateError::MediaPublisherFailed { message })?;
+        guard.mixer.session.playback_status = if guard.engine.is_connected() {
+            AudioPlaybackStatus::Running
+        } else {
+            AudioPlaybackStatus::Stopped
+        };
+        guard.mixer.session.error = None;
+        (selected, guard.snapshot())
+    };
+    emit_audio_state_changed(&app, &snapshot)?;
+    Ok(selected)
 }
 
 #[tauri::command]
@@ -1427,6 +1475,10 @@ pub fn audio_set_remote_audio_receiving(
 ) -> Result<AudioMixerState, AudioStateError> {
     mutate_audio_state(&app, &state, |engine| {
         engine.engine.set_remote_audio_receiving(enabled);
+        if !enabled {
+            engine.mixer.session.eligible_remote_track_count = 0;
+            engine.mixer.session.active_remote_track_count = 0;
+        }
         Ok(())
     })
 }
@@ -1856,10 +1908,20 @@ pub fn audio_connect_room(
     let shared = Arc::clone(state.inner());
     let (updated, media_error) = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
-        guard
-            .engine
-            .connect(&app, &shared, &url, &token)
-            .map_err(|message| AudioStateError::MediaPublisherFailed { message })?;
+        guard.mixer.session.connection_status = AudioConnectionStatus::Connecting;
+        guard.mixer.session.playback_status = AudioPlaybackStatus::Starting;
+        guard.mixer.session.error = None;
+        if let Err(message) = guard.engine.connect(&app, &shared, &url, &token) {
+            guard.mixer.session.connection_status = AudioConnectionStatus::Error;
+            guard.mixer.session.playback_status = AudioPlaybackStatus::Error;
+            guard.mixer.session.error = Some(message.clone());
+            let snapshot = guard.snapshot();
+            drop(guard);
+            emit_audio_state_changed(&app, &snapshot)?;
+            return Err(AudioStateError::MediaPublisherFailed { message });
+        }
+        guard.mixer.session.connection_status = AudioConnectionStatus::Connected;
+        guard.mixer.session.playback_status = AudioPlaybackStatus::Running;
         let AudioEngineState {
             mixer,
             capture,
@@ -1901,6 +1963,9 @@ pub fn audio_disconnect_room(
     let updated = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         guard.engine.disconnect();
+        guard.mixer.remote_tracks.clear();
+        guard.mixer.remote_participants.clear();
+        guard.mixer.session = Default::default();
         let AudioEngineState {
             mixer,
             capture,
@@ -2270,7 +2335,23 @@ pub fn add_and_publish_shared_audio_source(
 ) -> Result<AudioSourceId, AudioStateError> {
     let (updated, new_id, instruction, media_error) = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
+        let processing = match source_type {
+            AudioSourceType::SystemAudio => Some(WebRtcAudioProcessingSettings {
+                noise_suppression: false,
+                echo_cancellation: true,
+                auto_gain_control: false,
+            }),
+            AudioSourceType::AppAudio => Some(WebRtcAudioProcessingSettings {
+                noise_suppression: false,
+                echo_cancellation: false,
+                auto_gain_control: false,
+            }),
+            _ => None,
+        };
         let new_id = guard.add_local_source(source_type, display_name).id;
+        if let Some(processing) = processing {
+            guard.set_local_webrtc_processing(new_id, processing)?;
+        }
         if capture_device_id.is_some() {
             guard.set_local_source_capture_device(new_id, capture_device_id)?;
         }
@@ -3177,6 +3258,48 @@ mod tests {
         assert_eq!(mic.receiver_channel_strip.gain_db, GainDb::new(0.0));
         assert_eq!(music.receiver_channel_strip.gain_db, GainDb::new(-12.0));
         assert_eq!(engine.mixer.remote_participants.len(), 1);
+        assert_eq!(engine.mixer.remote_participants[0].tracks.len(), 2);
+    }
+
+    #[test]
+    fn remote_track_owner_mute_state_updates_by_participant_and_track() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let mut first = PublishedTrackMetadata::new(
+            AudioSourceId::new(),
+            participant_id,
+            AudioSourceType::Microphone,
+            "Remote mic",
+        );
+        first.muted = true;
+        let mut second = PublishedTrackMetadata::new(
+            AudioSourceId::new(),
+            participant_id,
+            AudioSourceType::Microphone,
+            "Remote mic 2",
+        );
+        second.muted = true;
+        let first_id = first.track_id;
+        let second_id = second.track_id;
+        engine.add_or_update_remote_track(first);
+        engine.add_or_update_remote_track(second);
+
+        engine.set_remote_track_muted(participant_id, first_id, false);
+
+        let first = engine
+            .mixer
+            .remote_tracks
+            .iter()
+            .find(|track| track.track.track_id == first_id)
+            .expect("first remote mic");
+        let second = engine
+            .mixer
+            .remote_tracks
+            .iter()
+            .find(|track| track.track.track_id == second_id)
+            .expect("second remote mic");
+        assert!(!first.track.muted);
+        assert!(second.track.muted);
         assert_eq!(engine.mixer.remote_participants[0].tracks.len(), 2);
     }
 

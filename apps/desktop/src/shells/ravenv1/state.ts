@@ -26,15 +26,19 @@ import type {
   UserReachability,
 } from "@/lib/api";
 
-export type Presence = "open" | "around" | "focused" | "dnd" | "invisible";
+export type Presence = "open" | "around" | "focused" | "dnd" | "invisible" | "offline";
+export type SelectablePresence = Exclude<Presence, "offline">;
 
 export const PRESENCE: Record<Presence, { label: string; h: string }> = {
   open: { label: "Open to talk", h: "150 46% 52%" },
   around: { label: "Around", h: "234 40% 66%" },
   focused: { label: "Focused", h: "38 82% 58%" },
   dnd: { label: "Do not disturb", h: "356 62% 60%" },
-  invisible: { label: "Invisible", h: "34 8% 48%" },
+  invisible: { label: "Invisible", h: "222 10% 54%" },
+  offline: { label: "Offline", h: "220 9% 46%" },
 };
+
+export const SELECTABLE_PRESENCES: SelectablePresence[] = ["open", "around", "focused", "dnd", "invisible"];
 
 export type RavenView =
   | { kind: "home" }
@@ -125,7 +129,7 @@ export interface RavenShellData {
   declineFriendRequest: (requestId: string) => Promise<void>;
   cancelFriendRequest: (requestId: string) => Promise<void>;
   removeFriend: (userId: string) => Promise<void>;
-  setPresence: (presence: Presence) => Promise<void>;
+  setPresence: (presence: SelectablePresence) => Promise<void>;
   joinNest: (nestId: string) => Promise<"joined" | "waiting">;
   knockUser: (userId: string) => Promise<void>;
   dismissKnock: (knockId: string) => Promise<void>;
@@ -175,9 +179,9 @@ export function displayNameFor(person: { displayName?: string | null; username?:
 }
 
 export function presenceFromApi(presence?: Pick<UserPresence, "state" | "reachability"> | null): Presence {
-  if (!presence) return "invisible";
+  if (!presence || !presence.state || presence.state === "offline") return "offline";
   if (presence.state === "dnd") return "dnd";
-  if (presence.state === "invisible" || presence.state === "offline") return "invisible";
+  if (presence.state === "invisible") return "invisible";
   if (presence.reachability === "open") return "open";
   if (presence.reachability === "focused") return "focused";
   return "around";

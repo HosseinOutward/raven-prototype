@@ -12,7 +12,9 @@ use std::{
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
-use sonora::config::{EchoCanceller, GainController2, HighPassFilter, NoiseSuppression};
+use sonora::config::{
+    AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, HighPassFilter, NoiseSuppression,
+};
 use sonora::{AudioProcessing, Config as ApmConfig, StreamConfig};
 use tauri::{AppHandle, Emitter};
 use thiserror::Error;
@@ -907,13 +909,15 @@ impl WebRtcApmRuntime {
         channel_count: usize,
         render_reference: Arc<RenderReference>,
     ) -> Result<Option<Self>, CaptureError> {
-        if source_type != AudioSourceType::Microphone || !apm_enabled(settings) {
+        let supports_apm = source_type == AudioSourceType::Microphone
+            || (source_type == AudioSourceType::SystemAudio && settings.echo_cancellation);
+        if !supports_apm || !apm_enabled(settings) {
             return Ok(None);
         }
         let channel_count = channel_count.max(1);
         // sonora operates on 10ms frames at the stream sample rate.
         let frame_samples_per_channel = (sample_rate / 100) as usize;
-        let config = apm_config(settings);
+        let config = apm_config(&source_type, settings);
         let aec_enabled = config.echo_canceller.is_some();
         let mut processor = AudioProcessing::builder()
             .config(config)
@@ -1003,13 +1007,29 @@ fn apm_enabled(settings: &WebRtcAudioProcessingSettings) -> bool {
     settings.noise_suppression || settings.echo_cancellation || settings.auto_gain_control
 }
 
-fn apm_config(settings: &WebRtcAudioProcessingSettings) -> ApmConfig {
+fn apm_config(
+    source_type: &AudioSourceType,
+    settings: &WebRtcAudioProcessingSettings,
+) -> ApmConfig {
+    let microphone = *source_type == AudioSourceType::Microphone;
     ApmConfig {
-        high_pass_filter: (settings.noise_suppression || settings.echo_cancellation)
+        high_pass_filter: (microphone
+            && (settings.noise_suppression || settings.echo_cancellation))
             .then(HighPassFilter::default),
         echo_canceller: settings.echo_cancellation.then(EchoCanceller::default),
-        noise_suppression: settings.noise_suppression.then(NoiseSuppression::default),
-        gain_controller2: settings.auto_gain_control.then(GainController2::default),
+        noise_suppression: (microphone && settings.noise_suppression)
+            .then(NoiseSuppression::default),
+        gain_controller2: (microphone && settings.auto_gain_control).then(|| GainController2 {
+            input_volume_controller: false,
+            adaptive_digital: Some(AdaptiveDigital {
+                headroom_db: 6.0,
+                max_gain_db: 30.0,
+                initial_gain_db: 8.0,
+                max_gain_change_db_per_second: 3.0,
+                max_output_noise_level_dbfs: -50.0,
+            }),
+            fixed_digital: FixedDigital { gain_db: 0.0 },
+        }),
         ..ApmConfig::default()
     }
 }
@@ -1273,7 +1293,7 @@ pub mod platform {
         use std::time::{Duration, Instant};
 
         use ::windows::{
-            core::{implement, Interface, PCWSTR, PWSTR},
+            core::{implement, Interface, PWSTR},
             Win32::{
                 Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
                 Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM},
@@ -1292,6 +1312,7 @@ pub mod platform {
                     AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
                     AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
                     AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, DEVICE_STATE_ACTIVE,
+                    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
                     PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
                     VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVE_FORMAT_PCM,
                 },
@@ -1410,14 +1431,17 @@ pub mod platform {
 
         #[derive(Clone, Debug)]
         enum LoopbackTarget {
-            SystemOutput,
+            SystemOutputExcludingProcess(u32),
             Process(u32),
         }
 
         fn start_system_audio_capture(
             request: AudioCaptureStartRequest,
         ) -> Result<Box<dyn AudioSourceRuntime>, CaptureError> {
-            start_wasapi_loopback_capture(request, LoopbackTarget::SystemOutput)
+            start_wasapi_loopback_capture(
+                request,
+                LoopbackTarget::SystemOutputExcludingProcess(std::process::id()),
+            )
         }
 
         fn start_app_audio_capture(
@@ -1521,7 +1545,7 @@ pub mod platform {
 
             let (audio_client, format_ptr, device_id, device_name) = match target {
                 LoopbackTarget::Process(process_id) => {
-                    let audio_client = activate_process_loopback_client(*process_id)?;
+                    let audio_client = activate_process_loopback_client(*process_id, false)?;
                     let format = Box::into_raw(Box::new(app_loopback_capture_format()));
                     (
                         audio_client,
@@ -1530,17 +1554,15 @@ pub mod platform {
                         Some(format!("Process {process_id}")),
                     )
                 }
-                LoopbackTarget::SystemOutput => {
-                    let enumerator: IMMDeviceEnumerator =
-                        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(map_err)?;
-                    let device =
-                        selected_output_device(&enumerator, source.capture_device_id.as_deref())?;
-                    let device_id = device_id_string(&device);
-                    let device_name = device_friendly_name(&device).or_else(|| device_id.clone());
-                    let audio_client: IAudioClient =
-                        device.Activate(CLSCTX_ALL, None).map_err(map_err)?;
-                    let format_ptr = audio_client.GetMixFormat().map_err(map_err)?;
-                    (audio_client, format_ptr, device_id, device_name)
+                LoopbackTarget::SystemOutputExcludingProcess(process_id) => {
+                    let audio_client = activate_process_loopback_client(*process_id, true)?;
+                    let format = Box::into_raw(Box::new(app_loopback_capture_format()));
+                    (
+                        audio_client,
+                        format,
+                        source.capture_device_id.clone(),
+                        Some("System audio (Raven excluded)".to_string()),
+                    )
                 }
             };
 
@@ -1559,8 +1581,9 @@ pub mod platform {
                 None,
             );
             match target {
-                LoopbackTarget::Process(_) => drop(Box::from_raw(format_ptr)),
-                LoopbackTarget::SystemOutput => CoTaskMemFree(Some(format_ptr as *mut _)),
+                LoopbackTarget::Process(_) | LoopbackTarget::SystemOutputExcludingProcess(_) => {
+                    drop(Box::from_raw(format_ptr))
+                }
             }
             initialize_result.map_err(map_err)?;
 
@@ -1584,6 +1607,7 @@ pub mod platform {
 
         unsafe fn activate_process_loopback_client(
             process_id: u32,
+            exclude: bool,
         ) -> Result<IAudioClient, CaptureError> {
             let map_err = |e: ::windows::core::Error| CaptureError::StreamFailed {
                 message: e.to_string(),
@@ -1593,7 +1617,11 @@ pub mod platform {
                 Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
                     ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
                         TargetProcessId: process_id,
-                        ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                        ProcessLoopbackMode: if exclude {
+                            PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+                        } else {
+                            PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+                        },
                     },
                 },
             };
@@ -1653,22 +1681,6 @@ pub mod platform {
                 wBitsPerSample: BITS_PER_SAMPLE,
                 cbSize: 0,
             }
-        }
-
-        unsafe fn selected_output_device(
-            enumerator: &IMMDeviceEnumerator,
-            device_id: Option<&str>,
-        ) -> Result<IMMDevice, CaptureError> {
-            let map_err = |e: ::windows::core::Error| CaptureError::StreamFailed {
-                message: e.to_string(),
-            };
-            if let Some(device_id) = device_id.filter(|id| !id.trim().is_empty()) {
-                let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
-                return enumerator.GetDevice(PCWSTR(wide.as_ptr())).map_err(map_err);
-            }
-            enumerator
-                .GetDefaultAudioEndpoint(eRender, eConsole)
-                .map_err(map_err)
         }
 
         // Safety: called from the COM-initialized capture thread only.
@@ -2885,6 +2897,147 @@ mod tests {
     use super::*;
     use crate::audio::domain::{AudioProcessorKind, AudioProcessorState, ParticipantId};
     use crate::audio::processor::meter_samples;
+
+    #[test]
+    fn microphone_agc_uses_active_upstream_style_adaptive_defaults() {
+        let config = apm_config(
+            &AudioSourceType::Microphone,
+            &WebRtcAudioProcessingSettings::default(),
+        );
+        let agc = config.gain_controller2.expect("AGC2 enabled");
+        let adaptive = agc.adaptive_digital.expect("adaptive digital enabled");
+        assert!(!agc.input_volume_controller);
+        assert_eq!(agc.fixed_digital.gain_db, 0.0);
+        assert_eq!(adaptive.headroom_db, 6.0);
+        assert_eq!(adaptive.max_gain_db, 30.0);
+        assert_eq!(adaptive.initial_gain_db, 8.0);
+        assert_eq!(adaptive.max_gain_change_db_per_second, 3.0);
+        assert_eq!(adaptive.max_output_noise_level_dbfs, -50.0);
+    }
+
+    #[test]
+    fn microphone_agc_lifts_quiet_voice_without_clipping_or_hidden_bypass_gain() {
+        let render_reference = Arc::new(RenderReference::default());
+        let mut runtime = WebRtcApmRuntime::new(
+            AudioSourceType::Microphone,
+            &WebRtcAudioProcessingSettings {
+                noise_suppression: false,
+                echo_cancellation: false,
+                auto_gain_control: true,
+            },
+            48_000,
+            1,
+            Arc::clone(&render_reference),
+        )
+        .expect("build microphone APM")
+        .expect("AGC runtime enabled");
+        let mut quiet_voice: Vec<f32> = (0..48_000)
+            .map(|sample| {
+                let time = sample as f32 / 48_000.0;
+                let envelope = 0.65 + 0.35 * (std::f32::consts::TAU * 4.0 * time).sin();
+                envelope
+                    * 0.008
+                    * ((std::f32::consts::TAU * 180.0 * time).sin()
+                        + 0.35 * (std::f32::consts::TAU * 360.0 * time).sin())
+            })
+            .collect();
+        let input_rms = meter_samples(&quiet_voice).rms_db.0;
+        runtime
+            .process_interleaved(&mut quiet_voice)
+            .expect("process quiet voice");
+        let output = meter_samples(&quiet_voice);
+        assert!(output.rms_db.0 > input_rms + 3.0);
+        assert!(output.peak_db.0 <= 0.0);
+
+        let bypass = WebRtcApmRuntime::new(
+            AudioSourceType::Microphone,
+            &WebRtcAudioProcessingSettings {
+                noise_suppression: false,
+                echo_cancellation: false,
+                auto_gain_control: false,
+            },
+            48_000,
+            1,
+            render_reference,
+        )
+        .expect("build bypass");
+        assert!(bypass.is_none());
+    }
+
+    #[test]
+    fn system_share_uses_echo_cancellation_without_voice_gain_or_suppression() {
+        let config = apm_config(
+            &AudioSourceType::SystemAudio,
+            &WebRtcAudioProcessingSettings {
+                noise_suppression: false,
+                echo_cancellation: true,
+                auto_gain_control: false,
+            },
+        );
+        assert!(config.echo_canceller.is_some());
+        assert!(config.noise_suppression.is_none());
+        assert!(config.gain_controller2.is_none());
+        assert!(config.high_pass_filter.is_none());
+    }
+
+    #[test]
+    fn system_share_echo_path_consumes_raven_render_reference() {
+        let render_reference = Arc::new(RenderReference::default());
+        let mut runtime = WebRtcApmRuntime::new(
+            AudioSourceType::SystemAudio,
+            &WebRtcAudioProcessingSettings {
+                noise_suppression: false,
+                echo_cancellation: true,
+                auto_gain_control: false,
+            },
+            48_000,
+            2,
+            Arc::clone(&render_reference),
+        )
+        .expect("build system-audio APM")
+        .expect("echo runtime enabled");
+
+        let mut input_echo_energy = 0.0_f32;
+        let mut output_echo_energy = 0.0_f32;
+        let mut output_program_energy = 0.0_f32;
+        for block in 0..300 {
+            let mut render = Vec::with_capacity(960);
+            let mut capture = Vec::with_capacity(960);
+            let mut echo_basis = Vec::with_capacity(960);
+            let mut program_basis = Vec::with_capacity(960);
+            for frame in 0..480 {
+                let sample = block * 480 + frame;
+                let time = sample as f32 / 48_000.0;
+                let echo = 0.08 * (std::f32::consts::TAU * 440.0 * time).sin();
+                let program = 0.02 * (std::f32::consts::TAU * 997.0 * time).sin();
+                render.extend_from_slice(&[echo, echo]);
+                capture.extend_from_slice(&[echo + program, echo + program]);
+                echo_basis.extend_from_slice(&[echo, echo]);
+                program_basis.extend_from_slice(&[program, program]);
+            }
+            render_reference.push_stereo(&render, 48_000);
+            runtime
+                .process_interleaved(&mut capture)
+                .expect("cancel Raven render audio");
+            if block >= 200 {
+                input_echo_energy += echo_basis.iter().map(|sample| sample * sample).sum::<f32>();
+                output_echo_energy += capture
+                    .iter()
+                    .zip(&echo_basis)
+                    .map(|(output, echo)| output * echo)
+                    .sum::<f32>()
+                    .abs();
+                output_program_energy += capture
+                    .iter()
+                    .zip(&program_basis)
+                    .map(|(output, program)| output * program)
+                    .sum::<f32>()
+                    .abs();
+            }
+        }
+        assert!(output_echo_energy < input_echo_energy * 0.75);
+        assert!(output_program_energy > 0.01);
+    }
 
     #[derive(Debug)]
     struct FakeRuntime {

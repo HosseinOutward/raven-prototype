@@ -151,7 +151,7 @@ impl VideoQualityProfile {
             max_pixels: 1920 * 1080,
             width: 1920,
             height: 1080,
-            fps: 5.0,
+            fps: 10.0,
         }
     }
 
@@ -208,17 +208,19 @@ impl VideoQualityProfile {
 
     pub fn normalized(self) -> Self {
         match self.profile_id {
-            VideoQualityProfileId::Presentation => self.normalized_preset(Self::presentation()),
-            VideoQualityProfileId::High => self.normalized_preset(Self::high()),
-            VideoQualityProfileId::HighMotion => self.normalized_preset(Self::high_motion()),
-            VideoQualityProfileId::Balanced => self.normalized_preset(Self::balanced()),
-            VideoQualityProfileId::Low => self.normalized_preset(Self::low()),
+            VideoQualityProfileId::Presentation => Self::presentation(),
+            VideoQualityProfileId::High => Self::high(),
+            VideoQualityProfileId::HighMotion => Self::high_motion(),
+            VideoQualityProfileId::Balanced => Self::balanced(),
+            VideoQualityProfileId::Low => Self::low(),
             VideoQualityProfileId::Custom => {
                 let width = even_dimension(self.width.clamp(2, 7680));
                 let height = even_dimension(self.height.clamp(2, 4320));
                 Self {
                     profile_id: VideoQualityProfileId::Custom,
-                    max_pixels: self.max_pixels.max(width.saturating_mul(height)).max(2 * 2),
+                    // Custom dimensions are the contract. Do not accept a detached pixel
+                    // budget that can silently cause a different output resolution.
+                    max_pixels: width.saturating_mul(height).max(2 * 2),
                     width,
                     height,
                     fps: if self.fps.is_finite() {
@@ -228,24 +230,6 @@ impl VideoQualityProfile {
                     },
                 }
             }
-        }
-    }
-
-    fn normalized_preset(self, preset: Self) -> Self {
-        Self {
-            profile_id: preset.profile_id,
-            max_pixels: preset.max_pixels,
-            width: if self.width >= 2 {
-                even_dimension(self.width)
-            } else {
-                preset.width
-            },
-            height: if self.height >= 2 {
-                even_dimension(self.height)
-            } else {
-                preset.height
-            },
-            fps: preset.fps,
         }
     }
 
@@ -264,7 +248,11 @@ impl VideoQualityProfile {
     }
 
     pub fn publish_tuning(&self, source: VideoTrackSource) -> VideoPublishTuning {
-        VideoPublishTuning::from_profile(source, self.clone().normalized())
+        // The source state has already been normalized at its command boundary and display /
+        // window shares have additionally been resolved to their source aspect ratio. Re-running
+        // preset normalization here would turn (for example) a 1366×768 share back into 1080p
+        // and make the native source, scaler, and encoder disagree.
+        VideoPublishTuning::from_profile(source, self.clone())
     }
 }
 
@@ -319,22 +307,6 @@ impl VideoTrackSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum VideoContentHint {
-    Fluid,
-    Detailed,
-    Text,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum VideoDegradationPreference {
-    MaintainFramerate,
-    MaintainResolution,
-    Balanced,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoPublishTuning {
@@ -343,33 +315,20 @@ pub struct VideoPublishTuning {
     pub height: u32,
     pub frame_rate: f64,
     pub max_bitrate_bps: u64,
-    pub degradation_preference: VideoDegradationPreference,
-    pub content_hint: VideoContentHint,
     pub simulcast: bool,
 }
 
 impl VideoPublishTuning {
     fn from_profile(source: VideoTrackSource, profile: VideoQualityProfile) -> Self {
-        let content_hint = match (source, profile.profile_id) {
-            (_, VideoQualityProfileId::Presentation) => VideoContentHint::Text,
-            (VideoTrackSource::Screenshare, _) => VideoContentHint::Detailed,
-            (_, VideoQualityProfileId::HighMotion) => VideoContentHint::Fluid,
-            _ => VideoContentHint::Fluid,
-        };
-        let degradation_preference = match (source, profile.profile_id) {
-            (_, VideoQualityProfileId::Presentation) => {
-                VideoDegradationPreference::MaintainResolution
-            }
-            (VideoTrackSource::Screenshare, _) => VideoDegradationPreference::MaintainResolution,
-            (_, VideoQualityProfileId::HighMotion) => VideoDegradationPreference::MaintainFramerate,
-            _ => VideoDegradationPreference::Balanced,
-        };
+        // The installed LiveKit Rust SDK exposes bitrate, framerate, resolution, and
+        // simulcast controls, but not WebRTC content hints or degradation preference.
+        // Keep this tuning structure limited to settings that reach the published track.
         let max_bitrate_bps = match profile.profile_id {
-            VideoQualityProfileId::Presentation => 1_500_000,
-            VideoQualityProfileId::High => 3_000_000,
-            VideoQualityProfileId::HighMotion => 3_500_000,
-            VideoQualityProfileId::Balanced => 1_700_000,
-            VideoQualityProfileId::Low => 600_000,
+            VideoQualityProfileId::Presentation => 4_000_000,
+            VideoQualityProfileId::High => 6_000_000,
+            VideoQualityProfileId::HighMotion => 6_000_000,
+            VideoQualityProfileId::Balanced => 2_500_000,
+            VideoQualityProfileId::Low => 750_000,
             VideoQualityProfileId::Custom => {
                 estimate_custom_bitrate(profile.width, profile.height, profile.fps, source)
             }
@@ -387,8 +346,6 @@ impl VideoPublishTuning {
             height: profile.height,
             frame_rate: f64::from(profile.fps),
             max_bitrate_bps,
-            degradation_preference,
-            content_hint,
             simulcast,
         }
     }
@@ -399,10 +356,10 @@ fn estimate_custom_bitrate(width: u32, height: u32, fps: f32, source: VideoTrack
     let frame_rate = f64::from(fps.clamp(1.0, 120.0));
     let bits_per_pixel = match source {
         VideoTrackSource::Camera => 0.10,
-        VideoTrackSource::Screenshare => 0.07,
+        VideoTrackSource::Screenshare => 0.12,
     };
     let bitrate = (pixels * frame_rate * bits_per_pixel) as u64;
-    bitrate.clamp(300_000, 6_000_000)
+    bitrate.clamp(300_000, 8_000_000)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -518,7 +475,12 @@ impl Default for VideoPresentationSettings {
 }
 
 impl VideoPresentationSettings {
-    pub fn limits(&self) -> (u32, u32, u32, f32) {
+    pub fn limits_for(&self, source: VideoTrackSource) -> (u32, u32, u32, f32) {
+        // The frame service is only the local WebView presentation bridge. A share must not
+        // inherit the lower camera-preview cap selected for a compact Raven UI.
+        if matches!(source, VideoTrackSource::Screenshare) {
+            return (1920, 1080, 10, 92.0);
+        }
         match self.profile {
             VideoPresentationProfile::Efficiency => (640, 360, 10, 68.0),
             VideoPresentationProfile::Balanced => (960, 540, 15, 76.0),
@@ -612,4 +574,113 @@ pub struct WindowTarget {
     pub height: u32,
     pub icon_data_url: Option<String>,
     pub thumbnail_data_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presentation_profile_reserves_a_text_readable_screen_share_budget() {
+        let profile = VideoQualityProfile::presentation();
+        let tuning = profile.publish_tuning(VideoTrackSource::Screenshare);
+        assert_eq!(
+            (profile.width, profile.height, profile.fps),
+            (1920, 1080, 10.0)
+        );
+        assert_eq!(tuning.max_bitrate_bps, 4_000_000);
+        assert!(!tuning.simulcast);
+    }
+
+    #[test]
+    fn source_budget_preserves_aspect_ratio_without_exceeding_presentation_cap() {
+        let resolved = VideoQualityProfile::presentation().resolved_for_source(3840, 2160);
+        assert_eq!((resolved.width, resolved.height), (1920, 1080));
+    }
+
+    #[test]
+    fn named_profiles_canonicalize_to_their_declared_contracts() {
+        let cases = [
+            (
+                VideoQualityProfileId::Presentation,
+                VideoQualityProfile::presentation(),
+            ),
+            (VideoQualityProfileId::High, VideoQualityProfile::high()),
+            (
+                VideoQualityProfileId::HighMotion,
+                VideoQualityProfile::high_motion(),
+            ),
+            (
+                VideoQualityProfileId::Balanced,
+                VideoQualityProfile::balanced(),
+            ),
+            (VideoQualityProfileId::Low, VideoQualityProfile::low()),
+        ];
+
+        for (profile_id, expected) in cases {
+            let supplied = VideoQualityProfile {
+                profile_id,
+                max_pixels: 4,
+                width: 2,
+                height: 2,
+                fps: 1.0,
+            };
+            assert_eq!(supplied.normalized(), expected, "{profile_id:?}");
+        }
+    }
+
+    #[test]
+    fn custom_profile_canonicalizes_dimensions_fps_and_pixel_budget_together() {
+        let profile = VideoQualityProfile {
+            profile_id: VideoQualityProfileId::Custom,
+            max_pixels: 4,
+            width: 1281,
+            height: 721,
+            fps: 30.4,
+        }
+        .normalized();
+
+        assert_eq!(
+            (profile.width, profile.height, profile.fps),
+            (1280, 720, 30.4)
+        );
+        assert_eq!(profile.max_pixels, 1280 * 720);
+    }
+
+    #[test]
+    fn publish_tuning_keeps_a_resolved_share_dimensions_and_all_preset_budgets() {
+        let resolved = VideoQualityProfile::high().resolved_for_source(1366, 768);
+        let tuning = resolved.publish_tuning(VideoTrackSource::Screenshare);
+        assert_eq!(
+            (tuning.width, tuning.height, tuning.frame_rate),
+            (1366, 768, 30.0)
+        );
+
+        let cases = [
+            (VideoQualityProfile::presentation(), 4_000_000),
+            (VideoQualityProfile::high(), 6_000_000),
+            (VideoQualityProfile::high_motion(), 6_000_000),
+            (VideoQualityProfile::balanced(), 2_500_000),
+            (VideoQualityProfile::low(), 750_000),
+        ];
+        for (profile, bitrate) in cases {
+            assert_eq!(
+                profile
+                    .publish_tuning(VideoTrackSource::Screenshare)
+                    .max_bitrate_bps,
+                bitrate
+            );
+        }
+    }
+
+    #[test]
+    fn custom_share_bitrate_uses_the_same_dimensions_and_fps_as_its_publish_tuning() {
+        let tuning = VideoQualityProfile::custom(1280, 720, 30.0)
+            .publish_tuning(VideoTrackSource::Screenshare);
+        assert_eq!(
+            (tuning.width, tuning.height, tuning.frame_rate),
+            (1280, 720, 30.0)
+        );
+        assert_eq!(tuning.max_bitrate_bps, 3_317_760);
+    }
 }

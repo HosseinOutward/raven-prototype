@@ -18,8 +18,8 @@ use mozjpeg::{ColorSpace, Compress};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::video::convert::I420Frame;
-use crate::video::domain::VideoPresentationSettings;
+use crate::video::convert::{resize_i420_filtered_reusing, I420Frame};
+use crate::video::domain::{VideoPresentationSettings, VideoTrackSource};
 
 const BOUNDARY: &str = "ravenframe";
 type EncodedFrame = Arc<Vec<u8>>;
@@ -233,6 +233,7 @@ fn serve_connection(mut stream: TcpStream, token: &str, hub: VideoFrameHub) {
 
 pub struct VideoFramePublisher {
     stream_id: String,
+    source: VideoTrackSource,
     hub: VideoFrameHub,
     settings: Arc<RwLock<VideoPresentationSettings>>,
     sender: SyncSender<I420Frame>,
@@ -255,6 +256,7 @@ impl VideoFramePublisher {
         stream_id: impl Into<String>,
         hub: VideoFrameHub,
         settings: Arc<RwLock<VideoPresentationSettings>>,
+        source: VideoTrackSource,
     ) -> Self {
         let stream_id = stream_id.into();
         let worker_id = stream_id.clone();
@@ -275,7 +277,9 @@ impl VideoFramePublisher {
                         .read()
                         .map(|value| value.clone())
                         .unwrap_or_default();
-                    if let Some(jpeg) = encode_frame(&frame, &settings, &mut resized, &mut rgb) {
+                    if let Some(jpeg) =
+                        encode_frame(&frame, &settings, source, &mut resized, &mut rgb)
+                    {
                         worker_hub.publish(&worker_id, jpeg);
                     }
                     if let Ok(mut recycled) = worker_recycled.lock() {
@@ -287,6 +291,7 @@ impl VideoFramePublisher {
             });
         Self {
             stream_id,
+            source,
             hub,
             settings,
             sender,
@@ -307,7 +312,7 @@ impl VideoFramePublisher {
         let fps = self
             .settings
             .read()
-            .map(|settings| settings.limits().2)
+            .map(|settings| settings.limits_for(self.source).2)
             .unwrap_or(15)
             .max(1);
         let now = Instant::now();
@@ -375,15 +380,16 @@ fn copy_i420_reusing(source: &I420Frame, recycled: Option<I420Frame>) -> I420Fra
 fn encode_frame(
     frame: &I420Frame,
     settings: &VideoPresentationSettings,
+    source: VideoTrackSource,
     resized: &mut I420Frame,
     rgb: &mut Vec<u8>,
 ) -> Option<Vec<u8>> {
-    let (max_width, max_height, _, quality) = settings.limits();
+    let (max_width, max_height, _, quality) = settings.limits_for(source);
     let (width, height) = fit_dimensions(frame.width, frame.height, max_width, max_height);
     let prepared = if frame.width == width && frame.height == height {
         frame
     } else {
-        resize_i420_reusing(frame, width, height, resized);
+        resize_i420_filtered_reusing(frame, width, height, resized);
         resized
     };
     i420_to_rgb_reusing(prepared, rgb);
@@ -402,40 +408,6 @@ fn empty_i420_frame() -> I420Frame {
         y: Vec::new(),
         u: Vec::new(),
         v: Vec::new(),
-    }
-}
-
-fn resize_i420_reusing(source: &I420Frame, width: u32, height: u32, target: &mut I420Frame) {
-    let width = width.max(2);
-    let height = height.max(2);
-    target.width = width;
-    target.height = height;
-    target.y.resize((width * height) as usize, 0);
-    for row in 0..height {
-        let source_row = (row as u64 * source.height as u64 / height as u64) as u32;
-        for column in 0..width {
-            let source_column = (column as u64 * source.width as u64 / width as u64) as u32;
-            target.y[(row * width + column) as usize] =
-                source.y[(source_row * source.width + source_column) as usize];
-        }
-    }
-
-    let source_chroma_width = source.chroma_width();
-    let source_chroma_height = source.chroma_height();
-    let chroma_width = width.div_ceil(2);
-    let chroma_height = height.div_ceil(2);
-    target.u.resize((chroma_width * chroma_height) as usize, 0);
-    target.v.resize((chroma_width * chroma_height) as usize, 0);
-    for row in 0..chroma_height {
-        let source_row = (row as u64 * source_chroma_height as u64 / chroma_height as u64) as u32;
-        for column in 0..chroma_width {
-            let source_column =
-                (column as u64 * source_chroma_width as u64 / chroma_width as u64) as u32;
-            let source_index = (source_row * source_chroma_width + source_column) as usize;
-            let target_index = (row * chroma_width + column) as usize;
-            target.u[target_index] = source.u[source_index];
-            target.v[target_index] = source.v[source_index];
-        }
     }
 }
 
@@ -483,6 +455,19 @@ mod tests {
     fn presentation_dimensions_are_bounded_without_upscaling() {
         assert_eq!(fit_dimensions(1920, 1080, 960, 540), (960, 540));
         assert_eq!(fit_dimensions(320, 180, 960, 540), (320, 180));
+    }
+
+    #[test]
+    fn screenshares_keep_a_1080p_local_presentation_independent_of_camera_preference() {
+        let settings = VideoPresentationSettings::default();
+        assert_eq!(
+            settings.limits_for(VideoTrackSource::Camera),
+            (960, 540, 15, 76.0)
+        );
+        assert_eq!(
+            settings.limits_for(VideoTrackSource::Screenshare),
+            (1920, 1080, 10, 92.0)
+        );
     }
 
     #[test]

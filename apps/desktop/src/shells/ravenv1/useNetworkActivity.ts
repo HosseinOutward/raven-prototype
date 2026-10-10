@@ -9,7 +9,7 @@ import {
 
 const NETWORK_SAMPLE_INTERVAL_MS = 2000;
 
-type Measurement = Pick<NetworkActivitySnapshot, "rates" | "updatedAt">;
+type Measurement = Pick<NetworkActivitySnapshot, "rates" | "updatedAt" | "screenShareQuality">;
 
 export function useNetworkActivity(
   connected: boolean,
@@ -48,7 +48,7 @@ export function useNetworkActivity(
         const at = performance.now();
         if (previous) {
           const rates = ratesFromNetworkSamples(previous.sample, next, (at - previous.at) / 1000);
-          setMeasurement({ rates, updatedAt: Date.now() });
+          setMeasurement({ rates, updatedAt: Date.now(), screenShareQuality: next.screenShareQuality });
         }
         previous = { at, sample: next };
       } catch {
@@ -77,5 +77,5 @@ export function useNetworkActivity(
 }
 
 function emptyMeasurement(): Measurement {
-  return { rates: createZeroNetworkRates(), updatedAt: null };
+  return { rates: createZeroNetworkRates(), updatedAt: null, screenShareQuality: null };
 }

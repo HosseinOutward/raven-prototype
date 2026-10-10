@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { type VideoQualityProfileId } from "@/lib/video";
 import { Headphones, Mic, MicOff, MonitorUp, Network, Settings2, SlidersHorizontal, Video, VideoOff, VolumeX } from "lucide-react";
 import { InfoTooltip, Island, PresenceDot, SignalMeter } from "./atoms";
-import { displayNameFor, PRESENCE, presenceFromApi, type RavenShellData } from "./state";
+import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData } from "./state";
 import type {
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
@@ -29,6 +29,7 @@ import type {
   NetworkActivitySnapshot,
   NetworkTransferRate,
 } from "./networkActivity";
+import { receivedScreenShareQualityNotice, screenShareQualityNotice } from "./networkActivity";
 import { useNetworkActivity } from "./useNetworkActivity";
 
 export function DeviceDock({ data, media }: { data: RavenShellData; media: RavenMediaAdapterState }) {
@@ -152,16 +153,19 @@ export function DeviceDock({ data, media }: { data: RavenShellData; media: Raven
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="start" className="min-w-[180px]">
-                {Object.entries(PRESENCE).map(([value, config]) => (
+                {SELECTABLE_PRESENCES.map((value) => {
+                  const config = PRESENCE[value];
+                  return (
                   <DropdownMenuItem
                     key={value}
                     className={cn(value === presence && "bg-accent/60 text-accent-foreground")}
-                    onSelect={() => void data.setPresence(value as typeof presence)}
+                    onSelect={() => void data.setPresence(value)}
                   >
-                    <PresenceDot presence={value as typeof presence} />
+                    <PresenceDot presence={value} />
                     {config.label}
                   </DropdownMenuItem>
-                ))}
+                  );
+                })}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -387,6 +391,8 @@ function NetworkActivityIndicator({
 
   const summary = selectedNetworkSummary(activity);
   const summaryText = networkSummaryText(activity, summary);
+  const sendingShareQuality = screenShareQualityNotice(activity.screenShareQuality);
+  const receivingShareQuality = receivedScreenShareQualityNotice(activity.screenShareQuality);
   return (
     <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
@@ -417,6 +423,13 @@ function NetworkActivityIndicator({
             <NetworkActivityRow key={category} category={category} activity={activity} />
           ))}
         </div>
+        {sendingShareQuality || receivingShareQuality ? (
+          <div className="mt-3 rounded-xl border border-amber-300/25 bg-amber-200/10 px-3 py-2.5 text-[11px] leading-5 text-foreground/80">
+            <span className="font-medium text-foreground">Screen-share quality</span>
+            {sendingShareQuality ? <p className="mt-0.5">{sendingShareQuality}</p> : null}
+            {receivingShareQuality ? <p className="mt-0.5">{receivingShareQuality}</p> : null}
+          </div>
+        ) : null}
         {/* <div className="mt-3 rv-mono text-[11px] text-muted-foreground">
           {!activity.active ? "No active media session" : activity.updatedAt == null ? "Collecting the first interval..." : "Updates about once per second"}
         </div> */}

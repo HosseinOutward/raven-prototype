@@ -39,12 +39,12 @@ impl I420Frame {
     }
 }
 
-/// Resize a planar I420 frame to an exact output size with nearest-neighbor sampling.
-///
-/// Capture backends may choose their own native dimensions, but LiveKit's
-/// `NativeVideoSource` is created with the profile dimensions. The publish path must
-/// therefore hand it frames with matching dimensions.
-pub fn resize_i420_nearest(src: &I420Frame, width: u32, height: u32) -> I420Frame {
+/// Resize a planar I420 frame to an exact output size. Downscales use an area average so
+/// desktop text keeps its edges instead of aliasing into blocky pixels; upscales use
+/// bilinear interpolation. Capture backends may choose their own native dimensions, but
+/// LiveKit's `NativeVideoSource` is created with the profile dimensions, so the publish path
+/// must hand it matching frames.
+pub fn resize_i420_filtered(src: &I420Frame, width: u32, height: u32) -> I420Frame {
     let width = width.max(2);
     let height = height.max(2);
     if src.width == width && src.height == height {
@@ -52,13 +52,7 @@ pub fn resize_i420_nearest(src: &I420Frame, width: u32, height: u32) -> I420Fram
     }
 
     let mut y = vec![0; (width * height) as usize];
-    for row in 0..height {
-        let src_row = (row as u64 * src.height as u64 / height as u64) as u32;
-        for col in 0..width {
-            let src_col = (col as u64 * src.width as u64 / width as u64) as u32;
-            y[(row * width + col) as usize] = src.y[(src_row * src.width + src_col) as usize];
-        }
-    }
+    resize_plane_filtered(&src.y, src.width, src.height, &mut y, width, height);
 
     let src_cw = src.chroma_width();
     let src_ch = src.chroma_height();
@@ -66,16 +60,8 @@ pub fn resize_i420_nearest(src: &I420Frame, width: u32, height: u32) -> I420Fram
     let ch = (height + 1) / 2;
     let mut u = vec![0; (cw * ch) as usize];
     let mut v = vec![0; (cw * ch) as usize];
-    for row in 0..ch {
-        let src_row = (row as u64 * src_ch as u64 / ch as u64) as u32;
-        for col in 0..cw {
-            let src_col = (col as u64 * src_cw as u64 / cw as u64) as u32;
-            let src_index = (src_row * src_cw + src_col) as usize;
-            let dst_index = (row * cw + col) as usize;
-            u[dst_index] = src.u[src_index];
-            v[dst_index] = src.v[src_index];
-        }
-    }
+    resize_plane_filtered(&src.u, src_cw, src_ch, &mut u, cw, ch);
+    resize_plane_filtered(&src.v, src_cw, src_ch, &mut v, cw, ch);
 
     I420Frame {
         width,
@@ -83,6 +69,138 @@ pub fn resize_i420_nearest(src: &I420Frame, width: u32, height: u32) -> I420Fram
         y,
         u,
         v,
+    }
+}
+
+/// Reusing variant for the local presentation bridge, which must avoid a new allocation on
+/// every remote frame.
+pub fn resize_i420_filtered_reusing(
+    src: &I420Frame,
+    width: u32,
+    height: u32,
+    target: &mut I420Frame,
+) {
+    let width = width.max(2);
+    let height = height.max(2);
+    target.width = width;
+    target.height = height;
+    target.y.resize((width * height) as usize, 0);
+    resize_plane_filtered(&src.y, src.width, src.height, &mut target.y, width, height);
+
+    let source_chroma_width = src.chroma_width();
+    let source_chroma_height = src.chroma_height();
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    target.u.resize((chroma_width * chroma_height) as usize, 0);
+    target.v.resize((chroma_width * chroma_height) as usize, 0);
+    resize_plane_filtered(
+        &src.u,
+        source_chroma_width,
+        source_chroma_height,
+        &mut target.u,
+        chroma_width,
+        chroma_height,
+    );
+    resize_plane_filtered(
+        &src.v,
+        source_chroma_width,
+        source_chroma_height,
+        &mut target.v,
+        chroma_width,
+        chroma_height,
+    );
+}
+
+fn resize_plane_filtered(
+    source: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target: &mut [u8],
+    target_width: u32,
+    target_height: u32,
+) {
+    if target_width <= source_width && target_height <= source_height {
+        resize_plane_area(
+            source,
+            source_width,
+            source_height,
+            target,
+            target_width,
+            target_height,
+        );
+    } else {
+        resize_plane_bilinear(
+            source,
+            source_width,
+            source_height,
+            target,
+            target_width,
+            target_height,
+        );
+    }
+}
+
+fn resize_plane_area(
+    source: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target: &mut [u8],
+    target_width: u32,
+    target_height: u32,
+) {
+    for target_row in 0..target_height {
+        let start_row = target_row * source_height / target_height;
+        let end_row = ((target_row + 1) * source_height)
+            .div_ceil(target_height)
+            .min(source_height);
+        for target_column in 0..target_width {
+            let start_column = target_column * source_width / target_width;
+            let end_column = ((target_column + 1) * source_width)
+                .div_ceil(target_width)
+                .min(source_width);
+            let mut sum = 0_u32;
+            let mut count = 0_u32;
+            for source_row in start_row..end_row {
+                for source_column in start_column..end_column {
+                    sum += source[(source_row * source_width + source_column) as usize] as u32;
+                    count += 1;
+                }
+            }
+            target[(target_row * target_width + target_column) as usize] =
+                (sum / count.max(1)) as u8;
+        }
+    }
+}
+
+fn resize_plane_bilinear(
+    source: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target: &mut [u8],
+    target_width: u32,
+    target_height: u32,
+) {
+    let x_scale =
+        source_width.saturating_sub(1) as f64 / target_width.saturating_sub(1).max(1) as f64;
+    let y_scale =
+        source_height.saturating_sub(1) as f64 / target_height.saturating_sub(1).max(1) as f64;
+    for target_row in 0..target_height {
+        let source_y = target_row as f64 * y_scale;
+        let y0 = source_y.floor() as u32;
+        let y1 = (y0 + 1).min(source_height.saturating_sub(1));
+        let fy = source_y - y0 as f64;
+        for target_column in 0..target_width {
+            let source_x = target_column as f64 * x_scale;
+            let x0 = source_x.floor() as u32;
+            let x1 = (x0 + 1).min(source_width.saturating_sub(1));
+            let fx = source_x - x0 as f64;
+            let top = source[(y0 * source_width + x0) as usize] as f64 * (1.0 - fx)
+                + source[(y0 * source_width + x1) as usize] as f64 * fx;
+            let bottom = source[(y1 * source_width + x0) as usize] as f64 * (1.0 - fx)
+                + source[(y1 * source_width + x1) as usize] as f64 * fx;
+            target[(target_row * target_width + target_column) as usize] =
+                (top * (1.0 - fy) + bottom * fy).round() as u8;
+        }
     }
 }
 
@@ -261,5 +379,33 @@ mod tests {
 
         assert_eq!(i420_to_rgb(&black), vec![0; 12]);
         assert_eq!(i420_to_rgb(&white), vec![255; 12]);
+    }
+
+    #[test]
+    fn filtered_downscale_averages_high_contrast_desktop_pixels() {
+        let frame = I420Frame {
+            width: 4,
+            height: 4,
+            y: vec![
+                0, 255, 0, 255, 255, 0, 255, 0, 0, 255, 0, 255, 255, 0, 255, 0,
+            ],
+            u: vec![128; 4],
+            v: vec![128; 4],
+        };
+        let resized = resize_i420_filtered(&frame, 2, 2);
+        assert_eq!(resized.y, vec![127; 4]);
+    }
+
+    #[test]
+    fn filtered_upscale_interpolates_between_source_pixels() {
+        let frame = I420Frame {
+            width: 2,
+            height: 2,
+            y: vec![0, 100, 200, 255],
+            u: vec![128],
+            v: vec![128],
+        };
+        let resized = resize_i420_filtered(&frame, 3, 3);
+        assert_eq!(resized.y[4], 139);
     }
 }

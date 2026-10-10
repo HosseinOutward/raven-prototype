@@ -34,7 +34,7 @@ export const VIDEO_PROFILE_PRESETS = {
     maxPixels: 1920 * 1080,
     width: 1920,
     height: 1080,
-    fps: 5,
+    fps: 10,
   },
   high: {
     profileId: "high",
@@ -180,6 +180,34 @@ export interface VideoNetworkTotals {
   screenShareReceivedBytes: number;
 }
 
+export interface VideoQualityDimensions {
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export interface VideoScreenShareTransmitQuality {
+  configured: VideoQualityDimensions;
+  maxBitrateBps: number;
+  outbound: (VideoQualityDimensions & { targetBitrateBps: number; limitation: string }) | null;
+  remoteLossFraction: number | null;
+  roundTripTimeMs: number | null;
+}
+
+export interface VideoScreenShareReceiveQuality {
+  inbound: VideoQualityDimensions | null;
+  lossFraction: number | null;
+}
+
+/**
+ * Native WebRTC quality measurements. These describe the actual encoded and decoded
+ * screen-share streams, not the local JPEG preview used by the Raven interface.
+ */
+export interface VideoQualityReport {
+  screenShareTransmit: VideoScreenShareTransmitQuality | null;
+  screenShareReceive: VideoScreenShareReceiveQuality | null;
+}
+
 export type VideoStateUnsubscribe = () => void;
 
 export const videoCommands = {
@@ -188,6 +216,8 @@ export const videoCommands = {
   getCapabilities: () => invoke<NativeVideoCapabilityReport>("video_get_capabilities"),
 
   getNetworkTotals: () => invoke<VideoNetworkTotals>("video_get_network_totals"),
+
+  getQualityReport: () => invoke<VideoQualityReport>("video_get_quality_report"),
 
   getStreamEndpoint: () => invoke<VideoStreamEndpoint>("video_get_stream_endpoint"),
 

@@ -276,6 +276,9 @@ export interface Friend {
   username: string;
   displayName: string;
   createdAt: string;
+  presenceState: UserPresenceState;
+  reachability: UserReachability;
+  activeNestId?: string | null;
 }
 
 export interface FriendRequest {
@@ -829,8 +832,12 @@ export class ApiClient {
     });
   }
 
-  presenceHeartbeat(signal?: AbortSignal) {
-    return this.request<void>("/v1/presence/heartbeat", { method: "POST", response: "none", signal });
+  presenceHeartbeat(signal?: AbortSignal, nestHeartbeat = true) {
+    return this.request<{ presence: UserPresence }>("/v1/presence/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({ nestHeartbeat }),
+      signal,
+    });
   }
 
   createKnock(payload: { toUserId?: string; username?: string; nestId?: string; message?: string }) {

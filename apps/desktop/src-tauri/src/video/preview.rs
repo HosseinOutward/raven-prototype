@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::video::capture::VideoFrameSink;
 use crate::video::convert::I420Frame;
-use crate::video::domain::{VideoPresentationSettings, VideoSourceId};
+use crate::video::domain::{VideoPresentationSettings, VideoSourceId, VideoTrackSource};
 use crate::video::stream::{VideoFrameHub, VideoFramePublisher};
 
 #[derive(Clone)]
@@ -52,6 +52,7 @@ impl VideoPreviewController {
     pub fn wrap_publish_sinks(
         &self,
         publish_sinks: HashMap<VideoSourceId, Arc<dyn VideoFrameSink>>,
+        source_types: &HashMap<VideoSourceId, VideoTrackSource>,
     ) -> HashMap<VideoSourceId, Arc<dyn VideoFrameSink>> {
         let Ok(mut cached) = self.sinks.lock() else {
             return publish_sinks;
@@ -73,6 +74,10 @@ impl VideoPreviewController {
                         format!("local-{source_id}"),
                         self.hub.clone(),
                         Arc::clone(&self.settings),
+                        source_types
+                            .get(&source_id)
+                            .copied()
+                            .unwrap_or(VideoTrackSource::Camera),
                     ),
                 });
                 cached.insert(
@@ -133,9 +138,12 @@ mod tests {
         );
         let source_id = VideoSourceId::new();
         let publish: Arc<dyn VideoFrameSink> = Arc::new(NullSink);
-        let first =
-            controller.wrap_publish_sinks(HashMap::from([(source_id, Arc::clone(&publish))]));
-        let second = controller.wrap_publish_sinks(HashMap::from([(source_id, publish)]));
+        let first = controller.wrap_publish_sinks(
+            HashMap::from([(source_id, Arc::clone(&publish))]),
+            &HashMap::new(),
+        );
+        let second =
+            controller.wrap_publish_sinks(HashMap::from([(source_id, publish)]), &HashMap::new());
         assert!(Arc::ptr_eq(
             first.get(&source_id).unwrap(),
             second.get(&source_id).unwrap()

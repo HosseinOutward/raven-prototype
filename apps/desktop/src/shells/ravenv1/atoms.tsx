@@ -14,14 +14,32 @@ export function Island({ className, children, style }: { className?: string; chi
   );
 }
 
-/** Consentful presence indicator — a quiet colored dot, never raw "online". */
-export function PresenceDot({ presence, className }: { presence: Presence; className?: string }) {
+/** A compact status indicator. The avatar badge form stays recognizable without relying on color alone. */
+export function PresenceDot({
+  presence,
+  className,
+  avatarBadge = false,
+}: {
+  presence: Presence;
+  className?: string;
+  avatarBadge?: boolean;
+}) {
+  const offline = presence === "offline";
   return (
     <span
-      aria-hidden
-      className={cn("inline-block h-2 w-2 shrink-0 rounded-full", className)}
-      style={{ background: `hsl(${PRESENCE[presence].h})` }}
-    />
+      aria-label={PRESENCE[presence].label}
+      role="img"
+      title={PRESENCE[presence].label}
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-full",
+        avatarBadge ? "h-3.5 w-3.5 border-2 border-card" : "h-2 w-2",
+        offline && "border",
+        className,
+      )}
+      style={offline ? { borderColor: `hsl(${PRESENCE[presence].h})` } : { background: `hsl(${PRESENCE[presence].h})` }}
+    >
+      {presence === "dnd" ? <span aria-hidden className="h-px w-1.5 rounded-full bg-white" /> : null}
+    </span>
   );
 }
 

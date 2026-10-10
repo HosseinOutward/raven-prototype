@@ -1,5 +1,5 @@
 import { audioCommands } from "@/lib/audio";
-import { videoCommands } from "@/lib/video";
+import { type VideoQualityReport, videoCommands } from "@/lib/video";
 
 export type NetworkActivityDirection = "incoming" | "outgoing";
 export type NetworkActivityCategory = "audio" | "video" | "screenShare" | "other" | "total";
@@ -20,12 +20,14 @@ export interface NetworkActivitySnapshot extends NetworkActivitySettings {
   rates: Record<MeasuredNetworkCategory | "total", NetworkTransferRate>;
   active: boolean;
   updatedAt: number | null;
+  screenShareQuality: VideoQualityReport | null;
 }
 
 export type NetworkCounters = Record<MeasuredNetworkCategory, NetworkTransferRate>;
 
 export interface NetworkSample {
   counters: NetworkCounters;
+  screenShareQuality: VideoQualityReport | null;
 }
 
 export interface NetworkSamplingPlan {
@@ -76,9 +78,10 @@ export async function collectNetworkSample(
   const plan = createNetworkSamplingPlan(settings);
   const counters = createZeroNetworkCounters();
 
-  const [audioTotals, videoTotals] = await Promise.all([
+  const [audioTotals, videoTotals, screenShareQuality] = await Promise.all([
     plan.audio ? audioCommands.getNetworkTotals() : Promise.resolve(null),
     plan.video || plan.screenShare ? videoCommands.getNetworkTotals() : Promise.resolve(null),
+    plan.screenShare ? videoCommands.getQualityReport() : Promise.resolve(null),
   ]);
   if (audioTotals) {
     counters.audio.incoming = audioTotals.receivedBytes;
@@ -94,7 +97,42 @@ export async function collectNetworkSample(
       counters.screenShare.outgoing = videoTotals.screenShareSentBytes;
     }
   }
-  return { counters };
+  return { counters, screenShareQuality };
+}
+
+export function screenShareQualityNotice(report: VideoQualityReport | null): string | null {
+  const transmit = report?.screenShareTransmit;
+  if (!transmit) return null;
+  const outbound = transmit.outbound;
+  if (!outbound || outbound.width === 0 || outbound.height === 0 || outbound.fps <= 0) {
+    return "Screen share is starting; encoder measurements are not available yet.";
+  }
+  const configured = `${transmit.configured.width}×${transmit.configured.height} @ ${Math.round(transmit.configured.fps)} FPS · max ${formatBitrate(transmit.maxBitrateBps)}`;
+  const actual = `${outbound.width}×${outbound.height} @ ${Math.round(outbound.fps)} FPS`;
+  const limited = outbound.width < transmit.configured.width
+    || outbound.height < transmit.configured.height
+    || outbound.fps + 0.5 < transmit.configured.fps
+    || (outbound.limitation && outbound.limitation !== "none");
+  const feedback = [
+    transmit.remoteLossFraction != null ? `remote loss ${(transmit.remoteLossFraction * 100).toFixed(1)}%` : null,
+    transmit.roundTripTimeMs != null ? `RTT ${Math.round(transmit.roundTripTimeMs)} ms` : null,
+  ].filter(Boolean).join(" · ");
+  const suffix = feedback ? ` ${feedback}.` : "";
+  if (limited) return `Sharing ${actual}; requested ${configured}. Encoder limit: ${outbound.limitation || "unknown"}.${suffix}`;
+  return `Sharing ${actual}; requested ${configured}.${suffix}`;
+}
+
+function formatBitrate(bitsPerSecond: number) {
+  if (bitsPerSecond >= 1_000_000) return `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbps`;
+  return `${Math.round(bitsPerSecond / 1_000)} Kbps`;
+}
+
+export function receivedScreenShareQualityNotice(report: VideoQualityReport | null): string | null {
+  const receive = report?.screenShareReceive;
+  const inbound = receive?.inbound;
+  if (!inbound || inbound.width === 0 || inbound.height === 0 || inbound.fps <= 0) return null;
+  const loss = receive.lossFraction == null ? "" : ` · packet loss ${(receive.lossFraction * 100).toFixed(1)}%`;
+  return `Receiving ${inbound.width}×${inbound.height} @ ${Math.round(inbound.fps)} FPS${loss}.`;
 }
 
 export function ratesFromNetworkSamples(

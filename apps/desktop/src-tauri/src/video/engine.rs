@@ -147,6 +147,48 @@ pub struct VideoNetworkTotals {
     pub screen_share_received_bytes: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoQualityDimensions {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoScreenShareTransmitQuality {
+    pub configured: VideoQualityDimensions,
+    pub max_bitrate_bps: u64,
+    pub outbound: Option<VideoOutboundQuality>,
+    pub remote_loss_fraction: Option<f64>,
+    pub round_trip_time_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoOutboundQuality {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub target_bitrate_bps: f64,
+    pub limitation: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoScreenShareReceiveQuality {
+    pub inbound: Option<VideoQualityDimensions>,
+    pub loss_fraction: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoQualityReport {
+    pub screen_share_transmit: Option<VideoScreenShareTransmitQuality>,
+    pub screen_share_receive: Option<VideoScreenShareReceiveQuality>,
+}
+
 pub async fn measure_video_network_totals(
     published_tracks: Vec<(VideoTrackSource, LocalTrack)>,
     subscribed_tracks: Vec<(VideoTrackSource, RemoteTrack)>,
@@ -181,6 +223,87 @@ pub async fn measure_video_network_totals(
         }
     }
     Ok(totals)
+}
+
+pub async fn measure_video_quality_report(
+    published_screen_shares: Vec<(LocalTrack, VideoQualityProfile)>,
+    subscribed_screen_shares: Vec<RemoteTrack>,
+) -> Result<VideoQualityReport, String> {
+    let screen_share_transmit =
+        if let Some((track, profile)) = published_screen_shares.into_iter().next() {
+            let tuning = profile.publish_tuning(VideoTrackSource::Screenshare);
+            let stats = track.get_stats().await.map_err(|error| error.to_string())?;
+            let outbound = stats.iter().find_map(|stat| match stat {
+                RtcStats::OutboundRtp(value) => Some(VideoOutboundQuality {
+                    width: value.outbound.frame_width,
+                    height: value.outbound.frame_height,
+                    fps: value.outbound.frames_per_second,
+                    target_bitrate_bps: value.outbound.target_bitrate,
+                    limitation: format!("{:?}", value.outbound.quality_limitation_reason)
+                        .to_lowercase(),
+                }),
+                _ => None,
+            });
+            let remote_feedback = stats.iter().find_map(|stat| match stat {
+                RtcStats::RemoteInboundRtp(value) => Some((
+                    value.remote_inbound.fraction_lost,
+                    value.remote_inbound.round_trip_time * 1_000.0,
+                )),
+                _ => None,
+            });
+            Some(VideoScreenShareTransmitQuality {
+                configured: VideoQualityDimensions {
+                    width: tuning.width,
+                    height: tuning.height,
+                    fps: tuning.frame_rate,
+                },
+                max_bitrate_bps: tuning.max_bitrate_bps,
+                outbound,
+                remote_loss_fraction: remote_feedback.map(|(loss, _)| loss),
+                round_trip_time_ms: remote_feedback.map(|(_, rtt)| rtt),
+            })
+        } else {
+            None
+        };
+
+    let mut inbound = None;
+    let mut packets_received = 0_u64;
+    let mut packets_lost = 0_i64;
+    for track in subscribed_screen_shares {
+        let stats = track.get_stats().await.map_err(|error| error.to_string())?;
+        for stat in stats {
+            if let RtcStats::InboundRtp(value) = stat {
+                packets_received += value.received.packets_received;
+                packets_lost += value.received.packets_lost.max(0);
+                let next = VideoQualityDimensions {
+                    width: value.inbound.frame_width,
+                    height: value.inbound.frame_height,
+                    fps: value.inbound.frames_per_second,
+                };
+                if inbound
+                    .as_ref()
+                    .map(|current: &VideoQualityDimensions| {
+                        next.width.saturating_mul(next.height)
+                            > current.width.saturating_mul(current.height)
+                    })
+                    .unwrap_or(true)
+                {
+                    inbound = Some(next);
+                }
+            }
+        }
+    }
+    let received_or_lost = packets_received + packets_lost.max(0) as u64;
+    let screen_share_receive = inbound.map(|inbound| VideoScreenShareReceiveQuality {
+        inbound: Some(inbound),
+        loss_fraction: (received_or_lost > 0)
+            .then_some(packets_lost.max(0) as f64 / received_or_lost as f64),
+    });
+
+    Ok(VideoQualityReport {
+        screen_share_transmit,
+        screen_share_receive,
+    })
 }
 
 /// The native video media engine. Stored inside `VideoEngineState`.
@@ -259,6 +382,23 @@ impl VideoEngine {
                 let source = video_track_source(publication.source())?;
                 let track = publication.track()?;
                 matches!(track, RemoteTrack::Video(_)).then_some((source, track))
+            })
+            .collect()
+    }
+
+    pub fn published_screen_share_tracks(&self) -> Vec<(LocalTrack, VideoQualityProfile)> {
+        self.publications
+            .values()
+            .filter(|entry| matches!(entry.source, VideoTrackSource::Screenshare))
+            .map(|entry| (entry.track.clone(), entry.profile.clone()))
+            .collect()
+    }
+
+    pub fn subscribed_screen_share_tracks(&self) -> Vec<RemoteTrack> {
+        self.subscribed_tracks()
+            .into_iter()
+            .filter_map(|(source, track)| {
+                matches!(source, VideoTrackSource::Screenshare).then_some(track)
             })
             .collect()
     }
@@ -437,7 +577,7 @@ impl VideoEngine {
             .iter()
             .filter_map(|(id, entry)| {
                 let desired_source = desired.get(id)?;
-                if entry.profile != desired_source.profile.clone().normalized() {
+                if entry.profile != desired_source.profile {
                     Some(*id)
                 } else {
                     None
@@ -490,7 +630,7 @@ impl VideoEngine {
             .unwrap_or_default();
         let webrtc_track_id = stable_video_track_id(track_id);
 
-        let profile = source.profile.clone().normalized();
+        let profile = source.profile.clone();
         let track_source = VideoTrackSource::from_kind(source.kind);
         let publish_tuning = profile.publish_tuning(track_source);
         let width = publish_tuning.width.max(2);
@@ -599,10 +739,13 @@ impl VideoEngine {
                             continue;
                         };
                         let stream_id = remote_stream_id(&publication.sid().to_string());
+                        let source = video_track_source(publication.source())
+                            .unwrap_or(VideoTrackSource::Camera);
                         let publisher = VideoFramePublisher::new(
                             stream_id.clone(),
                             hub.clone(),
                             Arc::clone(&presentation),
+                            source,
                         );
                         let mut stream = NativeVideoStream::new(video_track.rtc_track());
                         let reader = runtime.spawn(async move {
