@@ -1,0 +1,368 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tailwind preflight defaults bare `border` to gray-200 (#e5e7eb), which reads as
+   harsh white lines on the dark canvas. Route every default border through the
+   palette token instead. Components that pass an explicit border-* color override. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: hsl(var(--border));
+  }
+}
+
+/* One theme for every Raven window (main, Studio, overlay).
+   Chrome is graphite; colour is reserved for people: presence, live and speaking.
+   Elevation runs canvas -> surface -> raised, one step each. */
+:root {
+  /* Geist has no Arabic-script glyphs; Vazirmatn is bundled so Persian and Arabic read
+     well everywhere instead of falling to whatever the system has. The emoji fonts are
+     named so Linux does not draw emoji as outlines. */
+  font-family:
+    "Geist Variable", "Vazirmatn Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif,
+    "Segoe UI Emoji", "Noto Color Emoji";
+  font-size: 16px;
+  color-scheme: dark;
+
+  /* Canvas: window, sidebar, dock */
+  --background: 30 6% 5.5%;
+  --foreground: 40 16% 93%;
+
+  /* Surface: the main content panel */
+  --card: 30 5% 9%;
+  --card-foreground: 40 16% 93%;
+
+  /* Raised: menus, popovers, dialogs */
+  --popover: 30 5% 12.5%;
+  --popover-foreground: 40 16% 93%;
+
+  /* Primary actions are light, never the live colour */
+  --primary: 40 16% 93%;
+  --primary-foreground: 30 6% 8%;
+
+  /* Fill and fill-hover for rows, grouped lists and quiet controls */
+  --secondary: 30 5% 14%;
+  --secondary-foreground: 40 14% 88%;
+  --accent: 30 5% 18%;
+  --accent-foreground: 40 16% 93%;
+
+  --muted: 30 5% 12%;
+  /* Secondary text, 7.7:1 on the surface */
+  --muted-foreground: 36 7% 68%;
+  /* Captions and placeholders, 4.8:1 on the surface */
+  --subtle-foreground: 34 6% 52%;
+
+  /* Someone is live or speaking. Nothing else uses this colour. */
+  --live: 172 42% 60%;
+  --live-foreground: 172 40% 8%;
+
+  /* `destructive` is text-safe on dark; `destructive-fill` carries white text. */
+  --destructive: 4 66% 64%;
+  --destructive-fill: 4 56% 46%;
+  --destructive-foreground: 0 0% 100%;
+  --warning: 38 80% 62%;
+
+  --border: 30 5% 17%;
+  --input: 30 5% 24%;
+  --ring: 40 10% 80%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 980px;
+  min-height: 700px;
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-size: 14px;
+  line-height: 1.4286;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body[data-raven-window="overlay"] {
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body[data-raven-window="overlay"] #root {
+  background: transparent;
+}
+
+::selection {
+  background: hsl(var(--foreground) / 0.22);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+/* Keyboard focus: one neutral ring everywhere. An outline never fights a
+   component box-shadow. The whole selector sits inside :where() so it has zero
+   specificity and any utility (for example outline-none on a popover) wins. */
+:where(
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  summary:focus-visible,
+  [role="button"]:focus-visible,
+  [role="tab"]:focus-visible,
+  [role="switch"]:focus-visible,
+  [role="radio"]:focus-visible,
+  [tabindex]:focus-visible
+) {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+:where(input:focus-visible, textarea:focus-visible) {
+  outline-offset: 0;
+}
+
+/* Speaking: a ring whose strength follows the voice. No glow. The alpha comes
+   from `speakingGlowStyle` in lib/speakingActivity. Tiles and the overlay draw
+   the ring inside their edge so it is never clipped by a scrolling parent. */
+.raven-speaking-tile,
+.raven-overlay-speaking {
+  outline: 2px solid hsl(var(--live) / var(--raven-speaking-border-alpha, 0.7));
+  outline-offset: -2px;
+  transition: outline-color 140ms ease-out;
+}
+
+.raven-speaking-avatar {
+  box-shadow:
+    0 0 0 2px hsl(var(--card)),
+    0 0 0 4px hsl(var(--live) / var(--raven-speaking-border-alpha, 0.7));
+  transition: box-shadow 140ms ease-out;
+}
+
+.raven-speaking-ring {
+  outline: 2px solid hsl(var(--live) / var(--raven-speaking-border-alpha, 0.7));
+  outline-offset: 1px;
+  transition: outline-color 140ms ease-out;
+}
+
+/* Fullscreen elements live in the browser's top layer. Give both the whole
+   stage and an individual participant an explicit top-layer box so inherited
+   flex/percentage sizing cannot leave a strip of the app visible underneath. */
+.raven-media-stage:fullscreen,
+.raven-media-tile:fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 0;
+  background: hsl(var(--background));
+}
+
+.raven-media-tile:fullscreen:focus-visible {
+  outline: none;
+}
+
+.ravenv1-scope {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ravenv1-scope input,
+.ravenv1-scope textarea,
+.ravenv1-scope [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.ravenv1-scope .raven-window-drag {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* What people wrote can be selected and copied like any text. The interface around it
+   (names, times, buttons) stays unselectable so a drag picks up only the words. */
+.ravenv1-scope .raven-chat-text,
+.ravenv1-scope .raven-chat-text * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Message text keeps the line breaks it was typed with and never forces the column
+   wider, however long a word or an address is. Each paragraph takes its own direction
+   from its first strong character (dir="auto"), so Persian and English lines in one
+   message each read the right way round. */
+.raven-chat-text {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.raven-chat-text p {
+  margin: 0;
+  min-height: 1.4286em;
+  white-space: pre-wrap;
+  text-align: start;
+}
+
+/* Monospace is for hotkeys, addresses and numeric readouts only. */
+.rv-mono {
+  font-family: "Geist Mono Variable", "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+
+/* Horizontal parameter slider. Styled explicitly rather than left to
+   `accent-color`, whose default track is a light grey that reads as a bright
+   scar on the dark panels. */
+.raven-fader {
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  accent-color: hsl(var(--foreground));
+  cursor: pointer;
+}
+
+.raven-fader::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+}
+
+.raven-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  /* (track height - thumb height) / 2 */
+  margin-top: -5px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 999px;
+  background: hsl(var(--foreground));
+  transition: box-shadow 120ms ease;
+}
+
+.raven-fader::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+}
+
+.raven-fader::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 999px;
+  background: hsl(var(--foreground));
+}
+
+.raven-fader:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px hsl(var(--foreground) / 0.14);
+}
+
+.raven-fader:focus-visible {
+  outline: none;
+}
+
+.raven-fader:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px hsl(var(--ring) / 0.4);
+}
+
+.raven-fader:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.raven-fader:disabled:hover::-webkit-slider-thumb {
+  box-shadow: none;
+}
+
+/* Vertical console fader — used by the Studio mixer channel strips */
+.raven-fader-vertical {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 22px;
+  height: 100%;
+  accent-color: hsl(var(--foreground));
+  cursor: ns-resize;
+}
+
+/* Legacy WebKit vertical slider hint (harmless where unsupported) */
+@supports (-webkit-appearance: slider-vertical) {
+  .raven-fader-vertical {
+    -webkit-appearance: slider-vertical;
+    writing-mode: initial;
+    direction: ltr;
+  }
+}
+
+/* Scrollbar: wide enough to grab, quiet until hovered */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--subtle-foreground));
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Motion answers an action (open, confirm); nothing moves on its own. */
+@keyframes raven-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes raven-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@keyframes raven-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

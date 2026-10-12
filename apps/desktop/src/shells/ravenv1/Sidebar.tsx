@@ -1,0 +1,499 @@
+import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { capabilitiesOf } from "@/lib/permissions";
+import { Avatar } from "@/components/ui/avatar";
+import { Tooltip } from "@/components/ui/tooltip";
+import { api, type LauncherNest } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
+import { UnreadDot } from "@/components/chat/ConversationRow";
+import type { ChatStore } from "@/lib/chat/store";
+import { AvatarStack, LiveDot, PersonAvatar, SectionLabel } from "./atoms";
+import { PendingList } from "./Inbox";
+import { OFFLINE_RANK, personStatus, reachRank } from "./people";
+import { SidebarMessages, TreeTextNests } from "./SidebarChat";
+import { displayNameFor, PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "./state";
+import { useMessagesUnread, useTreeChatSummaries } from "./useChat";
+import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
+import type { NestEntryController } from "./useNestEntry";
+import { NameDialog } from "./views/dialogs";
+
+const COLLAPSED_TREES_KEY = "raven.sidebar.collapsedTrees";
+const SHOW_OFFLINE_KEY = "raven.sidebar.showOffline";
+const SHOW_TREE_PEOPLE_KEY = "raven.sidebar.showTreePeople";
+
+/**
+ * The live social map: who is reaching you, which nests are alive in each tree,
+ * and which friends are around. It shows what matters now, not every structure.
+ */
+export function Sidebar({
+  view,
+  data,
+  media,
+  entry,
+  chat,
+  collapsed,
+  onToggle,
+  onNavigate,
+}: {
+  view: RavenView;
+  data: RavenShellData;
+  media: RavenMediaAdapterState;
+  entry: NestEntryController;
+  /** Text chat, or null when the server has none. */
+  chat: ChatStore | null;
+  collapsed: boolean;
+  onToggle: () => void;
+  onNavigate: (view: RavenView) => void;
+}) {
+  const treeChat = useTreeChatSummaries(chat);
+  const messagesUnread = useMessagesUnread(chat);
+  const [collapsedTrees, setCollapsedTrees] = useState<Set<string>>(() => readIdSet(COLLAPSED_TREES_KEY));
+  const [showOffline, setShowOffline] = useStoredFlag(SHOW_OFFLINE_KEY, false);
+  const [showTreePeople, setShowTreePeople] = useStoredFlag(SHOW_TREE_PEOPLE_KEY, false);
+  const [createTreeOpen, setCreateTreeOpen] = useState(false);
+
+  const serverName = data.serverProperties.name || "Raven";
+  const serverAvatar = data.serverProperties.avatar ? api.assetUrl(data.serverProperties.avatar) : undefined;
+  const treeSingular = data.labels.treeSingular;
+
+  const liveByTree = useMemo(() => {
+    const groups = new Map<string, LauncherNest[]>();
+    for (const nest of data.activeNests) {
+      if (!nest.treeId) continue;
+      const list = groups.get(nest.treeId) ?? [];
+      list.push(nest);
+      groups.set(nest.treeId, list);
+    }
+    return groups;
+  }, [data.activeNests]);
+
+  const looseNests = useMemo(() => {
+    const seen = new Set<string>();
+    const result: LauncherNest[] = [];
+    for (const nest of [...data.activeNests.filter((candidate) => !candidate.treeId), ...data.temporaryNests]) {
+      if (seen.has(nest.id)) continue;
+      seen.add(nest.id);
+      result.push(nest);
+    }
+    return result;
+  }, [data.activeNests, data.temporaryNests]);
+
+  const friends = useMemo(
+    () => data.people.filter((person) => person.relationship === "friend").sort((a, b) => reachRank(a) - reachRank(b) || a.name.localeCompare(b.name)),
+    [data.people],
+  );
+  const reachableFriends = friends.filter((person) => reachRank(person) < OFFLINE_RANK);
+  const offlineFriends = friends.filter((person) => reachRank(person) >= OFFLINE_RANK);
+  const treePeople = useMemo(
+    () => data.people.filter((person) => person.relationship !== "friend").sort((a, b) => reachRank(a) - reachRank(b) || a.name.localeCompare(b.name)),
+    [data.people],
+  );
+
+  const toggleTree = useCallback((treeId: string) => {
+    setCollapsedTrees((current) => {
+      const next = new Set(current);
+      if (next.has(treeId)) next.delete(treeId);
+      else next.add(treeId);
+      localStorage.setItem(COLLAPSED_TREES_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
+  const openNest = (nest: LauncherNest) =>
+    onNavigate(nest.type === "temporary" && nest.lifecycleState !== "active" ? { kind: "waiting", id: nest.id } : { kind: "nest", id: nest.id });
+
+  const joinNest = (nest: LauncherNest) => {
+    onNavigate({ kind: "nest", id: nest.id });
+    void entry
+      .enter(nest.id)
+      .then((result) => {
+        if (result === "waiting") onNavigate({ kind: "waiting", id: nest.id });
+      })
+      .catch(() => undefined);
+  };
+
+  const nestRow = (nest: LauncherNest, nested: boolean) => (
+    <NestRow
+      key={nest.id}
+      nest={nest}
+      nested={nested}
+      active={(view.kind === "nest" || view.kind === "waiting") && view.id === nest.id}
+      here={media.activeNestId === nest.id}
+      joinable={!media.activeNestId && !entry.pending && media.phase !== "joining" && nest.lifecycleState === "active"}
+      joinLabel={`Join ${nest.name}`}
+      onOpen={() => openNest(nest)}
+      onJoin={() => joinNest(nest)}
+    />
+  );
+
+  if (collapsed) {
+    return (
+      <nav aria-label="Raven" className="flex min-h-0 flex-col items-center gap-1 pb-2 pt-1">
+        <RailButton label="Home" active={view.kind === "home"} onClick={() => onNavigate({ kind: "home" })}>
+          <Avatar name={serverName} src={serverAvatar} className="h-7 w-7 rounded-control bg-foreground text-background" />
+        </RailButton>
+        {chat ? (
+          <RailButton label={messagesUnread ? "Messages · unread" : "Messages"} active={view.kind === "messages" || view.kind === "chat"} onClick={() => onNavigate({ kind: "messages" })}>
+            <span className="relative">
+              <MessageSquare className="h-4 w-4" />
+              {messagesUnread ? <UnreadDot className="absolute -right-1.5 -top-1.5 h-2 w-2 outline outline-2 outline-background" /> : null}
+            </span>
+          </RailButton>
+        ) : null}
+        <div className="my-1 h-px w-6 bg-border" />
+        <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
+          {data.trees.map((tree) => {
+            const live = liveByTree.get(tree.id)?.length ?? 0;
+            const unread = treeChat.get(tree.id)?.unread ?? false;
+            return (
+              <RailButton
+                key={tree.id}
+                label={[tree.name, live ? `${live} live` : null, unread ? "unread" : null].filter(Boolean).join(" · ")}
+                active={(view.kind === "tree" || view.kind === "tree-settings") && view.id === tree.id}
+                onClick={() => onNavigate({ kind: "tree", id: tree.id })}
+              >
+                <span className="relative">
+                  <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-7 w-7 rounded-control" />
+                  {live ? <LiveDot className="absolute -right-0.5 -top-0.5 h-2 w-2 outline outline-2 outline-background" /> : null}
+                  {unread ? <UnreadDot className="absolute -bottom-0.5 -right-0.5 h-2 w-2 outline outline-2 outline-background" /> : null}
+                </span>
+              </RailButton>
+            );
+          })}
+          {reachableFriends.length ? <div className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
+          {reachableFriends.map((person) => (
+            <RailButton
+              key={person.id}
+              label={`${person.name} · ${personStatus(person, data) ?? PRESENCE[person.presence].label}`}
+              active={view.kind === "user" && view.id === person.id}
+              onClick={() => onNavigate({ kind: "user", id: person.id })}
+            >
+              <PersonAvatar id={person.id} name={person.name} presence={person.presence} surface="canvas" className="h-7 w-7" />
+            </RailButton>
+          ))}
+        </div>
+        <RailButton label="Expand sidebar" onClick={onToggle}>
+          <PanelLeftOpen className="h-4 w-4" />
+        </RailButton>
+      </nav>
+    );
+  }
+
+  return (
+    <nav aria-label="Raven" className="flex min-h-0 flex-col">
+      <div className="flex shrink-0 items-center gap-1 px-2 pb-1 pt-1">
+        <button
+          type="button"
+          onClick={() => onNavigate({ kind: "home" })}
+          aria-current={view.kind === "home" ? "page" : undefined}
+          title={data.serverProperties.description || serverName}
+          className={cn(
+            "flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-control px-2 text-left transition-colors",
+            view.kind === "home" ? "bg-secondary" : "hover:bg-secondary/60",
+          )}
+        >
+          <Avatar name={serverName} src={serverAvatar} className="h-6 w-6 rounded-chip bg-foreground text-background" />
+          <span className="min-w-0 flex-1 truncate text-body font-medium">{serverName}</span>
+        </button>
+        <Tooltip label="Collapse sidebar" side="bottom">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label="Collapse sidebar"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-subtle transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
+        </Tooltip>
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-3 pt-1">
+        {data.pending.length > 0 ? (
+          <section>
+            <SectionLabel className="px-2">Reaching you</SectionLabel>
+            <PendingList data={data} onNavigate={onNavigate} surface="canvas" compact />
+          </section>
+        ) : null}
+
+        {chat ? <SidebarMessages chat={chat} data={data} view={view} onNavigate={onNavigate} /> : null}
+
+        <section>
+          <SectionLabel
+            className="px-2"
+            action={!capabilitiesOf(data.user).createSpaces ? undefined : (
+              <Tooltip label={`New ${treeSingular.toLowerCase()}`} side="right">
+                <button
+                  type="button"
+                  aria-label={`New ${treeSingular.toLowerCase()}`}
+                  onClick={() => setCreateTreeOpen(true)}
+                  className="flex h-6 w-6 items-center justify-center rounded-chip text-subtle transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
+            )}
+          >
+            {data.labels.treePlural}
+          </SectionLabel>
+          {data.trees.length ? (
+            <div className="space-y-px">
+              {data.trees.map((tree) => {
+                const live = liveByTree.get(tree.id) ?? [];
+                const text = treeChat.get(tree.id);
+                // A tree opens to show what is in it now: its text nests and its live nests.
+                const expandable = live.length > 0 || Boolean(text?.count);
+                const open = expandable && !collapsedTrees.has(tree.id);
+                const active = (view.kind === "tree" || view.kind === "tree-settings") && view.id === tree.id;
+                return (
+                  <div key={tree.id}>
+                    <div className={cn("group flex h-9 items-center rounded-control transition-colors", active ? "bg-secondary" : "hover:bg-secondary/60")}>
+                      {expandable ? (
+                        <button
+                          type="button"
+                          aria-label={open ? `Hide ${data.labels.nestPlural.toLowerCase()} in ${tree.name}` : `Show ${data.labels.nestPlural.toLowerCase()} in ${tree.name}`}
+                          aria-expanded={open}
+                          onClick={() => toggleTree(tree.id)}
+                          className="flex h-9 w-6 shrink-0 items-center justify-center text-subtle hover:text-foreground"
+                        >
+                          {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        </button>
+                      ) : (
+                        <span className="w-6 shrink-0" />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => onNavigate({ kind: "tree", id: tree.id })}
+                        aria-current={active ? "page" : undefined}
+                        className="flex h-9 min-w-0 flex-1 items-center gap-2.5 pr-2 text-left"
+                      >
+                        <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-5 w-5 rounded-chip text-[10px]" />
+                        <span className={cn("min-w-0 flex-1 truncate text-small", active || live.length ? "font-medium text-foreground" : "text-muted-foreground group-hover:text-foreground")}>
+                          {tree.name}
+                        </span>
+                        {live.length && !open ? <LiveDot /> : null}
+                        {text?.unread && !open ? <UnreadDot /> : null}
+                      </button>
+                    </div>
+                    {open ? (
+                      <div className="space-y-px">
+                        {chat && text?.count ? <TreeTextNests chat={chat} treeId={tree.id} view={view} onNavigate={onNavigate} /> : null}
+                        {live.map((nest) => nestRow(nest, true))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="px-2 py-1 text-small text-muted-foreground">
+              Create a {treeSingular.toLowerCase()} for a group you trust, or search for a public one.
+            </p>
+          )}
+        </section>
+
+        {looseNests.length ? (
+          <section>
+            <SectionLabel className="px-2">{data.labels.temporaryNest}s</SectionLabel>
+            <div className="space-y-px">{looseNests.map((nest) => nestRow(nest, false))}</div>
+          </section>
+        ) : null}
+
+        <section>
+          <SectionLabel className="px-2">Friends</SectionLabel>
+          {friends.length ? (
+            <div className="space-y-px">
+              {reachableFriends.map((person) => (
+                <PersonRow key={person.id} person={person} data={data} active={view.kind === "user" && view.id === person.id} onNavigate={onNavigate} />
+              ))}
+              {offlineFriends.length ? (
+                <>
+                  <DisclosureRow open={showOffline} onToggle={() => setShowOffline(!showOffline)}>
+                    Offline · {offlineFriends.length}
+                  </DisclosureRow>
+                  {showOffline
+                    ? offlineFriends.map((person) => (
+                        <PersonRow key={person.id} person={person} data={data} active={view.kind === "user" && view.id === person.id} onNavigate={onNavigate} />
+                      ))
+                    : null}
+                </>
+              ) : null}
+            </div>
+          ) : (
+            <p className="px-2 py-1 text-small text-muted-foreground">Search for someone to add them as a friend.</p>
+          )}
+        </section>
+
+        {treePeople.length ? (
+          <section>
+            <DisclosureRow open={showTreePeople} onToggle={() => setShowTreePeople(!showTreePeople)}>
+              From your {data.labels.treePlural.toLowerCase()} · {treePeople.length}
+            </DisclosureRow>
+            {showTreePeople ? (
+              <div className="space-y-px">
+                {treePeople.map((person) => (
+                  <PersonRow key={person.id} person={person} data={data} active={view.kind === "user" && view.id === person.id} onNavigate={onNavigate} />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+      </div>
+
+      <NameDialog
+        open={createTreeOpen}
+        onOpenChange={setCreateTreeOpen}
+        title={`New ${treeSingular.toLowerCase()}`}
+        description={`A ${treeSingular.toLowerCase()} is a private home for a group. You choose who joins.`}
+        label="Name"
+        placeholder="Weekend crew"
+        submitLabel={`Create ${treeSingular.toLowerCase()}`}
+        onSubmit={async (name) => {
+          const tree = await data.createTree(name);
+          setCreateTreeOpen(false);
+          onNavigate({ kind: "tree", id: tree.id });
+        }}
+      />
+    </nav>
+  );
+}
+
+function NestRow({
+  nest,
+  nested,
+  active,
+  here,
+  joinable,
+  joinLabel,
+  onOpen,
+  onJoin,
+}: {
+  nest: LauncherNest;
+  nested: boolean;
+  active: boolean;
+  here: boolean;
+  joinable: boolean;
+  joinLabel: string;
+  onOpen: () => void;
+  onJoin: () => void;
+}) {
+  const live = nest.lifecycleState === "active";
+  const people = nest.currentParticipants.map((participant) => ({ id: participant.userId, name: displayNameFor(participant) }));
+  return (
+    <div className={cn("group relative flex h-9 items-center rounded-control transition-colors", active ? "bg-secondary" : "hover:bg-secondary/60")}>
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-current={active ? "page" : undefined}
+        className={cn("flex h-9 min-w-0 flex-1 items-center gap-2.5 pr-2 text-left", nested ? "pl-[34px]" : "pl-2")}
+      >
+        {live ? <LiveDot /> : <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-subtle/60" aria-hidden />}
+        <span className="min-w-0 flex-1 truncate text-small text-foreground">{nest.name}</span>
+        {here ? (
+          <span className="shrink-0 text-caption text-live">You’re here</span>
+        ) : (
+          <span className={cn("shrink-0", joinable && "group-focus-within:invisible group-hover:invisible")}>
+            <AvatarStack people={people} surface="canvas" />
+          </span>
+        )}
+      </button>
+      {joinable && !here ? (
+        <button
+          type="button"
+          aria-label={joinLabel}
+          onClick={onJoin}
+          className="absolute right-1.5 hidden h-6 items-center rounded-chip bg-primary px-2 text-caption font-medium text-primary-foreground hover:bg-primary/90 group-focus-within:flex group-hover:flex"
+        >
+          Join
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function PersonRow({
+  person,
+  data,
+  active,
+  onNavigate,
+}: {
+  person: ShellPerson;
+  data: RavenShellData;
+  active: boolean;
+  onNavigate: (view: RavenView) => void;
+}) {
+  const status = personStatus(person, data);
+  const away = reachRank(person) >= OFFLINE_RANK;
+  return (
+    <button
+      type="button"
+      onClick={() => onNavigate({ kind: "user", id: person.id })}
+      aria-current={active ? "page" : undefined}
+      title={`${person.name} · ${PRESENCE[person.presence].label}`}
+      className={cn(
+        "flex h-9 w-full items-center gap-2.5 rounded-control px-2 text-left transition-colors",
+        active ? "bg-secondary" : "hover:bg-secondary/60",
+      )}
+    >
+      <PersonAvatar id={person.id} name={person.name} presence={person.presence} surface="canvas" className={cn("h-6 w-6", away && "opacity-60")} />
+      <span className={cn("min-w-0 flex-1 truncate text-small", away ? "text-muted-foreground" : "text-foreground")}>{person.name}</span>
+      {status ? <span className="max-w-[45%] shrink-0 truncate text-caption text-muted-foreground">{status}</span> : null}
+    </button>
+  );
+}
+
+function DisclosureRow({ open, onToggle, children }: { open: boolean; onToggle: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={onToggle}
+      className="flex h-7 w-full items-center gap-1 rounded-control px-2 text-left text-caption font-medium text-subtle transition-colors hover:text-foreground"
+    >
+      {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+      {children}
+    </button>
+  );
+}
+
+function RailButton({ label, active, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <Tooltip label={label} side="right">
+      <button
+        type="button"
+        aria-label={label}
+        aria-current={active ? "page" : undefined}
+        onClick={onClick}
+        className={cn(
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-control text-muted-foreground transition-colors",
+          active ? "bg-secondary text-foreground" : "hover:bg-secondary/60 hover:text-foreground",
+        )}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  );
+}
+
+function readIdSet(key: string) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return new Set<string>(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function useStoredFlag(key: string, fallback: boolean) {
+  const [value, setValue] = useState(() => {
+    const stored = localStorage.getItem(key);
+    return stored === null ? fallback : stored === "true";
+  });
+  const update = useCallback(
+    (next: boolean) => {
+      localStorage.setItem(key, String(next));
+      setValue(next);
+    },
+    [key],
+  );
+  return [value, update] as const;
+}

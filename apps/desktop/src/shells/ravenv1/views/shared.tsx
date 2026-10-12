@@ -1,0 +1,104 @@
+import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+import type { LauncherNest, Nest } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { AvatarStack, LiveDot, type StackPerson } from "../atoms";
+import { displayNameFor, type RavenShellData, type RavenView } from "../state";
+
+/** One quiet row at the top of a view: what this place is and what you can do. */
+export function ViewHeader({
+  leading,
+  title,
+  subtitle,
+  actions,
+}: {
+  leading?: ReactNode;
+  title: string;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border/70 px-6 py-2.5">
+      {leading}
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate text-title-sm font-semibold">{title}</h1>
+        {subtitle ? <p className="truncate text-caption text-muted-foreground">{subtitle}</p> : null}
+      </div>
+      {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+    </header>
+  );
+}
+
+export function ViewBody({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("min-h-0 flex-1 overflow-y-auto px-6 py-6", className)}>{children}</div>;
+}
+
+export function nestView(nest: Pick<Nest, "id" | "type" | "lifecycleState">): RavenView {
+  return nest.type === "temporary" && nest.lifecycleState !== "active" ? { kind: "waiting", id: nest.id } : { kind: "nest", id: nest.id };
+}
+
+export function treeNameFor(data: RavenShellData, treeId?: string | null) {
+  if (!treeId) return data.labels.temporaryNest;
+  return data.getTree(treeId)?.name ?? data.labels.treeSingular;
+}
+
+export function nestPeople(nest: Nest | LauncherNest, data: RavenShellData): StackPerson[] {
+  const participants = "currentParticipants" in nest ? nest.currentParticipants : data.getActiveSession(nest.id)?.participants ?? [];
+  return participants.map((participant) => ({ id: participant.userId, name: displayNameFor(participant) }));
+}
+
+/** "Ava", "Ava and Sam", "Ava, Sam and 2 others". */
+export function namesSentence(names: string[], max = 2) {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length <= max) return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  const rest = names.length - max;
+  return `${names.slice(0, max).join(", ")} and ${rest} ${rest === 1 ? "other" : "others"}`;
+}
+
+/** A nest that is alive right now: who is inside, and one way in. */
+export function LiveNestCard({
+  nest,
+  data,
+  here,
+  canJoin,
+  showTree = true,
+  onOpen,
+  onJoin,
+}: {
+  nest: Nest | LauncherNest;
+  data: RavenShellData;
+  here: boolean;
+  canJoin: boolean;
+  showTree?: boolean;
+  onOpen: () => void;
+  onJoin: () => void;
+}) {
+  const people = nestPeople(nest, data);
+  const selfId = data.user?.id;
+  const others = people.filter((person) => person.id !== selfId).map((person) => person.name);
+  const sentence = here
+    ? others.length ? `You and ${namesSentence(others)}` : "Only you so far"
+    : others.length ? namesSentence(others) : "Open";
+  return (
+    <div className="group relative flex flex-col gap-4 rounded-card bg-secondary/50 p-4 transition-colors hover:bg-secondary">
+      <button type="button" onClick={onOpen} className="absolute inset-0 rounded-card" aria-label={`Open ${nest.name}`} />
+      <div className="pointer-events-none flex items-start gap-2.5">
+        <LiveDot className="mt-[7px]" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-title-sm font-medium">{nest.name}</div>
+          {showTree ? <div className="truncate text-caption text-muted-foreground">{treeNameFor(data, nest.treeId)}</div> : null}
+        </div>
+      </div>
+      <div className="pointer-events-none flex items-center gap-3">
+        <AvatarStack people={people} max={4} size="md" surface="card" />
+        <span className="min-w-0 flex-1 truncate text-small text-muted-foreground">{sentence}</span>
+        {here ? (
+          <Button size="sm" variant="secondary" className="pointer-events-auto relative" onClick={onOpen}>Return</Button>
+        ) : (
+          <Button size="sm" className="pointer-events-auto relative" disabled={!canJoin} onClick={onJoin}>Join</Button>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,8 @@
+.cache
+**/.git
+**/node_modules
+**/dist
+**/target
+**/.codex
+**/*.log
+apps/desktop/src-tauri/bin/*.exe

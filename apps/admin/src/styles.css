@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: hsl(var(--border));
+  }
+}
+
+/* The desktop app's theme (apps/desktop/src/styles.css). Chrome is graphite; colour is
+   kept for state: live, a warning, something destructive. */
+:root {
+  font-family: "Geist Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+
+  --background: 30 6% 5.5%;
+  --foreground: 40 16% 93%;
+  --card: 30 5% 9%;
+  --popover: 30 5% 12.5%;
+  --primary: 40 16% 93%;
+  --primary-foreground: 30 6% 8%;
+  --secondary: 30 5% 14%;
+  --secondary-foreground: 40 14% 88%;
+  --accent: 30 5% 18%;
+  --accent-foreground: 40 16% 93%;
+  --muted: 30 5% 12%;
+  --muted-foreground: 36 7% 68%;
+  --subtle-foreground: 34 6% 52%;
+  --live: 172 42% 60%;
+  --destructive: 4 66% 64%;
+  --destructive-fill: 4 56% 46%;
+  --destructive-foreground: 0 0% 100%;
+  --warning: 38 80% 62%;
+  --border: 30 5% 17%;
+  --input: 30 5% 24%;
+  --ring: 40 10% 80%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-size: 14px;
+  line-height: 20px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: hsl(var(--foreground) / 0.22);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

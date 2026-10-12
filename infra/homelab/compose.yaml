@@ -1,0 +1,187 @@
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: raven
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - raven_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U raven -d raven
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - raven_redis:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  livekit:
+    image: livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50002
+          port_range_end: 50100
+          use_external_ip: false
+          node_ip: ${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP is required}
+        redis:
+          address: redis:6379
+        room:
+          empty_timeout: 300
+          departure_timeout: 20
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "7881:7881/tcp"
+      - "50002-50100:50002-50100/udp"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:7880/
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      raven_internal: {}
+      proxy:
+        aliases:
+          - raven-livekit
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/homelab/api.Dockerfile
+    restart: unless-stopped
+    environment:
+      RAVEN_API_ADDR: 0.0.0.0:6977
+      RAVEN_DATABASE_DRIVER: postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: raven
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_SSLMODE: disable
+      RAVEN_VERSION: ${RAVEN_VERSION:?RAVEN_VERSION is required}
+      RAVEN_MINIMUM_CLIENT_VERSION: ${RAVEN_MINIMUM_CLIENT_VERSION:?RAVEN_MINIMUM_CLIENT_VERSION is required}
+      RAVEN_SERVER_NAME: ${RAVEN_SERVER_NAME:-Raven}
+      RAVEN_SERVER_DESCRIPTION: ${RAVEN_SERVER_DESCRIPTION:-Raven closed alpha}
+      LIVEKIT_URL: ${LIVEKIT_URL:?LIVEKIT_URL is required}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT is required}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET is required}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY is required}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY is required}
+      S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
+      RAVEN_MEDIA_PREFIX: ${RAVEN_MEDIA_PREFIX:-profile-images}
+      # The edge proxy reaches the API over Docker's networks. Only from those addresses
+      # is X-Forwarded-For believed, so sign-in throttling and the address shown beside a
+      # session are the person's and cannot be made up by them.
+      RAVEN_TRUSTED_PROXIES: ${RAVEN_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:6977/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      raven_internal: {}
+      proxy:
+        aliases:
+          - raven-api
+
+  # The admin dashboard's static files. The API it talks to is proxied on the same host
+  # by the edge (nginx/raven.conf), which also puts a password in front of both.
+  admin:
+    build:
+      context: ../..
+      dockerfile: infra/homelab/admin.Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      proxy:
+        aliases:
+          - raven-admin
+
+  # Static files only: latest.json and the signed installers that release.ps1 uploads.
+  releases:
+    image: nginx:1.30-trixie
+    restart: unless-stopped
+    volumes:
+      - ./releases-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${RAVEN_RELEASES_DIR:-/home/soroush/services/raven/releases}:/srv/releases:ro
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      proxy:
+        aliases:
+          - raven-releases
+
+volumes:
+  raven_postgres:
+  raven_redis:
+
+networks:
+  raven_internal:
+  proxy:
+    external: true
+    name: proxy

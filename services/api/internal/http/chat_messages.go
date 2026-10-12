@@ -1,0 +1,820 @@
+package http
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strconv"
+	"time"
+
+	"raven/services/api/internal/auth"
+	"raven/services/api/internal/database"
+
+	"github.com/gofiber/fiber/v2"
+)
+
+// chatMessageSelectSQL reads messages as one person sees them. Its single placeholder is
+// that person, used to tell whether they removed, for themselves, the message a reply
+// points at.
+const chatMessageSelectSQL = `SELECT m.id, m.conversation_id, m.seq, m.changed_seq, m.sender_id,
+		COALESCE(NULLIF(TRIM(sp.display_name), ''), su.username),
+		m.client_message_id, m.kind, m.body, m.system_json, m.created_at, m.edited_at, m.deleted_at,
+		m.reply_to_message_id,
+		p.seq, p.sender_id, COALESCE(NULLIF(TRIM(pp.display_name), ''), pu.username), p.body, p.deleted_at,
+		CASE WHEN ph.user_id IS NULL THEN 0 ELSE 1 END
+	 FROM chat_messages m
+	 JOIN users su ON su.id = m.sender_id
+	 LEFT JOIN user_preferences sp ON sp.user_id = su.id
+	 LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.conversation_id = m.conversation_id
+	 LEFT JOIN users pu ON pu.id = p.sender_id
+	 LEFT JOIN user_preferences pp ON pp.user_id = pu.id
+	 LEFT JOIN chat_message_hides ph ON ph.message_id = p.id AND ph.user_id = ?`
+
+// chatVisibleWhere limits a query to what the viewer may read: nothing before their
+// floor and nothing they removed for themselves. Placeholders: conversation, floor, viewer.
+const chatVisibleWhere = ` WHERE m.conversation_id = ? AND m.seq >= ?
+	 AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.user_id = ? AND h.message_id = m.id)`
+
+func scanChatMessage(scanner rowScanner, floor int64) (ChatMessage, error) {
+	var message ChatMessage
+	var systemJSON, editedAt, deletedAt, replyTo sql.NullString
+	var parentSeq sql.NullInt64
+	var parentSender, parentName, parentBody, parentDeleted sql.NullString
+	var parentHidden int
+	if err := scanner.Scan(
+		&message.ID, &message.ConversationID, &message.Seq, &message.ChangedSeq, &message.SenderID,
+		&message.SenderName, &message.ClientMessageID, &message.Kind, &message.Body, &systemJSON,
+		&message.CreatedAt, &editedAt, &deletedAt, &replyTo,
+		&parentSeq, &parentSender, &parentName, &parentBody, &parentDeleted, &parentHidden,
+	); err != nil {
+		return ChatMessage{}, err
+	}
+	if systemJSON.Valid && systemJSON.String != "" {
+		message.System = json.RawMessage(systemJSON.String)
+	}
+	message.EditedAt = nullStringPtr(editedAt)
+	message.DeletedAt = nullStringPtr(deletedAt)
+	if replyTo.Valid && replyTo.String != "" && !deletedAt.Valid {
+		ref := ChatReplyRef{ID: replyTo.String}
+		if !parentSeq.Valid || parentSeq.Int64 < floor || parentHidden != 0 {
+			ref.Unavailable = true
+		} else {
+			ref.Seq = parentSeq.Int64
+			ref.SenderID = parentSender.String
+			ref.SenderName = parentName.String
+			if parentDeleted.Valid {
+				ref.Deleted = true
+			} else {
+				ref.Excerpt = chatExcerpt(parentBody.String)
+			}
+		}
+		message.ReplyTo = &ref
+	}
+	return message, nil
+}
+
+func (s *Server) queryChatMessages(q chatQuerier, viewerID string, floor int64, tail string, args ...any) ([]ChatMessage, error) {
+	rows, err := q.Query(chatMessageSelectSQL+tail, append([]any{viewerID}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := []ChatMessage{}
+	for rows.Next() {
+		message, err := scanChatMessage(rows, floor)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
+// loadChatMessage reads one message as the viewer sees it.
+func (s *Server) loadChatMessage(q chatQuerier, conversationID, messageID, viewerID string, floor int64) (ChatMessage, error) {
+	row := q.QueryRow(chatMessageSelectSQL+` WHERE m.id = ? AND m.conversation_id = ?`, viewerID, messageID, conversationID)
+	message, err := scanChatMessage(row, floor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChatMessage{}, errChatMessageGone
+	}
+	return message, err
+}
+
+// chatNextSeq takes the conversation's next sequence number. It must be the first
+// statement of the transaction: the row lock it takes is what makes the conversation's
+// changes happen one at a time, and what makes the checks that follow it reliable.
+// A conversation that is gone, or being deleted, reads as not found.
+func chatNextSeq(tx *database.Tx, conversationID string, newMessage bool, now string) (int64, error) {
+	var seq int64
+	var err error
+	if newMessage {
+		err = tx.QueryRow(
+			`UPDATE chat_conversations
+			 SET last_seq = last_seq + 1, last_message_seq = last_seq + 1, last_activity_ms = ?, updated_at = ?
+			 WHERE id = ? AND status = 'active' RETURNING last_seq`,
+			nowMillis(), now, conversationID,
+		).Scan(&seq)
+	} else {
+		err = tx.QueryRow(
+			`UPDATE chat_conversations SET last_seq = last_seq + 1, updated_at = ?
+			 WHERE id = ? AND status = 'active' RETURNING last_seq`,
+			now, conversationID,
+		).Scan(&seq)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, errChatNotFound
+	}
+	return seq, err
+}
+
+// chatReplyTargetFor describes the message a reply points at, and who has removed it for
+// themselves, so that each recipient is shown the quoted line only if they may see it.
+// It returns nil when there is no such message in this conversation.
+func chatReplyTargetFor(q chatQuerier, conversationID, parentID string) (*chatReplyTarget, error) {
+	if parentID == "" {
+		return nil, nil
+	}
+	target := &chatReplyTarget{ref: ChatReplyRef{ID: parentID}, hiddenBy: map[string]struct{}{}}
+	var kind, body string
+	var deletedAt sql.NullString
+	err := q.QueryRow(
+		`SELECT p.seq, p.sender_id, COALESCE(NULLIF(TRIM(pp.display_name), ''), pu.username), p.kind, p.body, p.deleted_at
+		 FROM chat_messages p
+		 JOIN users pu ON pu.id = p.sender_id
+		 LEFT JOIN user_preferences pp ON pp.user_id = pu.id
+		 WHERE p.id = ? AND p.conversation_id = ?`,
+		parentID, conversationID,
+	).Scan(&target.ref.Seq, &target.ref.SenderID, &target.ref.SenderName, &kind, &body, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if kind != chatMessageText {
+		return nil, nil
+	}
+	if deletedAt.Valid {
+		target.ref.Deleted = true
+	} else {
+		target.ref.Excerpt = chatExcerpt(body)
+	}
+	rows, err := q.Query(`SELECT user_id FROM chat_message_hides WHERE message_id = ?`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		target.hiddenBy[userID] = struct{}{}
+	}
+	return target, rows.Err()
+}
+
+func chatMessageHiddenBy(q chatQuerier, messageID, userID string) (bool, error) {
+	var count int
+	err := q.QueryRow(`SELECT COUNT(*) FROM chat_message_hides WHERE message_id = ? AND user_id = ?`, messageID, userID).Scan(&count)
+	return count > 0, err
+}
+
+// chatSharesReadStatus reports whether two people both allow the other to see how far
+// they have read. A person with no stored setting shares.
+func chatSharesReadStatus(q chatQuerier, userID, otherID string) (bool, error) {
+	var optedOut int
+	err := q.QueryRow(
+		`SELECT COUNT(*) FROM chat_user_settings WHERE user_id IN (?, ?) AND share_read_status = FALSE`,
+		userID, otherID,
+	).Scan(&optedOut)
+	return optedOut == 0, err
+}
+
+func (s *Server) sendChatMessage(c *fiber.Ctx) error {
+	started := time.Now()
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	var input struct {
+		ClientMessageID  string `json:"clientMessageId"`
+		Body             string `json:"body"`
+		ReplyToMessageID string `json:"replyToMessageId"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		s.metrics.chatSends.inc("invalid")
+		return errChatInvalidBody
+	}
+	if !validClientMessageID(input.ClientMessageID) {
+		s.metrics.chatSends.inc("invalid")
+		return errChatInvalidBody
+	}
+	body, err := normalizeChatBody(input.Body)
+	if err != nil {
+		s.metrics.chatSends.inc("invalid")
+		return err
+	}
+
+	// Held until the events are queued, so two sends to one conversation reach the
+	// stream in the order they were committed.
+	unlock := s.chatLocks.lock(conversationID)
+	defer unlock()
+
+	sent, err := s.storeChatMessage(user, conversationID, input.ClientMessageID, body, input.ReplyToMessageID)
+	if err != nil {
+		s.metrics.chatSends.inc(chatSendOutcome(err))
+		return err
+	}
+	if sent.duplicate {
+		// The first attempt already told everyone. Answering again is all that is left.
+		s.metrics.chatSends.inc("duplicate")
+		return c.JSON(fiber.Map{"message": sent.message, "duplicate": true})
+	}
+	event := sent.message
+	event.ReplyTo = nil
+	s.publishChatMessage("message.created", event, sent.message.Seq, sent.reply, sent.recipients, sent.committedAt)
+	s.metrics.chatSends.inc("ok")
+	s.metrics.sendDuration.observeSince(started)
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": sent.message})
+}
+
+func chatSendOutcome(err error) string {
+	var expected *fiber.Error
+	if !errors.As(err, &expected) {
+		return "error"
+	}
+	switch expected.Code {
+	case fiber.StatusForbidden:
+		return "forbidden"
+	case fiber.StatusNotFound:
+		return "not_found"
+	default:
+		return "invalid"
+	}
+}
+
+type chatStored struct {
+	message     ChatMessage
+	reply       *chatReplyTarget
+	recipients  []chatRecipient
+	committedAt time.Time
+	duplicate   bool
+}
+
+// storeChatMessage commits one message, or finds the one an earlier attempt committed.
+func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, body, replyToID string) (chatStored, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return chatStored{}, err
+	}
+	defer tx.Rollback()
+	now := database.Now()
+
+	seq, err := chatNextSeq(tx, conversationID, true, now)
+	if err != nil {
+		return chatStored{}, err
+	}
+	access, err := s.chatAccessFor(tx, conversationID, sender.ID)
+	if err != nil {
+		return chatStored{}, err
+	}
+	if !access.CanSend {
+		return chatStored{}, access.sendError()
+	}
+
+	// A resend of something already stored changes nothing: give the number back and
+	// answer with the original.
+	var existingID string
+	err = tx.QueryRow(
+		`SELECT id FROM chat_messages WHERE conversation_id = ? AND sender_id = ? AND client_message_id = ?`,
+		conversationID, sender.ID, clientMessageID,
+	).Scan(&existingID)
+	if err == nil {
+		return s.chatAlreadyStored(tx, conversationID, existingID, sender.ID, access.VisibleFromSeq)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return chatStored{}, err
+	}
+
+	var reply *chatReplyTarget
+	if replyToID != "" {
+		reply, err = chatReplyTargetFor(tx, conversationID, replyToID)
+		if err != nil {
+			return chatStored{}, err
+		}
+		if reply == nil || reply.ref.Seq < access.VisibleFromSeq {
+			return chatStored{}, errChatReplyMismatch
+		}
+		if _, hidden := reply.hiddenBy[sender.ID]; hidden {
+			return chatStored{}, errChatReplyMismatch
+		}
+	}
+
+	messageID := auth.NewID()
+	inserted, err := tx.Exec(
+		`INSERT INTO chat_messages (id, conversation_id, seq, changed_seq, sender_id, client_message_id, kind, body, reply_to_message_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'text', ?, ?, ?)
+		 ON CONFLICT (conversation_id, sender_id, client_message_id) DO NOTHING`,
+		messageID, conversationID, seq, seq, sender.ID, clientMessageID, body, nullableString(replyToID), now,
+	)
+	if err != nil {
+		return chatStored{}, err
+	}
+	if count, err := inserted.RowsAffected(); err != nil {
+		return chatStored{}, err
+	} else if count != 1 {
+		// Another process stored the same message between the lookup and the insert.
+		_ = tx.Rollback()
+		if err := s.db.QueryRow(
+			`SELECT id FROM chat_messages WHERE conversation_id = ? AND sender_id = ? AND client_message_id = ?`,
+			conversationID, sender.ID, clientMessageID,
+		).Scan(&existingID); err != nil {
+			return chatStored{}, err
+		}
+		return s.chatAlreadyStored(tx, conversationID, existingID, sender.ID, access.VisibleFromSeq)
+	}
+
+	// Sending means you have seen what came before. In a direct message the other person
+	// may see that too, when both share read status.
+	sharedSeq := access.SharedReadSeq
+	if access.Kind == chatKindDM && access.PeerID != "" {
+		shares, err := chatSharesReadStatus(tx, sender.ID, access.PeerID)
+		if err != nil {
+			return chatStored{}, err
+		}
+		if shares {
+			sharedSeq = seq
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE chat_members SET read_seq = ?, shared_read_seq = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`,
+		seq, sharedSeq, now, conversationID, sender.ID,
+	); err != nil {
+		return chatStored{}, err
+	}
+	// A new message brings the conversation back for anyone who archived it or removed
+	// it from their list.
+	if _, err := tx.Exec(
+		`UPDATE chat_members SET listed = TRUE, archived_at = NULL, updated_at = ?
+		 WHERE conversation_id = ? AND (listed = FALSE OR archived_at IS NOT NULL)`,
+		now, conversationID,
+	); err != nil {
+		return chatStored{}, err
+	}
+
+	recipients, err := s.chatAudience(tx, access, "")
+	if err != nil {
+		return chatStored{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return chatStored{}, err
+	}
+	committedAt := time.Now()
+
+	message := ChatMessage{
+		ID:              messageID,
+		ConversationID:  conversationID,
+		Seq:             seq,
+		ChangedSeq:      seq,
+		SenderID:        sender.ID,
+		SenderName:      sender.DisplayName,
+		ClientMessageID: clientMessageID,
+		Kind:            chatMessageText,
+		Body:            body,
+		CreatedAt:       now,
+	}
+	if reply != nil {
+		ref := reply.ref
+		message.ReplyTo = &ref
+	}
+	return chatStored{message: message, reply: reply, recipients: recipients, committedAt: committedAt}, nil
+}
+
+// chatAlreadyStored abandons the transaction, which gives the sequence number back, and
+// returns the message an earlier attempt stored.
+func (s *Server) chatAlreadyStored(tx *database.Tx, conversationID, messageID, viewerID string, floor int64) (chatStored, error) {
+	_ = tx.Rollback()
+	message, err := s.loadChatMessage(s.db, conversationID, messageID, viewerID, floor)
+	if err != nil {
+		return chatStored{}, err
+	}
+	return chatStored{message: message, duplicate: true}, nil
+}
+
+func (s *Server) editChatMessage(c *fiber.Ctx) error {
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	messageID := c.Params("messageId")
+	var input struct {
+		Body string `json:"body"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return errChatInvalidBody
+	}
+	body, err := normalizeChatBody(input.Body)
+	if err != nil {
+		return err
+	}
+
+	unlock := s.chatLocks.lock(conversationID)
+	defer unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := database.Now()
+	seq, err := chatNextSeq(tx, conversationID, false, now)
+	if err != nil {
+		return err
+	}
+	access, err := s.chatAccessFor(tx, conversationID, user.ID)
+	if err != nil {
+		return err
+	}
+	if !access.CanSend {
+		return access.sendError()
+	}
+
+	var senderID, kind, currentBody, createdAt string
+	var deletedAt, replyToID sql.NullString
+	var messageSeq int64
+	err = tx.QueryRow(
+		`SELECT sender_id, kind, body, created_at, deleted_at, reply_to_message_id, seq FROM chat_messages WHERE id = ? AND conversation_id = ?`,
+		messageID, conversationID,
+	).Scan(&senderID, &kind, &currentBody, &createdAt, &deletedAt, &replyToID, &messageSeq)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && messageSeq < access.VisibleFromSeq) {
+		return errChatMessageGone
+	}
+	if err != nil {
+		return err
+	}
+	if senderID != user.ID {
+		return errChatNotAllowed
+	}
+	if kind != chatMessageText || deletedAt.Valid {
+		return errChatCannotEdit
+	}
+	if created, err := time.Parse(time.RFC3339Nano, createdAt); err != nil || time.Since(created) > chatEditWindow {
+		return errChatEditTooLate
+	}
+	if currentBody == body {
+		// Nothing would change, so nothing is recorded and nobody is told.
+		_ = tx.Rollback()
+		message, err := s.loadChatMessage(s.db, conversationID, messageID, user.ID, access.VisibleFromSeq)
+		if err != nil {
+			return err
+		}
+		return c.JSON(fiber.Map{"message": message})
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE chat_messages SET body = ?, edited_at = ?, changed_seq = ? WHERE id = ?`,
+		body, now, seq, messageID,
+	); err != nil {
+		return err
+	}
+	reply, err := chatReplyTargetFor(tx, conversationID, replyToID.String)
+	if err != nil {
+		return err
+	}
+	recipients, err := s.chatAudience(tx, access, messageID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committedAt := time.Now()
+
+	message, err := s.loadChatMessage(s.db, conversationID, messageID, user.ID, access.VisibleFromSeq)
+	if err != nil {
+		return err
+	}
+	event := message
+	event.ReplyTo = nil
+	s.publishChatMessage("message.updated", event, seq, reply, recipients, committedAt)
+	return c.JSON(fiber.Map{"message": message})
+}
+
+func (s *Server) deleteChatMessage(c *fiber.Ctx) error {
+	switch c.Query("for", "me") {
+	case "me":
+		return s.hideChatMessage(c)
+	case "everyone":
+		return s.deleteChatMessageForEveryone(c)
+	default:
+		return errChatInvalidBody
+	}
+}
+
+// deleteChatMessageForEveryone erases a message's text for good and leaves a marker in
+// its place. People delete their own messages. In a group its owner, and in a text nest
+// the tree's owners and moderators, may delete anyone's. In a direct message nobody can
+// delete the other person's words.
+func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	messageID := c.Params("messageId")
+
+	unlock := s.chatLocks.lock(conversationID)
+	defer unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := database.Now()
+	seq, err := chatNextSeq(tx, conversationID, false, now)
+	if err != nil {
+		return err
+	}
+	access, err := s.chatAccessFor(tx, conversationID, user.ID)
+	if err != nil {
+		return err
+	}
+
+	var senderID, kind string
+	var deletedAt sql.NullString
+	var messageSeq int64
+	err = tx.QueryRow(
+		`SELECT sender_id, kind, deleted_at, seq FROM chat_messages WHERE id = ? AND conversation_id = ?`,
+		messageID, conversationID,
+	).Scan(&senderID, &kind, &deletedAt, &messageSeq)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && messageSeq < access.VisibleFromSeq) {
+		return errChatMessageGone
+	}
+	if err != nil {
+		return err
+	}
+	if senderID != user.ID && !access.CanManage {
+		return errChatNotAllowed
+	}
+	if senderID != user.ID && access.Kind == chatKindNest {
+		// In a tree, removing someone's words follows the same order as removing them:
+		// only from people below you.
+		senderRole, err := s.treeRoleOf(tx, senderID, access.TreeID)
+		if err != nil {
+			return err
+		}
+		if !treeRoleOutranks(access.Role, senderRole) {
+			return errTreeOutranked
+		}
+	}
+	if kind != chatMessageText {
+		return errChatNotAllowed
+	}
+	if deletedAt.Valid {
+		_ = tx.Rollback()
+		message, err := s.loadChatMessage(s.db, conversationID, messageID, user.ID, access.VisibleFromSeq)
+		if err != nil {
+			return err
+		}
+		return c.JSON(fiber.Map{"message": message})
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE chat_messages SET body = '', deleted_at = ?, deleted_by_user_id = ?, changed_seq = ? WHERE id = ?`,
+		now, user.ID, seq, messageID,
+	); err != nil {
+		return err
+	}
+	recipients, err := s.chatAudience(tx, access, messageID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committedAt := time.Now()
+
+	message, err := s.loadChatMessage(s.db, conversationID, messageID, user.ID, access.VisibleFromSeq)
+	if err != nil {
+		return err
+	}
+	s.publishChatMessage("message.updated", message, seq, nil, recipients, committedAt)
+	return c.JSON(fiber.Map{"message": message})
+}
+
+// hideChatMessage removes a message for the caller only. Nobody else is told and the
+// conversation's sequence does not move; the caller's other devices learn of it through
+// hide_rev.
+func (s *Server) hideChatMessage(c *fiber.Ctx) error {
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	messageID := c.Params("messageId")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	access, err := s.chatAccessFor(tx, conversationID, user.ID)
+	if err != nil {
+		return err
+	}
+	var messageSeq int64
+	err = tx.QueryRow(`SELECT seq FROM chat_messages WHERE id = ? AND conversation_id = ?`, messageID, conversationID).Scan(&messageSeq)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && messageSeq < access.VisibleFromSeq) {
+		return errChatMessageGone
+	}
+	if err != nil {
+		return err
+	}
+	now := database.Now()
+	inserted, err := tx.Exec(
+		`INSERT INTO chat_message_hides (user_id, message_id, conversation_id, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (user_id, message_id) DO NOTHING`,
+		user.ID, messageID, conversationID, now,
+	)
+	if err != nil {
+		return err
+	}
+	hideRev := access.HideRev
+	changed := false
+	if count, err := inserted.RowsAffected(); err != nil {
+		return err
+	} else if count == 1 {
+		changed = true
+		if err := tx.QueryRow(
+			`UPDATE chat_members SET hide_rev = hide_rev + 1, updated_at = ? WHERE conversation_id = ? AND user_id = ? RETURNING hide_rev`,
+			now, conversationID, user.ID,
+		).Scan(&hideRev); err != nil {
+			return err
+		}
+	}
+	unread, err := chatUnreadCount(tx, conversationID, user.ID, access.ReadSeq, access.VisibleFromSeq)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if changed {
+		s.publishChatEvent(ChatEvent{
+			Type:           "message.hidden",
+			ConversationID: conversationID,
+			MessageID:      messageID,
+			HideRev:        &hideRev,
+			UnreadCount:    &unread,
+		}, []string{user.ID})
+	}
+	return c.JSON(fiber.Map{"hideRev": hideRev, "unreadCount": unread})
+}
+
+func chatQueryInt64(c *fiber.Ctx, name string) int64 {
+	value, err := strconv.ParseInt(c.Query(name), 10, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+// listChatMessages returns one page of history, oldest first.
+//
+//	(no cursor)   the newest page
+//	before=<seq>  the page just older than seq
+//	after=<seq>   the page just newer than seq; after=0 starts from the beginning
+//	around=<seq>  a page with seq in the middle, for jumping to a message
+//
+// asOfSeq is read before the messages, so everything up to it is reflected in them.
+func (s *Server) listChatMessages(c *fiber.Ctx) error {
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	access, err := s.chatAccessFor(s.db, conversationID, user.ID)
+	if err != nil {
+		return err
+	}
+	limit := c.QueryInt("limit", chatHistoryPageDefault)
+	if limit < 1 {
+		limit = chatHistoryPageDefault
+	}
+	if limit > chatHistoryPageMax {
+		limit = chatHistoryPageMax
+	}
+	before, after, around := chatQueryInt64(c, "before"), chatQueryInt64(c, "after"), chatQueryInt64(c, "around")
+	floor := access.VisibleFromSeq
+
+	older := func(below int64, count int) ([]ChatMessage, bool, error) {
+		tail := chatVisibleWhere
+		args := []any{conversationID, floor, user.ID}
+		if below > 0 {
+			tail += ` AND m.seq < ?`
+			args = append(args, below)
+		}
+		tail += ` ORDER BY m.seq DESC LIMIT ?`
+		args = append(args, count+1)
+		page, err := s.queryChatMessages(s.db, user.ID, floor, tail, args...)
+		if err != nil {
+			return nil, false, err
+		}
+		more := len(page) > count
+		if more {
+			page = page[:count]
+		}
+		for left, right := 0, len(page)-1; left < right; left, right = left+1, right-1 {
+			page[left], page[right] = page[right], page[left]
+		}
+		return page, more, nil
+	}
+	newer := func(above int64, count int) ([]ChatMessage, bool, error) {
+		page, err := s.queryChatMessages(s.db, user.ID, floor,
+			chatVisibleWhere+` AND m.seq > ? ORDER BY m.seq ASC LIMIT ?`,
+			conversationID, floor, user.ID, above, count+1)
+		if err != nil {
+			return nil, false, err
+		}
+		more := len(page) > count
+		if more {
+			page = page[:count]
+		}
+		return page, more, nil
+	}
+
+	var messages []ChatMessage
+	var moreBefore, moreAfter bool
+	switch {
+	case around > 0:
+		half := limit / 2
+		if half < 1 {
+			half = 1
+		}
+		var olderPage, newerPage []ChatMessage
+		if olderPage, moreBefore, err = older(around+1, half); err != nil {
+			return err
+		}
+		if newerPage, moreAfter, err = newer(around, half); err != nil {
+			return err
+		}
+		messages = append(olderPage, newerPage...)
+	case c.Query("after") != "":
+		if messages, moreAfter, err = newer(after, limit); err != nil {
+			return err
+		}
+		moreBefore = after > 0
+	default:
+		if messages, moreBefore, err = older(before, limit); err != nil {
+			return err
+		}
+		moreAfter = before > 0
+	}
+	return c.JSON(fiber.Map{
+		"messages":      messages,
+		"hasMoreBefore": moreBefore,
+		"hasMoreAfter":  moreAfter,
+		"asOfSeq":       access.LastSeq,
+		"me":            access.viewer(),
+	})
+}
+
+// listChatChanges is how a client catches up after a gap or a reconnect: everything in
+// the conversation that changed after the seq it had reached, in the order it changed.
+// Deleted messages come back as markers, so the client learns they are gone.
+//
+// When too much changed to list, reset is true and the client reloads the newest page
+// instead of patching what it has.
+func (s *Server) listChatChanges(c *fiber.Ctx) error {
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	access, err := s.chatAccessFor(s.db, conversationID, user.ID)
+	if err != nil {
+		return err
+	}
+	after := chatQueryInt64(c, "after")
+	s.metrics.changesRequests.Add(1)
+	messages, err := s.queryChatMessages(s.db, user.ID, access.VisibleFromSeq,
+		chatVisibleWhere+` AND m.changed_seq > ? ORDER BY m.changed_seq ASC LIMIT ?`,
+		conversationID, access.VisibleFromSeq, user.ID, after, chatChangesLimit+1)
+	if err != nil {
+		return err
+	}
+	reset := len(messages) > chatChangesLimit
+	if reset {
+		s.metrics.changesResets.Add(1)
+		messages = []ChatMessage{}
+	}
+	return c.JSON(fiber.Map{
+		"messages": messages,
+		"reset":    reset,
+		"asOfSeq":  access.LastSeq,
+		"me":       access.viewer(),
+	})
+}
+
+// chatUnreadCount counts, up to the cap, the messages from other people that the viewer
+// has not read and may see.
+func chatUnreadCount(q chatQuerier, conversationID, userID string, readSeq, floor int64) (int64, error) {
+	var count int64
+	err := q.QueryRow(
+		`SELECT COUNT(*) FROM (
+			SELECT 1 FROM chat_messages m
+			WHERE m.conversation_id = ? AND m.seq > ? AND m.seq >= ? AND m.sender_id <> ?
+			  AND m.kind = 'text' AND m.deleted_at IS NULL
+			  AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.user_id = ? AND h.message_id = m.id)
+			LIMIT ?
+		 ) capped`,
+		conversationID, readSeq, floor, userID, userID, chatUnreadCap,
+	).Scan(&count)
+	return count, err
+}

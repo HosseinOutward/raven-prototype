@@ -1,0 +1,1088 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
+};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
+use thiserror::Error;
+
+use crate::thumbnail_toolbar::{CallAction, ThumbnailToolbarSnapshot};
+
+const SETTINGS_FILE_NAME: &str = "tray.json";
+/// Windows cuts a notification-area tooltip at 127 characters; names are trimmed well
+/// before that so the state after the name is never the part that is lost.
+const MAX_NAME_CHARS: usize = 48;
+
+const ID_STATUS: &str = "tray:status";
+const ID_MIC: &str = "tray:mic";
+const ID_DEAFEN: &str = "tray:deafen";
+const ID_LEAVE: &str = "tray:leave";
+const ID_SETTINGS: &str = "tray:settings";
+const ID_CHECK_UPDATES: &str = "tray:check-updates";
+const ID_OPEN: &str = "tray:open";
+const ID_QUIT: &str = "tray:quit";
+const ID_PRESENCE_PREFIX: &str = "tray:presence:";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TraySettings {
+    /// Closing the main window hides it and leaves Raven running.
+    pub close_to_tray: bool,
+    /// The one-time "Raven is still running" notification has been shown.
+    pub hint_shown: bool,
+}
+
+impl Default for TraySettings {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            hint_shown: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TraySettingsPatch {
+    pub close_to_tray: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraySettingsView {
+    pub supported: bool,
+    pub close_to_tray: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TrayCallStatus {
+    #[default]
+    Connected,
+    Connecting,
+    Reconnecting,
+    Leaving,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TrayPresenceOption {
+    pub id: String,
+    pub label: String,
+}
+
+/// What the main window knows that the tray shows. The call fields are the ones the
+/// taskbar thumbnail buttons already use, so both surfaces enable the same actions.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TraySnapshot {
+    #[serde(flatten)]
+    pub call: ThumbnailToolbarSnapshot,
+    pub call_name: Option<String>,
+    pub call_status: TrayCallStatus,
+    pub presence: String,
+    pub presences: Vec<TrayPresenceOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MenuChoice {
+    pub id: String,
+    pub label: String,
+    pub checked: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MenuEntry {
+    Separator,
+    Item {
+        id: &'static str,
+        label: String,
+        enabled: bool,
+    },
+    Choices {
+        label: &'static str,
+        choices: Vec<MenuChoice>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum IconBadge {
+    #[default]
+    None,
+    Muted,
+    NotHearing,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IconVariant {
+    pub unread: bool,
+    pub badge: IconBadge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Rendered {
+    menu: Vec<MenuEntry>,
+    tooltip: String,
+    icon: IconVariant,
+}
+
+#[derive(Default)]
+struct TrayView {
+    snapshot: TraySnapshot,
+    unread: bool,
+    /// What the native icon shows now, so an unchanged snapshot touches nothing.
+    rendered: Option<Rendered>,
+}
+
+pub struct TrayState {
+    settings: Mutex<TraySettings>,
+    view: Mutex<TrayView>,
+}
+
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "code", content = "detail", rename_all = "camelCase")]
+pub enum TrayError {
+    #[error("tray state is unavailable")]
+    StatePoisoned,
+    #[error("tray settings I/O failed: {message}")]
+    Io { message: String },
+    #[error("tray updates are only available to the main window")]
+    NotMainWindow,
+}
+
+pub fn new_tray_state() -> TrayState {
+    TrayState {
+        settings: Mutex::new(TraySettings::default()),
+        view: Mutex::new(TrayView::default()),
+    }
+}
+
+/// Load the saved settings and put the icon in the notification area.
+pub fn initialize(app: &AppHandle) -> Result<(), TrayError> {
+    let state = app.state::<TrayState>();
+    *state.settings.lock().map_err(state_poisoned)? = load_settings_from_path(&settings_path(app)?);
+    #[cfg(windows)]
+    if let Err(error) = platform::install(app) {
+        eprintln!("[raven] tray icon could not be created: {error}");
+    }
+    refresh(app, &state)
+}
+
+#[tauri::command]
+pub fn tray_update(
+    window: WebviewWindow,
+    state: State<'_, TrayState>,
+    snapshot: TraySnapshot,
+) -> Result<(), TrayError> {
+    require_main(&window)?;
+    {
+        let mut view = state.view.lock().map_err(state_poisoned)?;
+        if is_stale(&view.snapshot.call, &snapshot.call) {
+            return Ok(());
+        }
+        view.snapshot = snapshot;
+    }
+    refresh(window.app_handle(), &state)
+}
+
+#[tauri::command]
+pub fn tray_set_unread(
+    window: WebviewWindow,
+    state: State<'_, TrayState>,
+    unread: bool,
+) -> Result<(), TrayError> {
+    require_main(&window)?;
+    state.view.lock().map_err(state_poisoned)?.unread = unread;
+    refresh(window.app_handle(), &state)
+}
+
+#[tauri::command]
+pub fn tray_get_settings(state: State<'_, TrayState>) -> Result<TraySettingsView, TrayError> {
+    let settings = state.settings.lock().map_err(state_poisoned)?.clone();
+    Ok(settings_view(&settings))
+}
+
+#[tauri::command]
+pub fn tray_update_settings(
+    app: AppHandle,
+    state: State<'_, TrayState>,
+    patch: TraySettingsPatch,
+) -> Result<TraySettingsView, TrayError> {
+    let next = {
+        let mut settings = state.settings.lock().map_err(state_poisoned)?;
+        if let Some(close_to_tray) = patch.close_to_tray {
+            settings.close_to_tray = close_to_tray;
+        }
+        settings.clone()
+    };
+    save_settings_to_path(&settings_path(&app)?, &next)?;
+    Ok(settings_view(&next))
+}
+
+/// The main window's close button. On Windows it hides the window and leaves Raven in
+/// the tray unless the user turned that off; elsewhere closing behaves as it always did.
+pub fn handle_main_close_requested(window: &tauri::Window, api: &tauri::CloseRequestApi) {
+    #[cfg(windows)]
+    platform::handle_main_close_requested(window, api);
+    #[cfg(not(windows))]
+    let _ = (window, api);
+}
+
+fn require_main(window: &WebviewWindow) -> Result<(), TrayError> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err(TrayError::NotMainWindow)
+    }
+}
+
+/// A page keeps one generation and counts its updates, so an update that was overtaken
+/// on its way here is dropped. A reloaded page starts a new generation and always wins.
+fn is_stale(current: &ThumbnailToolbarSnapshot, next: &ThumbnailToolbarSnapshot) -> bool {
+    next.generation == current.generation && next.revision <= current.revision
+}
+
+fn settings_view(settings: &TraySettings) -> TraySettingsView {
+    TraySettingsView {
+        supported: cfg!(windows),
+        close_to_tray: settings.close_to_tray,
+    }
+}
+
+fn refresh(app: &AppHandle, state: &TrayState) -> Result<(), TrayError> {
+    let mut view = state.view.lock().map_err(state_poisoned)?;
+    let next = Rendered {
+        menu: menu_model(&view.snapshot),
+        tooltip: tooltip(&view.snapshot),
+        icon: icon_variant(&view.snapshot, view.unread),
+    };
+    if view.rendered.as_ref() == Some(&next) {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    if let Err(error) = platform::render(app, view.rendered.as_ref(), &next) {
+        eprintln!("[raven] tray icon update failed: {error}");
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    view.rendered = Some(next);
+    Ok(())
+}
+
+fn call_name(snapshot: &TraySnapshot) -> Option<String> {
+    let name = snapshot.call_name.as_deref()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if name.chars().count() <= MAX_NAME_CHARS {
+        return Some(name.to_string());
+    }
+    let mut short: String = name.chars().take(MAX_NAME_CHARS - 1).collect();
+    short.push('…');
+    Some(short)
+}
+
+/// One line saying where the user is, or `None` outside a call.
+fn call_status_line(snapshot: &TraySnapshot) -> Option<String> {
+    if !snapshot.call.signed_in || !snapshot.call.has_media_session {
+        return None;
+    }
+    let name = call_name(snapshot).unwrap_or_else(|| "a call".into());
+    Some(match snapshot.call_status {
+        TrayCallStatus::Connected => format!("In {name}"),
+        TrayCallStatus::Connecting => format!("Connecting to {name}…"),
+        TrayCallStatus::Reconnecting => format!("Reconnecting to {name}…"),
+        TrayCallStatus::Leaving => format!("Leaving {name}…"),
+    })
+}
+
+pub(crate) fn menu_model(snapshot: &TraySnapshot) -> Vec<MenuEntry> {
+    let item = |id: &'static str, label: &str, enabled: bool| MenuEntry::Item {
+        id,
+        label: label.to_string(),
+        enabled,
+    };
+    let app_items = [
+        item(ID_OPEN, "Open Raven", true),
+        item(ID_QUIT, "Quit Raven", true),
+    ];
+    let call = &snapshot.call;
+    if !call.signed_in {
+        return app_items.into();
+    }
+
+    let mut entries = vec![
+        item(
+            ID_STATUS,
+            &call_status_line(snapshot).unwrap_or_else(|| "Not in a call".into()),
+            false,
+        ),
+        MenuEntry::Separator,
+        item(
+            ID_MIC,
+            if call.mic_enabled { "Mute" } else { "Unmute" },
+            call.allows(CallAction::Mic),
+        ),
+        item(
+            ID_DEAFEN,
+            if call.deafened {
+                "Hear people again"
+            } else {
+                "Stop hearing people"
+            },
+            call.allows(CallAction::Deafen),
+        ),
+    ];
+    if call.has_media_session {
+        let label = match call_name(snapshot) {
+            Some(name) => format!("Leave {name}"),
+            None => "Leave call".into(),
+        };
+        entries.push(item(ID_LEAVE, &label, call.allows(CallAction::Leave)));
+    }
+    if !snapshot.presences.is_empty() {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Choices {
+            label: "How you appear",
+            choices: snapshot
+                .presences
+                .iter()
+                .map(|option| MenuChoice {
+                    id: format!("{ID_PRESENCE_PREFIX}{}", option.id),
+                    label: option.label.clone(),
+                    checked: option.id == snapshot.presence,
+                })
+                .collect(),
+        });
+    }
+    entries.push(MenuEntry::Separator);
+    entries.push(item(ID_SETTINGS, "Settings", true));
+    entries.push(item(ID_CHECK_UPDATES, "Check for updates", true));
+    entries.push(MenuEntry::Separator);
+    entries.extend(app_items);
+    entries
+}
+
+pub(crate) fn tooltip(snapshot: &TraySnapshot) -> String {
+    let Some(status) = call_status_line(snapshot) else {
+        return "Raven".into();
+    };
+    let audibility = if snapshot.call.deafened {
+        ", not hearing anyone"
+    } else if !snapshot.call.mic_enabled {
+        ", muted"
+    } else {
+        ""
+    };
+    format!("Raven — {status}{audibility}")
+}
+
+pub(crate) fn icon_variant(snapshot: &TraySnapshot, unread: bool) -> IconVariant {
+    let call = &snapshot.call;
+    let badge = if !call.signed_in || !call.has_media_session {
+        IconBadge::None
+    } else if call.deafened {
+        IconBadge::NotHearing
+    } else if !call.mic_enabled {
+        IconBadge::Muted
+    } else {
+        IconBadge::None
+    };
+    IconVariant {
+        unread: unread && call.signed_in,
+        badge,
+    }
+}
+
+/// What a click on a menu item asks the main window to do.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub(crate) enum TrayAction {
+    Mic,
+    Deafen,
+    Leave,
+    Settings,
+    CheckUpdates,
+    Presence { presence: String },
+}
+
+impl TrayAction {
+    /// Settings and updates are pages, so the window has to come forward for them.
+    fn needs_window(&self) -> bool {
+        matches!(self, Self::Settings | Self::CheckUpdates)
+    }
+}
+
+pub(crate) fn action_for(snapshot: &TraySnapshot, id: &str) -> Option<TrayAction> {
+    let call = &snapshot.call;
+    if !call.signed_in {
+        return None;
+    }
+    match id {
+        ID_MIC => call.allows(CallAction::Mic).then_some(TrayAction::Mic),
+        ID_DEAFEN => call
+            .allows(CallAction::Deafen)
+            .then_some(TrayAction::Deafen),
+        ID_LEAVE => call.allows(CallAction::Leave).then_some(TrayAction::Leave),
+        ID_SETTINGS => Some(TrayAction::Settings),
+        ID_CHECK_UPDATES => Some(TrayAction::CheckUpdates),
+        _ => {
+            let presence = id.strip_prefix(ID_PRESENCE_PREFIX)?;
+            snapshot
+                .presences
+                .iter()
+                .any(|option| option.id == presence)
+                .then(|| TrayAction::Presence {
+                    presence: presence.to_string(),
+                })
+        }
+    }
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, TrayError> {
+    app.path()
+        .app_data_dir()
+        .map(|path| path.join(SETTINGS_FILE_NAME))
+        .map_err(|error| TrayError::Io {
+            message: error.to_string(),
+        })
+}
+
+fn load_settings_from_path(path: &Path) -> TraySettings {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings_to_path(path: &Path, settings: &TraySettings) -> Result<(), TrayError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    let contents = serde_json::to_string_pretty(settings).map_err(|error| TrayError::Io {
+        message: error.to_string(),
+    })?;
+    fs::write(path, contents).map_err(io_error)
+}
+
+fn state_poisoned<T>(_error: PoisonError<T>) -> TrayError {
+    TrayError::StatePoisoned
+}
+
+fn io_error(error: std::io::Error) -> TrayError {
+    TrayError::Io {
+        message: error.to_string(),
+    }
+}
+
+/// The tray pictures: Raven's icon, with a dot for something unread and a slashed
+/// microphone or headphones while a call is muted or silenced.
+mod icon {
+    use super::{IconBadge, IconVariant};
+
+    pub(super) const SIZE: usize = 32;
+    const DOT_SIZE: usize = 16;
+    const BADGE_SIZE: usize = 20;
+    const GLYPH_SIZE: usize = 16;
+    const EDGE: [u8; 3] = [20, 19, 18];
+    /// The interface's `destructive-fill`: a channel that is cut.
+    const CUT: [u8; 3] = [183, 60, 52];
+
+    pub(super) fn compose(variant: IconVariant) -> Result<Vec<u8>, String> {
+        let mut pixels = decode(include_bytes!("../icons/32x32.png"))?;
+        if variant.unread {
+            // Top right, clear of the call badge.
+            draw_dot(&mut pixels, SIZE - DOT_SIZE, 0);
+        }
+        let glyph = match variant.badge {
+            IconBadge::None => None,
+            IconBadge::Muted => Some(ico_png(include_bytes!("../icons/taskbar/mic-off.ico"))?),
+            IconBadge::NotHearing => Some(ico_png(include_bytes!(
+                "../icons/taskbar/headphones-off.ico"
+            ))?),
+        };
+        if let Some(glyph) = glyph {
+            draw_badge(&mut pixels, &decode(glyph)?);
+        }
+        Ok(pixels)
+    }
+
+    /// The taskbar icons are single-image ICO files that wrap a PNG.
+    fn ico_png(ico: &[u8]) -> Result<&[u8], String> {
+        const HEADER: usize = 22;
+        let truncated = || "an embedded tray icon is truncated".to_string();
+        let size = ico.get(14..18).ok_or_else(truncated)?;
+        let size = u32::from_le_bytes(size.try_into().expect("ICO image size")) as usize;
+        ico.get(HEADER..HEADER + size).ok_or_else(truncated)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let mut decoder = png::Decoder::new(bytes);
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder.read_info().map_err(|error| error.to_string())?;
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let info = reader
+            .next_frame(&mut buffer)
+            .map_err(|error| error.to_string())?;
+        if info.width as usize != SIZE || info.height as usize != SIZE {
+            return Err(format!(
+                "tray icons must be {SIZE}×{SIZE}, found {}×{}",
+                info.width, info.height
+            ));
+        }
+        let channels = match info.color_type {
+            png::ColorType::Rgba => 4,
+            png::ColorType::Rgb => 3,
+            other => return Err(format!("unsupported tray icon colour type {other:?}")),
+        };
+        let mut pixels = Vec::with_capacity(SIZE * SIZE * 4);
+        for pixel in buffer[..SIZE * SIZE * channels].chunks_exact(channels) {
+            pixels.extend_from_slice(&pixel[..3]);
+            pixels.push(if channels == 4 { pixel[3] } else { 255 });
+        }
+        Ok(pixels)
+    }
+
+    /// Source-over blend of one straight-alpha colour onto a pixel.
+    fn blend(pixels: &mut [u8], x: usize, y: usize, colour: [u8; 3], alpha: f32) {
+        if alpha <= 0.0 {
+            return;
+        }
+        let offset = (y * SIZE + x) * 4;
+        let under = pixels[offset + 3] as f32 / 255.0;
+        let out = alpha + under * (1.0 - alpha);
+        for channel in 0..3 {
+            let over = colour[channel] as f32 * alpha;
+            let below = pixels[offset + channel] as f32 * under * (1.0 - alpha);
+            pixels[offset + channel] = ((over + below) / out).round() as u8;
+        }
+        pixels[offset + 3] = (out * 255.0).round() as u8;
+    }
+
+    /// A filled circle with a softened edge. `inset` shrinks it from its box.
+    fn draw_disc(
+        pixels: &mut [u8],
+        left: usize,
+        top: usize,
+        size: usize,
+        inset: f32,
+        colour: [u8; 3],
+    ) {
+        let centre = (size as f32 - 1.0) / 2.0;
+        let radius = size as f32 / 2.0 - inset;
+        for y in 0..size {
+            for x in 0..size {
+                let distance = (x as f32 - centre).hypot(y as f32 - centre);
+                blend(
+                    pixels,
+                    left + x,
+                    top + y,
+                    colour,
+                    (radius - distance + 0.5).clamp(0.0, 1.0),
+                );
+            }
+        }
+    }
+
+    /// The taskbar's unread dot: light with a dark edge. The edge is heavier here because
+    /// the tray draws the icon at half this size, on the icon's own white ground.
+    fn draw_dot(pixels: &mut [u8], left: usize, top: usize) {
+        draw_disc(pixels, left, top, DOT_SIZE, 0.0, EDGE);
+        draw_disc(pixels, left, top, DOT_SIZE, 3.0, [241, 239, 234]);
+    }
+
+    /// A red disc in the bottom right corner carrying the glyph's shape in white. The
+    /// taskbar glyphs are red line drawings; at tray size only a solid disc with a bold
+    /// white shape stays readable, so their outline is used as a mask.
+    fn draw_badge(pixels: &mut [u8], glyph: &[u8]) {
+        let origin = SIZE - BADGE_SIZE;
+        draw_disc(pixels, origin, origin, BADGE_SIZE, 0.0, EDGE);
+        draw_disc(pixels, origin, origin, BADGE_SIZE, 1.5, CUT);
+        let margin = (BADGE_SIZE - GLYPH_SIZE) / 2;
+        let scale = SIZE / GLYPH_SIZE;
+        for y in 0..GLYPH_SIZE {
+            for x in 0..GLYPH_SIZE {
+                let mut coverage = 0.0f32;
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let offset = ((y * scale + sy) * SIZE + x * scale + sx) * 4;
+                        coverage += glyph[offset + 3] as f32 / 255.0;
+                    }
+                }
+                blend(
+                    pixels,
+                    origin + margin + x,
+                    origin + margin + y,
+                    [255, 255, 255],
+                    coverage / (scale * scale) as f32,
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_variant_composes_to_a_full_icon() {
+            let plain = compose(IconVariant::default()).expect("the base icon should decode");
+            assert_eq!(plain.len(), SIZE * SIZE * 4);
+            for badge in [IconBadge::None, IconBadge::Muted, IconBadge::NotHearing] {
+                for unread in [false, true] {
+                    let variant = IconVariant { unread, badge };
+                    let pixels = compose(variant).expect("every tray icon should compose");
+                    assert_eq!(pixels.len(), SIZE * SIZE * 4);
+                    assert_eq!(pixels == plain, variant == IconVariant::default());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use super::{
+        action_for, icon, state_poisoned, IconVariant, MenuEntry, Rendered, TrayAction, TrayState,
+        ID_OPEN, ID_QUIT,
+    };
+    use tauri::{
+        image::Image,
+        menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+        AppHandle, Emitter, Manager, Wry,
+    };
+    use tauri_plugin_notification::NotificationExt;
+
+    const TRAY_ID: &str = "raven";
+    const EVENT_NAME: &str = "tray-action";
+
+    pub(super) fn install(app: &AppHandle) -> Result<(), String> {
+        TrayIconBuilder::with_id(TRAY_ID)
+            .icon(image(IconVariant::default())?)
+            .tooltip("Raven")
+            .show_menu_on_left_click(false)
+            .on_menu_event(handle_menu_event)
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    show_main_window(tray.app_handle());
+                }
+            })
+            .build(app)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Bring the main window back from the tray, from minimised, or from behind.
+    pub(crate) fn show_main_window(app: &AppHandle) {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }
+
+    pub(super) fn render(
+        app: &AppHandle,
+        current: Option<&Rendered>,
+        next: &Rendered,
+    ) -> Result<(), String> {
+        let tray = app
+            .tray_by_id(TRAY_ID)
+            .ok_or_else(|| "the tray icon is not installed".to_string())?;
+        if current.map(|rendered| &rendered.menu) != Some(&next.menu) {
+            tray.set_menu(Some(build_menu(app, &next.menu)?))
+                .map_err(|error| error.to_string())?;
+        }
+        if current.map(|rendered| &rendered.tooltip) != Some(&next.tooltip) {
+            tray.set_tooltip(Some(&next.tooltip))
+                .map_err(|error| error.to_string())?;
+        }
+        if current.map(|rendered| rendered.icon) != Some(next.icon) {
+            tray.set_icon(Some(image(next.icon)?))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn image(variant: IconVariant) -> Result<Image<'static>, String> {
+        Ok(Image::new_owned(
+            icon::compose(variant)?,
+            icon::SIZE as u32,
+            icon::SIZE as u32,
+        ))
+    }
+
+    /// Windows reads `&` in a menu label as "underline the next letter".
+    fn menu_label(label: &str) -> String {
+        label.replace('&', "&&")
+    }
+
+    fn build_menu(app: &AppHandle, entries: &[MenuEntry]) -> Result<Menu<Wry>, String> {
+        let menu = Menu::new(app).map_err(|error| error.to_string())?;
+        for entry in entries {
+            match entry {
+                MenuEntry::Separator => menu.append(
+                    &PredefinedMenuItem::separator(app).map_err(|error| error.to_string())?,
+                ),
+                MenuEntry::Item { id, label, enabled } => menu.append(
+                    &MenuItem::with_id(app, *id, menu_label(label), *enabled, None::<&str>)
+                        .map_err(|error| error.to_string())?,
+                ),
+                MenuEntry::Choices { label, choices } => {
+                    let submenu = Submenu::new(app, menu_label(label), true)
+                        .map_err(|error| error.to_string())?;
+                    for choice in choices {
+                        submenu
+                            .append(
+                                &CheckMenuItem::with_id(
+                                    app,
+                                    &choice.id,
+                                    menu_label(&choice.label),
+                                    true,
+                                    choice.checked,
+                                    None::<&str>,
+                                )
+                                .map_err(|error| error.to_string())?,
+                            )
+                            .map_err(|error| error.to_string())?;
+                    }
+                    menu.append(&submenu)
+                }
+            }
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(menu)
+    }
+
+    fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
+        let id = event.id().as_ref();
+        match id {
+            ID_OPEN => show_main_window(app),
+            ID_QUIT => app.exit(0),
+            _ => {
+                let state = app.state::<TrayState>();
+                let (action, presence) = {
+                    let Ok(mut view) = state.view.lock() else {
+                        return;
+                    };
+                    // Windows ticks a clicked choice by itself. The tick has to follow the
+                    // presence the app reports instead, so the menu is drawn again.
+                    let action = action_for(&view.snapshot, id);
+                    let presence = matches!(action, Some(TrayAction::Presence { .. }));
+                    if presence {
+                        view.rendered = None;
+                    }
+                    (action, presence)
+                };
+                if presence {
+                    let _ = super::refresh(app, &state);
+                }
+                let Some(action) = action else {
+                    return;
+                };
+                if action.needs_window() {
+                    show_main_window(app);
+                }
+                let _ = app.emit_to("main", EVENT_NAME, action);
+            }
+        }
+    }
+
+    pub(super) fn handle_main_close_requested(
+        window: &tauri::Window,
+        api: &tauri::CloseRequestApi,
+    ) {
+        let app = window.app_handle();
+        let state = app.state::<TrayState>();
+        let close_to_tray = state
+            .settings
+            .lock()
+            .map(|settings| settings.close_to_tray)
+            .unwrap_or(false);
+        if !close_to_tray || app.tray_by_id(TRAY_ID).is_none() {
+            // Other windows (a hidden overlay, a popped-out call) must not keep Raven alive.
+            app.exit(0);
+            return;
+        }
+        api.prevent_close();
+        let _ = window.hide();
+        if let Err(error) = show_hint_once(app, &state) {
+            eprintln!("[raven] tray hint could not be shown: {error}");
+        }
+    }
+
+    /// Say once that closing the window did not quit Raven, and where it went.
+    fn show_hint_once(app: &AppHandle, state: &TrayState) -> Result<(), String> {
+        let settings = {
+            let mut settings = state
+                .settings
+                .lock()
+                .map_err(state_poisoned)
+                .map_err(|error| error.to_string())?;
+            if settings.hint_shown {
+                return Ok(());
+            }
+            settings.hint_shown = true;
+            settings.clone()
+        };
+        app.notification()
+            .builder()
+            .title("Raven is still running")
+            .body("It is in the tray, next to the clock. Right-click its icon to quit.")
+            .show()
+            .map_err(|error| error.to_string())?;
+        let path = super::settings_path(app).map_err(|error| error.to_string())?;
+        super::save_settings_to_path(&path, &settings).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) use platform::show_main_window;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idle() -> TraySnapshot {
+        TraySnapshot {
+            call: ThumbnailToolbarSnapshot {
+                generation: "page".into(),
+                revision: 1,
+                signed_in: true,
+                mic_enabled: true,
+                mic_supported: true,
+                deafen_supported: true,
+                ..Default::default()
+            },
+            presence: "open".into(),
+            presences: vec![
+                TrayPresenceOption {
+                    id: "open".into(),
+                    label: "Open to talk".into(),
+                },
+                TrayPresenceOption {
+                    id: "dnd".into(),
+                    label: "Do not disturb".into(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn in_call() -> TraySnapshot {
+        let mut snapshot = idle();
+        snapshot.call.has_media_session = true;
+        snapshot.call_name = Some("Lounge".into());
+        snapshot
+    }
+
+    fn labels(entries: &[MenuEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|entry| match entry {
+                MenuEntry::Separator => "-".into(),
+                MenuEntry::Item { label, .. } => label.clone(),
+                MenuEntry::Choices { label, .. } => format!("{label} >"),
+            })
+            .collect()
+    }
+
+    fn enabled(entries: &[MenuEntry], wanted: &str) -> bool {
+        entries.iter().any(|entry| {
+            matches!(entry, MenuEntry::Item { id, enabled: true, .. } if *id == wanted)
+        })
+    }
+
+    #[test]
+    fn signed_out_menu_only_opens_and_quits() {
+        let mut snapshot = in_call();
+        snapshot.call.signed_in = false;
+        assert_eq!(
+            labels(&menu_model(&snapshot)),
+            ["Open Raven", "Quit Raven"]
+        );
+        assert_eq!(tooltip(&snapshot), "Raven");
+        assert_eq!(icon_variant(&snapshot, true), IconVariant::default());
+        assert_eq!(action_for(&snapshot, ID_SETTINGS), None);
+    }
+
+    #[test]
+    fn idle_menu_has_no_leave_and_says_so() {
+        let menu = menu_model(&idle());
+        assert_eq!(
+            labels(&menu),
+            [
+                "Not in a call",
+                "-",
+                "Mute",
+                "Stop hearing people",
+                "-",
+                "How you appear >",
+                "-",
+                "Settings",
+                "Check for updates",
+                "-",
+                "Open Raven",
+                "Quit Raven",
+            ]
+        );
+        assert!(!enabled(&menu, ID_STATUS));
+        assert!(enabled(&menu, ID_MIC));
+        assert_eq!(tooltip(&idle()), "Raven");
+    }
+
+    #[test]
+    fn call_menu_names_the_call_and_follows_mute_and_deafen() {
+        let mut snapshot = in_call();
+        let menu = labels(&menu_model(&snapshot));
+        assert_eq!(menu[0], "In Lounge");
+        assert_eq!(menu[4], "Leave Lounge");
+        assert_eq!(tooltip(&snapshot), "Raven — In Lounge");
+        assert_eq!(icon_variant(&snapshot, false).badge, IconBadge::None);
+
+        snapshot.call.mic_enabled = false;
+        assert_eq!(labels(&menu_model(&snapshot))[2], "Unmute");
+        assert_eq!(tooltip(&snapshot), "Raven — In Lounge, muted");
+        assert_eq!(icon_variant(&snapshot, false).badge, IconBadge::Muted);
+
+        snapshot.call.deafened = true;
+        assert_eq!(labels(&menu_model(&snapshot))[3], "Hear people again");
+        assert_eq!(tooltip(&snapshot), "Raven — In Lounge, not hearing anyone");
+        assert_eq!(icon_variant(&snapshot, true).badge, IconBadge::NotHearing);
+        assert!(icon_variant(&snapshot, true).unread);
+    }
+
+    #[test]
+    fn status_line_follows_the_connection() {
+        let mut snapshot = in_call();
+        snapshot.call_status = TrayCallStatus::Connecting;
+        assert_eq!(labels(&menu_model(&snapshot))[0], "Connecting to Lounge…");
+        snapshot.call_status = TrayCallStatus::Reconnecting;
+        assert_eq!(labels(&menu_model(&snapshot))[0], "Reconnecting to Lounge…");
+        snapshot.call_name = None;
+        snapshot.call_status = TrayCallStatus::Connected;
+        let menu = labels(&menu_model(&snapshot));
+        assert_eq!(menu[0], "In a call");
+        assert_eq!(menu[4], "Leave call");
+    }
+
+    #[test]
+    fn long_call_names_are_shortened() {
+        let mut snapshot = in_call();
+        snapshot.call_name = Some("n".repeat(200));
+        let line = tooltip(&snapshot);
+        assert!(line.chars().count() < 100);
+        assert!(line.contains('…'));
+    }
+
+    #[test]
+    fn muting_outside_a_call_does_not_badge_the_icon() {
+        let mut snapshot = idle();
+        snapshot.call.mic_enabled = false;
+        assert_eq!(icon_variant(&snapshot, false), IconVariant::default());
+    }
+
+    #[test]
+    fn busy_and_pending_controls_are_disabled_and_ignored() {
+        let mut snapshot = in_call();
+        snapshot.call.busy = true;
+        snapshot.call.leave_pending = true;
+        let menu = menu_model(&snapshot);
+        assert!(!enabled(&menu, ID_MIC));
+        assert!(!enabled(&menu, ID_DEAFEN));
+        assert!(!enabled(&menu, ID_LEAVE));
+        assert_eq!(action_for(&snapshot, ID_MIC), None);
+        assert_eq!(action_for(&snapshot, ID_LEAVE), None);
+        assert_eq!(action_for(&snapshot, ID_SETTINGS), Some(TrayAction::Settings));
+    }
+
+    #[test]
+    fn presence_choices_tick_the_current_one_and_reject_unknown_ids() {
+        let snapshot = idle();
+        let choices = menu_model(&snapshot)
+            .into_iter()
+            .find_map(|entry| match entry {
+                MenuEntry::Choices { choices, .. } => Some(choices),
+                _ => None,
+            })
+            .expect("the presence submenu");
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| (choice.label.as_str(), choice.checked))
+                .collect::<Vec<_>>(),
+            [("Open to talk", true), ("Do not disturb", false)]
+        );
+        assert_eq!(
+            action_for(&snapshot, "tray:presence:dnd"),
+            Some(TrayAction::Presence {
+                presence: "dnd".into()
+            })
+        );
+        assert_eq!(action_for(&snapshot, "tray:presence:everywhere"), None);
+        assert_eq!(action_for(&snapshot, ID_OPEN), None);
+    }
+
+    #[test]
+    fn actions_serialise_the_way_the_window_reads_them() {
+        assert_eq!(
+            serde_json::to_string(&TrayAction::CheckUpdates).unwrap(),
+            r#"{"action":"checkUpdates"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TrayAction::Presence {
+                presence: "dnd".into()
+            })
+            .unwrap(),
+            r#"{"action":"presence","presence":"dnd"}"#
+        );
+    }
+
+    #[test]
+    fn snapshots_arrive_flat_and_overtaken_ones_are_dropped() {
+        let snapshot: TraySnapshot = serde_json::from_str(
+            r#"{"generation":"page","revision":4,"signedIn":true,"micEnabled":true,
+                "hasMediaSession":true,"callName":"Lounge","callStatus":"reconnecting",
+                "presence":"open","presences":[{"id":"open","label":"Open to talk"}]}"#,
+        )
+        .expect("the window's snapshot should parse");
+        assert!(snapshot.call.signed_in && snapshot.call.has_media_session);
+        assert_eq!(snapshot.call_status, TrayCallStatus::Reconnecting);
+        assert_eq!(snapshot.presences[0].label, "Open to talk");
+
+        let mut older = snapshot.clone();
+        older.call.revision = 3;
+        assert!(is_stale(&snapshot.call, &older.call));
+        assert!(is_stale(&snapshot.call, &snapshot.call));
+        let mut reloaded = older.clone();
+        reloaded.call.generation = "next page".into();
+        assert!(!is_stale(&snapshot.call, &reloaded.call));
+    }
+
+    #[test]
+    fn settings_default_to_staying_in_the_tray_and_survive_a_bad_file() {
+        let path = std::env::temp_dir().join(format!("raven-tray-{}.json", uuid::Uuid::new_v4()));
+        assert_eq!(load_settings_from_path(&path), TraySettings::default());
+        assert!(TraySettings::default().close_to_tray);
+
+        let saved = TraySettings {
+            close_to_tray: false,
+            hint_shown: true,
+        };
+        save_settings_to_path(&path, &saved).expect("settings should save");
+        assert_eq!(load_settings_from_path(&path), saved);
+
+        fs::write(&path, "{ not json").expect("the test file should be writable");
+        assert_eq!(load_settings_from_path(&path), TraySettings::default());
+        let _ = fs::remove_file(&path);
+    }
+}

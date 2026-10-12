@@ -1,0 +1,23 @@
+.cache/
+.release/
+.env
+.stfolder
+data/
+dist/
+node_modules/
+target/
+.claude
+.codex
+*.secret
+.raven-secrets/
+arvan.secret
+raven-updater.key
+raven-updater.password
+raven-updater.password.dpapi
+raven-ops.password.dpapi
+account-session.dpapi
+release-admin-password.dpapi
+*.dpapi
+# Build output: the API sidecar binary (scripts/build-sidecars.ps1) and stray logs.
+apps/desktop/src-tauri/bin/
+*.log

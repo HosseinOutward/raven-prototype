@@ -1,0 +1,84 @@
+[package]
+name = "raven-desktop"
+version = "0.1.0"
+description = "Raven desktop client"
+authors = ["Raven"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[package.metadata]
+
+[lib]
+name = "raven_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.5.0", features = ["tray-icon"] }
+tauri-plugin-opener = "2.2.7"
+tauri-plugin-updater = "=2.10.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+cpal = "0.15"
+base64 = "0.22"
+png = "0.17"
+mozjpeg = "0.10.13"
+livekit = { version = "0.7", features = ["rustls-tls-webpki-roots"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
+ringbuf = "0.4"
+futures-util = "0.3"
+sonora = "0.1"
+# Native camera capture (MSMF on Windows, AVFoundation on macOS, V4L2 on Linux).
+nokhwa = { version = "0.10", features = ["input-native"] }
+
+# Global media hotkeys. The backend registers system hotkeys on Windows and grabs keys
+# through X11 on Linux (a Wayland session cannot grant global key grabs to apps).
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
+[target.'cfg(windows)'.dependencies]
+# The tray's one-time "still running" notice, and one Raven per desktop session.
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Storage_Xps",
+    "Win32_Media_DirectShow",
+    "Win32_Media_MediaFoundation",
+    "implement",
+] }
+windows-core = "0.58"
+# Windows.Graphics.Capture (WGC) wrapper for monitor + window screen capture.
+windows-capture = "1.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# xdg-desktop-portal ScreenCast client. The capture pipeline consumes the returned
+# PipeWire node through the system GStreamer PipeWire plugin.
+ashpd = "0.12.3"
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Native macOS display/window and system/app audio capture via ScreenCaptureKit.
+screencapturekit = { version = "8.0.0", features = ["macos_13_0"] }
