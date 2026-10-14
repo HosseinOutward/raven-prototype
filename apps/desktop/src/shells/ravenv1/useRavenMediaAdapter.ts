@@ -40,6 +40,8 @@ import {
   microphonesToMuteBeforeJoin,
 } from "./mediaState";
 import { normalizeSelectedDeviceId, selectedDeviceIdForSource } from "@/lib/mediaDevicePreference";
+import { DeviceSwitchWatcher, devicesInUse } from "@/lib/deviceSwitch";
+import { toast } from "@/components/ui/toast";
 import { presenceForActiveNest } from "./state";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
@@ -214,6 +216,7 @@ export function useRavenMediaAdapter(
   const [videoPresentationProfile, setVideoPresentationProfileState] = useState<VideoPresentationProfile>(initialSettings.videoPresentationProfile ?? "balanced");
   const [videoStreamEndpoint, setVideoStreamEndpoint] = useState<VideoStreamEndpoint | null>(null);
   const [selectedOutputPreference, setSelectedOutputPreference] = useState<string | null>(initialSettings.selectedOutput ?? null);
+  const deviceSwitchRef = useRef(new DeviceSwitchWatcher());
   const [deafenMode, setDeafenModeState] = useState<DeafenMode>(initialSettings.deafenMode ?? "instant");
   const [networkActivitySettings, setNetworkActivitySettings] = useState<NetworkActivitySettings>(
     initialSettings.networkActivity ?? DEFAULT_NETWORK_ACTIVITY_SETTINGS,
@@ -805,6 +808,7 @@ export function useRavenMediaAdapter(
       // An explicit picker action must be able to replace a missing saved device;
       // do not try to restore the stale preference first.
       const mic = await ensureDefaultMic(false);
+      deviceSwitchRef.current.notePick("microphone", Date.now());
       const state = await audioCommands.setLocalSourceCaptureDevice(mic.id, deviceId);
       setAudioState(state);
       setSelectedMicPreference(deviceId);
@@ -928,6 +932,7 @@ export function useRavenMediaAdapter(
   const setOutputDevice = useCallback(async (deviceId: string | null) => {
     setError("");
     try {
+      deviceSwitchRef.current.notePick("speaker", Date.now());
       const selected = await audioCommands.setOutputDevice(deviceId);
       const next = deviceId ? selected?.deviceId ?? deviceId : null;
       appliedOutputRef.current = next;
@@ -969,11 +974,19 @@ export function useRavenMediaAdapter(
     }
     const target = selectedOutputPreference;
     appliedOutputRef.current = target;
+    // Restoring the saved speaker is a choice the user already made, not a switch to report.
+    deviceSwitchRef.current.notePick("speaker", Date.now());
     void audioCommands.setOutputDevice(target).catch(() => {
       // Still unavailable to the backend; try again when the device list next changes.
       if (appliedOutputRef.current === target) appliedOutputRef.current = undefined;
     });
   }, [audioCapabilities?.supportsOutputDevices, outputDevices, selectedOutputPreference]);
+
+  // Raven followed a device on its own (a headset plugged in, a speaker gone): say so.
+  useEffect(() => {
+    const notices = deviceSwitchRef.current.update(devicesInUse(audioState, selectedOutputPreference), Date.now());
+    for (const notice of notices) toast({ title: notice.title, description: notice.description });
+  }, [audioState, selectedOutputPreference]);
 
 
   const startDisplayShare = useCallback(async (
