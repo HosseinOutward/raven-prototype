@@ -1354,13 +1354,28 @@ fn interleave_frame(channels: &[Vec<f32>], out: &mut Vec<f32>) {
     }
 }
 
+/// What one processed block reports to the UI.
+#[derive(Debug)]
+struct SourceBlockAnalysis {
+    safety: ChannelSafetyAnalysis,
+    /// Only while the source is muted: its level after noise suppression and before the
+    /// mute, so the user can be told they are talking while nobody hears them. It is
+    /// measured here and never leaves this machine.
+    muted_input: Option<MeterState>,
+}
+
 fn process_source_samples(
     processing: &mut SourceProcessingConfig,
     samples: &mut Vec<f32>,
-) -> Result<ChannelSafetyAnalysis, CaptureError> {
+) -> Result<SourceBlockAnalysis, CaptureError> {
     if let Some(apm) = processing.apm.as_mut() {
         apm.process_interleaved(samples)?;
     }
+
+    let muted_input = processing
+        .controls
+        .is_muted()
+        .then(|| crate::audio::processor::meter_samples(samples));
 
     // Fader, mute, limiter ceiling and the processor chain are all read live, so edits
     // take effect on the running stream without reopening the device.
@@ -1370,14 +1385,17 @@ fn process_source_samples(
 
     if samples.is_empty() {
         let meter = MeterState::default();
-        return Ok(ChannelSafetyAnalysis {
-            meter: meter.clone(),
-            health: crate::audio::safety::health_from_meter(
-                meter,
-                ceiling_db,
-                processing.latency_samples,
-                processing.processor_cpu_estimate,
-            ),
+        return Ok(SourceBlockAnalysis {
+            safety: ChannelSafetyAnalysis {
+                meter: meter.clone(),
+                health: crate::audio::safety::health_from_meter(
+                    meter,
+                    ceiling_db,
+                    processing.latency_samples,
+                    processing.processor_cpu_estimate,
+                ),
+            },
+            muted_input,
         });
     }
     let mut audio_buffer =
@@ -1405,7 +1423,10 @@ fn process_source_samples(
     processing
         .controls
         .push_to_sink(samples, processing.channel_count, processing.sample_rate);
-    Ok(analysis)
+    Ok(SourceBlockAnalysis {
+        safety: analysis,
+        muted_input,
+    })
 }
 
 fn spawn_capture_event_pump(
@@ -1430,13 +1451,16 @@ fn spawn_capture_event_pump(
                 };
                 match event {
                     CaptureEvent::Health(analysis) => {
-                        source.channel_strip.meter = analysis.meter.clone();
-                        source.channel_strip.health = analysis.health.clone();
-                        CaptureEmission::Meter(AudioMeterUpdate::local(
-                            source_id,
-                            analysis.meter,
-                            analysis.health,
-                        ))
+                        let SourceBlockAnalysis {
+                            safety,
+                            muted_input,
+                        } = analysis;
+                        source.channel_strip.meter = safety.meter.clone();
+                        source.channel_strip.health = safety.health.clone();
+                        let mut update =
+                            AudioMeterUpdate::local(source_id, safety.meter, safety.health);
+                        update.input_meter = muted_input;
+                        CaptureEmission::Meter(update)
                     }
                     CaptureEvent::Error(message) => {
                         source.runtime.status = AudioSourceRuntimeStatus::Error;
@@ -1469,7 +1493,7 @@ enum CaptureEmission {
 
 #[derive(Debug)]
 enum CaptureEvent {
-    Health(ChannelSafetyAnalysis),
+    Health(SourceBlockAnalysis),
     Error(String),
     /// The capture was (re)opened: replaces the source's runtime state, clearing any
     /// earlier error.

@@ -357,7 +357,10 @@ export interface AudioMeterUpdate {
   trackId: PublishedTrackId | null;
   meter: MeterState;
   health: ChannelHealthState | null;
-  /** Remote tracks only: level as received, before this peer's fader, mute and chain. */
+  /**
+   * Remote tracks: level as received, before this peer's fader, mute and chain.
+   * Local sources: present only while muted, the level before the mute.
+   */
   inputMeter?: MeterState | null;
 }
 

@@ -431,9 +431,10 @@ pub struct AudioMeterUpdate {
     pub track_id: Option<PublishedTrackId>,
     pub meter: MeterState,
     pub health: Option<ChannelHealthState>,
-    /// Remote tracks only: level as received, before this peer's fader, mute and chain.
-    /// Voice activity uses it so a locally muted or deafened participant still shows as
-    /// speaking.
+    /// Remote tracks: level as received, before this peer's fader, mute and chain. Voice
+    /// activity uses it so a locally muted or deafened participant still shows as speaking.
+    /// Local sources: present only while muted, the level before the mute, so the UI can
+    /// say "you're talking while muted".
     pub input_meter: Option<MeterState>,
 }
 

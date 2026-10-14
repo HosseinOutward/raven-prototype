@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@/components/nest/VideoPickers";
 import { buildVoiceOverlaySnapshot, EMPTY_VOICE_OVERLAY_SNAPSHOT, voiceOverlayCommands } from "@/lib/voiceOverlay";
 import { mediaHotkeyCommands, subscribeMediaHotkeys, type MediaHotkeySettings } from "@/lib/mediaHotkeys";
+import { useTalkingWhileMuted } from "@/lib/mutedSpeech";
 import {
   manageEventSubscription,
   runGuardedThumbnailAction,
@@ -445,6 +446,39 @@ export function DeviceDock({
   );
 }
 
+const MUTED_HINT_VISIBLE_MS = 6000;
+
+/**
+ * "You're muted" once per time the mic is muted, for a few seconds. Talking while muted
+ * is often deliberate (someone walked in), so it says it once and then leaves you be.
+ */
+function useMutedHint(talkingWhileMuted: boolean, micEnabled: boolean): [boolean, () => void] {
+  const [visible, setVisible] = useState(false);
+  const shownThisMuteRef = useRef(false);
+
+  useEffect(() => {
+    if (micEnabled) {
+      shownThisMuteRef.current = false;
+      setVisible(false);
+    }
+  }, [micEnabled]);
+
+  useEffect(() => {
+    if (!talkingWhileMuted || shownThisMuteRef.current) return;
+    shownThisMuteRef.current = true;
+    setVisible(true);
+  }, [talkingWhileMuted]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const timer = window.setTimeout(() => setVisible(false), MUTED_HINT_VISIBLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [visible]);
+
+  const dismiss = useCallback(() => setVisible(false), []);
+  return [visible, dismiss];
+}
+
 function hotkeyLabel(value?: string) {
   if (!value) return undefined;
   return value.replace(/Control/g, "Ctrl").replace(/Command/g, "⌘").replace(/\+/g, " ");
@@ -479,9 +513,38 @@ function DockDeviceControls({
 }) {
   const inCall = media.phase === "connected" && media.activeNestId != null;
   const nest = data.labels.nestSingular.toLowerCase();
+  const talkingWhileMuted = useTalkingWhileMuted(
+    media.audioState,
+    inCall && media.audioSupported && !media.localMicEnabled && !media.localDeafened,
+  );
+  const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
+  const micShortcut = hotkeyLabel(hotkeys?.mic);
   return (
     <>
       <DockControl
+        callout={mutedHint ? (
+          <div className="flex items-center gap-3">
+            <MicOff className="h-4 w-4 shrink-0 text-destructive" aria-hidden />
+            <div className="min-w-0">
+              <p className="text-small font-medium">You’re muted</p>
+              <p className="text-small text-muted-foreground">
+                Nobody here can hear you.{micShortcut ? ` Press ${micShortcut} to unmute.` : ""}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="shrink-0"
+              onClick={() => {
+                dismissMutedHint();
+                onCallAction("mic");
+              }}
+            >
+              Unmute
+            </Button>
+          </div>
+        ) : null}
+        onCalloutDismiss={dismissMutedHint}
         label={!media.audioSupported ? "No microphone available" : media.localMicEnabled ? "Mute" : "Unmute"}
         description={
           !media.audioSupported
@@ -490,7 +553,7 @@ function DockDeviceControls({
               ? inCall ? "People here can hear you." : `Your mic is on. You will be heard when you join a ${nest}.`
               : inCall ? "Nobody can hear you." : `You will join muted.`
         }
-        shortcut={hotkeyLabel(hotkeys?.mic)}
+        shortcut={micShortcut}
         tone={media.localMicEnabled ? "neutral" : "cut"}
         pressed={media.localMicEnabled}
         disabled={!media.audioSupported || media.busy || pendingActions.has("mic")}
@@ -583,6 +646,8 @@ function DockControl({
   onClick,
   menu,
   menuLabel,
+  callout,
+  onCalloutDismiss,
 }: {
   children: ReactNode;
   label: string;
@@ -594,51 +659,71 @@ function DockControl({
   onClick: () => void;
   menu?: ReactNode;
   menuLabel?: string;
+  /** A short notice above the control that does not take focus, e.g. "You're muted". */
+  callout?: ReactNode;
+  onCalloutDismiss?: () => void;
 }) {
   return (
-    <div className={cn("flex h-11 items-stretch rounded-card bg-secondary", disabled && "opacity-45")}>
-      <Tooltip
-        label={description ? <span><span className="block font-medium">{label}</span><span className="block text-muted-foreground">{description}</span></span> : label}
-        shortcut={shortcut}
-      >
-        <button
-          type="button"
-          aria-label={description ? `${label}. ${description}` : label}
-          aria-pressed={pressed}
-          disabled={disabled}
-          onClick={onClick}
-          className={cn(
-            "flex min-w-11 items-center justify-center gap-2 px-3 transition-colors focus-visible:-outline-offset-2 disabled:cursor-not-allowed [&>svg]:h-[18px] [&>svg]:w-[18px] [&>svg]:shrink-0",
-            menu ? "rounded-l-card" : "rounded-card",
-            tone === "neutral" && "text-foreground hover:bg-accent",
-            tone === "off" && "text-muted-foreground hover:bg-accent hover:text-foreground",
-            tone === "ready" && "text-foreground shadow-[inset_0_0_0_1.5px_hsl(var(--foreground)/0.7)] hover:bg-accent",
-            tone === "cut" && "text-destructive hover:bg-accent",
-            tone === "on" && "bg-foreground text-background hover:bg-foreground/90",
-          )}
-        >
-          {children}
-        </button>
-      </Tooltip>
-      {menu ? (
-        <Popover>
-          <Tooltip label={menuLabel ?? "Settings"}>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                aria-label={menuLabel}
-                className="flex w-6 items-center justify-center rounded-r-card border-l border-background/60 text-subtle transition-colors hover:bg-accent hover:text-foreground focus-visible:-outline-offset-2 data-[state=open]:bg-accent data-[state=open]:text-foreground"
-              >
-                <ChevronUp className="h-3.5 w-3.5" />
-              </button>
-            </PopoverTrigger>
+    <Popover open={callout != null} onOpenChange={(open) => { if (!open) onCalloutDismiss?.(); }}>
+      <PopoverAnchor asChild>
+        <div className={cn("flex h-11 items-stretch rounded-card bg-secondary", disabled && "opacity-45")}>
+          <Tooltip
+            label={description ? <span><span className="block font-medium">{label}</span><span className="block text-muted-foreground">{description}</span></span> : label}
+            shortcut={shortcut}
+          >
+            <button
+              type="button"
+              aria-label={description ? `${label}. ${description}` : label}
+              aria-pressed={pressed}
+              disabled={disabled}
+              onClick={onClick}
+              className={cn(
+                "flex min-w-11 items-center justify-center gap-2 px-3 transition-colors focus-visible:-outline-offset-2 disabled:cursor-not-allowed [&>svg]:h-[18px] [&>svg]:w-[18px] [&>svg]:shrink-0",
+                menu ? "rounded-l-card" : "rounded-card",
+                tone === "neutral" && "text-foreground hover:bg-accent",
+                tone === "off" && "text-muted-foreground hover:bg-accent hover:text-foreground",
+                tone === "ready" && "text-foreground shadow-[inset_0_0_0_1.5px_hsl(var(--foreground)/0.7)] hover:bg-accent",
+                tone === "cut" && "text-destructive hover:bg-accent",
+                tone === "on" && "bg-foreground text-background hover:bg-foreground/90",
+              )}
+            >
+              {children}
+            </button>
           </Tooltip>
-          <PopoverContent side="top" align="center" className="w-[360px] p-2">
-            {menu}
-          </PopoverContent>
-        </Popover>
+          {menu ? (
+            <Popover>
+              <Tooltip label={menuLabel ?? "Settings"}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={menuLabel}
+                    className="flex w-6 items-center justify-center rounded-r-card border-l border-background/60 text-subtle transition-colors hover:bg-accent hover:text-foreground focus-visible:-outline-offset-2 data-[state=open]:bg-accent data-[state=open]:text-foreground"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                </PopoverTrigger>
+              </Tooltip>
+              <PopoverContent side="top" align="center" className="w-[360px] p-2">
+                {menu}
+              </PopoverContent>
+            </Popover>
+          ) : null}
+        </div>
+      </PopoverAnchor>
+      {callout != null ? (
+        <PopoverContent
+          side="top"
+          align="center"
+          role="status"
+          aria-live="polite"
+          className="w-auto max-w-[360px]"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          {callout}
+        </PopoverContent>
       ) : null}
-    </div>
+    </Popover>
   );
 }
 

@@ -96,8 +96,9 @@ export class ParticipantVoiceActivityTracker {
     this.observedParticipants.add(target.participantId);
     const current = this.microphones.get(target.key);
     // Remote tracks report the level as received. The strip meter is post-fader, so
-    // using it would hide someone you turned down, muted locally, or deafened.
-    const rmsDb = (update.inputMeter ?? update.meter).rmsDb;
+    // using it would hide someone you turned down, muted locally, or deafened. A local
+    // source's input meter is its level while muted, which nobody hears: never speaking.
+    const rmsDb = (update.sourceId ? update.meter : update.inputMeter ?? update.meter).rmsDb;
     let active = current?.active ?? false;
     let belowSinceMs = current?.belowSinceMs ?? null;
 
