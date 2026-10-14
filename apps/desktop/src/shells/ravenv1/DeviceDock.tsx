@@ -27,7 +27,7 @@ import { buildTraySnapshot, subscribeTrayActions, trayCommands } from "@/lib/tra
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorUp, PhoneOff, Settings, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
 import { ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
@@ -40,6 +40,14 @@ import type {
 } from "./networkActivity";
 import { receivedScreenShareQualityNotice, screenShareQualityNotice } from "./networkActivity";
 import { useNetworkActivity } from "./useNetworkActivity";
+import {
+  sendQualityDetail,
+  sendQualityExplanation,
+  sendQualityTitle,
+  useSendQuality,
+  type SendQuality,
+  type SendQualityReading,
+} from "./sendQuality";
 
 const SIGNED_OUT_CALL_SNAPSHOT = {
   signedIn: false,
@@ -94,6 +102,7 @@ export function DeviceDock({
   const activeNest = media.activeNestId ? data.getNest(media.activeNestId) : undefined;
   const selfName = data.user ? displayNameFor(data.user) : "You";
   const networkActivity = useNetworkActivity(media.activeNestId != null, media.networkActivity);
+  const sendQuality = useSendQuality(media.phase === "connected" && media.activeNestId != null);
   const connected = media.phase === "connected" && media.activeNestId != null;
   const signedIn = Boolean(data.user);
   const mixerOpen = view.kind === "mixer";
@@ -372,6 +381,7 @@ export function DeviceDock({
 
         <div className="flex min-w-0 items-center justify-end gap-2 justify-self-end">
           {media.lastError ? <MediaErrorChip media={media} /> : null}
+          {sendQuality.quality === "choppy" ? <SendQualityChip quality={sendQuality.quality} reading={sendQuality.reading} /> : null}
           {media.activeNestId ? (
             <>
               <Tooltip label={`Return to ${activeNest?.name ?? data.labels.nestSingular}`}>
@@ -403,7 +413,7 @@ export function DeviceDock({
               </Button>
             </>
           ) : null}
-          <NetworkActivityIndicator activity={networkActivity} />
+          <NetworkActivityIndicator activity={networkActivity} sendQuality={sendQuality} />
           <Tooltip label={mixerOpen ? "Close mixer" : "Mixer"}>
             <button
               type="button"
@@ -923,6 +933,33 @@ function MediaErrorChip({ media }: { media: RavenMediaAdapterState }) {
   );
 }
 
+/** How you sound to others, said in words once it is bad enough to notice. */
+function SendQualityChip({ quality, reading }: { quality: SendQuality; reading: SendQualityReading | null }) {
+  const title = sendQualityTitle(quality);
+  const detail = sendQualityDetail(reading);
+  return (
+    <Popover>
+      <Tooltip label={title}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label={title}
+            className="flex h-9 shrink-0 items-center gap-2 rounded-control bg-warning/10 px-2.5 text-small font-medium text-warning transition-colors hover:bg-warning/15"
+          >
+            <SignalLow className="h-4 w-4" />
+            <span className="hidden min-[1100px]:inline">Sounding choppy</span>
+          </button>
+        </PopoverTrigger>
+      </Tooltip>
+      <PopoverContent side="top" align="end" className="w-[340px] p-3.5">
+        <div className="text-small font-medium">{title}</div>
+        <p className="mt-1 text-small text-muted-foreground">{sendQualityExplanation(quality, reading)}</p>
+        {detail ? <p className="rv-mono mt-2 text-caption text-subtle tabular-nums">{detail}</p> : null}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function FullscreenDeviceOverlay({
   children,
   networkActivity,
@@ -1005,9 +1042,11 @@ function FullscreenDeviceOverlay({
 
 function NetworkActivityIndicator({
   activity,
+  sendQuality,
   onOpenChange,
 }: {
   activity: NetworkActivitySnapshot;
+  sendQuality?: { quality: SendQuality; reading: SendQualityReading | null };
   onOpenChange?: (open: boolean) => void;
 }) {
   const visibleCategories = activity.categories.filter((category) => category !== "other");
@@ -1046,6 +1085,11 @@ function NetworkActivityIndicator({
             Media only. Total is what Raven measures for audio, video and screen sharing; sign-in, signalling and other system traffic are not included.
           </InfoTooltip>
         </div>
+        {sendQuality?.reading ? (
+          <p className={cn("mt-2 text-small", sendQuality.quality === "clear" ? "text-muted-foreground" : "text-warning")}>
+            {sendQualityTitle(sendQuality.quality)}.
+          </p>
+        ) : null}
         <div className="mt-2 divide-y divide-border/70">
           {visibleCategories.map((category) => (
             <NetworkActivityRow key={category} category={category} activity={activity} />

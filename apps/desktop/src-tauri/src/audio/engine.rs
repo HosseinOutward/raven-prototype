@@ -281,19 +281,38 @@ mod subscription_policy_tests {
 pub struct AudioNetworkTotals {
     pub sent_bytes: u64,
     pub received_bytes: u64,
+    /// Packets of this peer's own audio sent so far, and how many of them the server
+    /// reported missing. Together they say how choppy this peer sounds to everyone else.
+    pub sent_packets: u64,
+    pub sent_packets_lost: u64,
+    /// The worst round trip and jitter the server reports for this peer's audio.
+    pub sent_round_trip_ms: Option<f64>,
+    pub sent_jitter_ms: Option<f64>,
 }
 
 pub async fn measure_audio_network_totals(room: Arc<Room>) -> Result<AudioNetworkTotals, String> {
     let stats = room.get_stats().await.map_err(|error| error.to_string())?;
-    let sent_bytes = stats
-        .publisher_stats
-        .iter()
-        .filter_map(|stat| match stat {
-            RtcStats::OutboundRtp(outbound) => Some(outbound.sent.bytes_sent),
-            _ => None,
-        })
-        .sum();
-    let received_bytes = stats
+    let mut totals = AudioNetworkTotals::default();
+    for stat in &stats.publisher_stats {
+        match stat {
+            RtcStats::OutboundRtp(outbound) => {
+                totals.sent_bytes += outbound.sent.bytes_sent;
+                totals.sent_packets += outbound.sent.packets_sent;
+            }
+            RtcStats::RemoteInboundRtp(remote) => {
+                totals.sent_packets_lost += remote.received.packets_lost.max(0) as u64;
+                if remote.remote_inbound.round_trip_time_measurements > 0 {
+                    let round_trip_ms = remote.remote_inbound.round_trip_time * 1_000.0;
+                    totals.sent_round_trip_ms =
+                        Some(totals.sent_round_trip_ms.unwrap_or(0.0).max(round_trip_ms));
+                }
+                let jitter_ms = remote.received.jitter * 1_000.0;
+                totals.sent_jitter_ms = Some(totals.sent_jitter_ms.unwrap_or(0.0).max(jitter_ms));
+            }
+            _ => {}
+        }
+    }
+    totals.received_bytes = stats
         .subscriber_stats
         .iter()
         .filter_map(|stat| match stat {
@@ -301,11 +320,7 @@ pub async fn measure_audio_network_totals(room: Arc<Room>) -> Result<AudioNetwor
             _ => None,
         })
         .sum();
-
-    Ok(AudioNetworkTotals {
-        sent_bytes,
-        received_bytes,
-    })
+    Ok(totals)
 }
 
 fn db_to_linear(db: GainDb) -> f32 {

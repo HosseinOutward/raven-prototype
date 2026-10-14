@@ -369,6 +369,12 @@ export type AudioUiSound = "knock";
 export interface AudioNetworkTotals {
   sentBytes: number;
   receivedBytes: number;
+  /** Packets of your own audio sent so far, and how many the server reported missing. */
+  sentPackets?: number;
+  sentPacketsLost?: number;
+  /** The worst round trip and jitter the server reports for your audio. */
+  sentRoundTripMs?: number | null;
+  sentJitterMs?: number | null;
 }
 
 export type AudioStateUnsubscribe = () => void;
