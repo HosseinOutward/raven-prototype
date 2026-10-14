@@ -2815,13 +2815,11 @@ pub mod platform {
                     processing,
                     last_meter,
                 } = &mut *state;
-                handle_input_block(
-                    processing,
-                    &mut samples,
-                    &self.sender,
-                    last_meter,
-                    self.source_id,
-                );
+                if let Err(reason) =
+                    handle_input_block(processing, &mut samples, &self.sender, last_meter)
+                {
+                    let _ = self.sender.try_send(CaptureEvent::Error(reason));
+                }
             }
         }
 
@@ -3257,7 +3255,11 @@ pub mod platform {
                 for bytes in complete.chunks_exact(std::mem::size_of::<f32>()) {
                     samples.push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
                 }
-                handle_input_block(&mut processing, &mut samples, &sender, &mut last_meter);
+                if let Err(reason) =
+                    handle_input_block(&mut processing, &mut samples, &sender, &mut last_meter)
+                {
+                    let _ = sender.try_send(CaptureEvent::Error(reason));
+                }
             }
 
             if !stop.load(Ordering::Relaxed) {
