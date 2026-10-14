@@ -479,8 +479,9 @@ export const audioCommands = {
   resetRemoteTrackToSafeDefaults: (remoteParticipantId: ParticipantId, remoteTrackId: PublishedTrackId) =>
     invoke<AudioMixerState>("audio_reset_remote_track_to_safe_defaults", { remoteParticipantId, remoteTrackId }),
 
-  addLocalSource: (sourceType: AudioSourceType, displayName: string) =>
-    invoke<AudioMixerState>("audio_add_local_source", { sourceType, displayName }),
+  /** `captureDeviceId` is the input/output device id, or the process id for app audio. */
+  addLocalSource: (sourceType: AudioSourceType, displayName: string, captureDeviceId: string | null = null) =>
+    invoke<AudioMixerState>("audio_add_local_source", { sourceType, displayName, captureDeviceId }),
 
   removeLocalSource: (sourceId: AudioSourceId) =>
     invoke<AudioMixerState>("audio_remove_local_source", { sourceId }),

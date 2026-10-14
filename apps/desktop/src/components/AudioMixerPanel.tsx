@@ -562,16 +562,9 @@ export function AudioMixerPanel() {
             }
             onAdd={(sourceType, displayName, captureDeviceId) => {
               setAddSourceOpen(false);
-              void runMutation(async () => {
-                const state = await audioCommands.addLocalSource(sourceType, displayName);
-                if ((sourceType === "appAudio" || sourceType === "systemAudio" || sourceType === "microphone") && captureDeviceId) {
-                  const newSource = state.localSources[state.localSources.length - 1];
-                  if (newSource) {
-                    return audioCommands.setLocalSourceCaptureDevice(newSource.id, captureDeviceId);
-                  }
-                }
-                return state;
-              });
+              void runMutation(() =>
+                audioCommands.addLocalSource(sourceType, displayName, captureDeviceId ?? null)
+              );
             }}
           />
         </Dialog>

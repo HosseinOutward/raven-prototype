@@ -1904,9 +1904,13 @@ pub async fn audio_add_local_source(
     state: State<'_, SharedAudioEngineState>,
     source_type: AudioSourceType,
     display_name: String,
+    capture_device_id: Option<String>,
 ) -> Result<AudioMixerState, AudioStateError> {
+    // The device (or, for app audio, the process id) goes in with the source, so the first
+    // reconcile starts it correctly instead of failing on a half-configured source.
     mutate_audio_state(&app, &state, |engine| {
-        engine.add_local_source(source_type, display_name);
+        let source = engine.add_local_source(source_type, display_name);
+        engine.set_local_source_capture_device(source.id, capture_device_id)?;
         Ok(())
     })
     .await

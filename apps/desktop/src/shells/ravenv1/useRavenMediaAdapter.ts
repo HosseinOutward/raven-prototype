@@ -705,7 +705,11 @@ export function useRavenMediaAdapter(
     let state = await audioCommands.getState();
     let mic = state.localSources.find((source) => source.sourceType === "microphone");
     if (!mic) {
-      state = await audioCommands.addLocalSource("microphone", "Microphone");
+      state = await audioCommands.addLocalSource(
+        "microphone",
+        "Microphone",
+        restorePreference ? selectedMicPreference ?? null : null,
+      );
       const mics = state.localSources.filter((source) => source.sourceType === "microphone");
       mic = mics[mics.length - 1];
     }
