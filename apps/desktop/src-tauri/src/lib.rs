@@ -176,6 +176,10 @@ pub fn run() {
                 start_api_sidecar(app.handle())?;
             }
             thumbnail_toolbar::initialize(app.handle());
+            audio::state::load_remembered_volumes(
+                app.handle(),
+                &app.state::<audio::state::SharedAudioEngineState>(),
+            );
             if let Err(err) = overlay::initialize_voice_overlay(app.handle()) {
                 eprintln!("[raven] voice overlay initialization failed: {err}");
             }

@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use thiserror::Error;
 
@@ -44,6 +44,7 @@ pub const AUDIO_STATE_CHANGED_EVENT: &str = "audio-state-changed";
 pub const AUDIO_METER_CHANGED_EVENT: &str = "audio-meter-changed";
 pub const AUDIO_TRACK_PUBLISH_INSTRUCTION_EVENT: &str = "audio-track-publish-instruction";
 const USER_PRESETS_FILE_NAME: &str = "audio-presets.json";
+const REMEMBERED_VOLUMES_FILE_NAME: &str = "remembered-volumes.json";
 
 pub type SharedAudioEngineState = Arc<RwLock<AudioEngineState>>;
 
@@ -117,9 +118,24 @@ pub struct AudioEngineState {
     /// room reconnects, or receiving is paused; the listener's fader, mute and chain for
     /// it must survive that. Not serialized.
     remembered_remote_strips: HashMap<RemoteStripKey, RemoteChannelStripState>,
+    /// The volume this listener chose for each person's microphone, app audio and so on.
+    /// Unlike `remembered_remote_strips` it is saved to disk, so it holds across calls and
+    /// restarts. A remote participant id is the person's user id, which never changes.
+    remembered_volumes: HashMap<(ParticipantId, AudioSourceType), GainDb>,
+    remembered_volumes_changed: bool,
     /// LiveKit username per remote participant id, used as the Incoming Tracks group header.
     /// Not serialized into the mixer snapshot; it feeds `refresh_remote_participants`.
     pub remote_owner_names: HashMap<ParticipantId, String>,
+}
+
+/// One entry of `remembered-volumes.json`: how loud this listener wants one person's
+/// source of a given kind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RememberedVolume {
+    pub participant_id: ParticipantId,
+    pub source_type: AudioSourceType,
+    pub gain_db: GainDb,
 }
 
 /// How a remembered receiver strip is found again: by the exact track, or failing that
@@ -745,6 +761,13 @@ impl AudioEngineState {
             let mut remote_track = RemoteAudioTrackState::new(metadata);
             if let Some(strip) = self.recall_remote_strip(&remote_track.track) {
                 remote_track.receiver_channel_strip = strip;
+            } else if let Some(gain_db) = self.remembered_volumes.get(&(
+                remote_track.track.participant_id,
+                remote_track.track.source_type.clone(),
+            )) {
+                remote_track.receiver_channel_strip.gain_db = *gain_db;
+                remote_track.preference.gain_db = *gain_db;
+                refresh_remote_channel_health(&mut remote_track);
             }
             self.mixer.remote_tracks.push(remote_track.clone());
             remote_track
@@ -816,6 +839,54 @@ impl AudioEngineState {
             ),
             strip,
         );
+    }
+
+    /// Replace the remembered volumes with the ones read from disk at startup.
+    pub fn load_remembered_volumes(&mut self, volumes: Vec<RememberedVolume>) {
+        self.remembered_volumes = volumes
+            .into_iter()
+            .map(|volume| {
+                (
+                    (volume.participant_id, volume.source_type),
+                    clamp_channel_gain(volume.gain_db),
+                )
+            })
+            .collect();
+        self.remembered_volumes_changed = false;
+    }
+
+    /// Note the volume of every track being heard now, so the same person sounds the same
+    /// in the next call. Unity is forgotten rather than stored. Returns the whole list when
+    /// it changed and should be saved.
+    pub fn take_changed_remembered_volumes(&mut self) -> Option<Vec<RememberedVolume>> {
+        for remote in &self.mixer.remote_tracks {
+            let key = (
+                remote.track.participant_id,
+                remote.track.source_type.clone(),
+            );
+            let gain_db = remote.receiver_channel_strip.gain_db;
+            let changed = if gain_db == GainDb::UNITY {
+                self.remembered_volumes.remove(&key).is_some()
+            } else {
+                self.remembered_volumes.insert(key, gain_db) != Some(gain_db)
+            };
+            self.remembered_volumes_changed |= changed;
+        }
+        if !std::mem::take(&mut self.remembered_volumes_changed) {
+            return None;
+        }
+        Some(
+            self.remembered_volumes
+                .iter()
+                .map(
+                    |((participant_id, source_type), gain_db)| RememberedVolume {
+                        participant_id: *participant_id,
+                        source_type: source_type.clone(),
+                        gain_db: *gain_db,
+                    },
+                )
+                .collect(),
+        )
     }
 
     fn recall_remote_strip(
@@ -1388,6 +1459,8 @@ impl Default for AudioEngineState {
             user_presets_loaded: false,
             runtime: Arc::new(AudioRuntime::default()),
             remembered_remote_strips: HashMap::new(),
+            remembered_volumes: HashMap::new(),
+            remembered_volumes_changed: false,
             remote_owner_names: HashMap::new(),
         }
     }
@@ -2501,9 +2574,13 @@ where
 {
     let runtime = audio_runtime(state)?;
     let mut ops = runtime.ops.lock().await;
-    {
+    let volumes_to_save = {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         mutation(&mut guard)?;
+        guard.take_changed_remembered_volumes()
+    };
+    if let Some(volumes) = volumes_to_save {
+        save_remembered_volumes(app, &volumes);
     }
     let media_error = reconcile_media(app, state, &mut ops).await?;
     drop(ops);
@@ -3071,6 +3148,47 @@ fn user_presets_path(app: &AppHandle) -> Result<std::path::PathBuf, AudioStateEr
                 message: error.to_string(),
             })?;
     Ok(app_data_dir.join(USER_PRESETS_FILE_NAME))
+}
+
+/// Read the per-person volumes saved by earlier runs into the engine. A missing or
+/// unreadable file only means everyone starts at their default volume.
+pub fn load_remembered_volumes(app: &AppHandle, state: &SharedAudioEngineState) {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let volumes =
+        load_remembered_volumes_from_path(&app_data_dir.join(REMEMBERED_VOLUMES_FILE_NAME));
+    if let Ok(mut guard) = state.write() {
+        guard.load_remembered_volumes(volumes);
+    }
+}
+
+fn save_remembered_volumes(app: &AppHandle, volumes: &[RememberedVolume]) {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = app_data_dir.join(REMEMBERED_VOLUMES_FILE_NAME);
+    if let Err(error) = save_remembered_volumes_to_path(&path, volumes) {
+        eprintln!("[raven] could not save remembered volumes: {error}");
+    }
+}
+
+fn load_remembered_volumes_from_path(path: &Path) -> Vec<RememberedVolume> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_remembered_volumes_to_path(
+    path: &Path,
+    volumes: &[RememberedVolume],
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(volumes).map_err(std::io::Error::other)?;
+    fs::write(path, bytes)
 }
 
 fn load_user_presets(app: &AppHandle) -> Result<Vec<AudioPresetDefinition>, AudioStateError> {
@@ -3690,6 +3808,51 @@ mod tests {
         let restored = engine.add_or_update_remote_track(metadata);
 
         assert_eq!(restored.receiver_channel_strip.gain_db, GainDb::default());
+    }
+
+    #[test]
+    fn a_persons_volume_is_saved_and_applied_after_a_restart() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let metadata = remote_metadata(participant_id, AudioSourceType::Microphone);
+        let track_id = metadata.track_id;
+        engine.add_or_update_remote_track(metadata);
+        assert_eq!(engine.take_changed_remembered_volumes(), None);
+        engine
+            .set_remote_track_gain(participant_id, track_id, GainDb::new(-9.0))
+            .expect("set gain");
+        let saved = engine
+            .take_changed_remembered_volumes()
+            .expect("a changed volume is saved");
+        assert_eq!(engine.take_changed_remembered_volumes(), None);
+
+        let path =
+            std::env::temp_dir().join(format!("raven-volumes-{}.json", uuid::Uuid::new_v4()));
+        save_remembered_volumes_to_path(&path, &saved).expect("save");
+        let loaded = load_remembered_volumes_from_path(&path);
+        let _ = fs::remove_file(&path);
+
+        // A fresh run: nothing in memory, only what was on disk. The person's next call
+        // has a new track id.
+        let mut restarted = AudioEngineState::default();
+        restarted.load_remembered_volumes(loaded);
+        let microphone = restarted.add_or_update_remote_track(remote_metadata(
+            participant_id,
+            AudioSourceType::Microphone,
+        ));
+        let app_audio = restarted
+            .add_or_update_remote_track(remote_metadata(participant_id, AudioSourceType::AppAudio));
+        assert_eq!(microphone.receiver_channel_strip.gain_db, GainDb::new(-9.0));
+        assert_eq!(app_audio.receiver_channel_strip.gain_db, GainDb::default());
+
+        // Back to unity is forgotten, so the file does not grow with defaults.
+        restarted
+            .set_remote_track_gain(participant_id, microphone.track.track_id, GainDb::UNITY)
+            .expect("reset gain");
+        assert_eq!(
+            restarted.take_changed_remembered_volumes(),
+            Some(Vec::new())
+        );
     }
 
     #[test]
