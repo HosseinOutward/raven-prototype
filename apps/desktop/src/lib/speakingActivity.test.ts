@@ -156,6 +156,18 @@ describe("participant voice activity", () => {
         ["signed-in-user"]?.speaking,
     ).toBe(true);
   });
+
+  test("keys a remote speaker by user id, not the engine's hyphenated UUID", () => {
+    // The native engine reports remote participants as hyphenated UUIDs, while user
+    // ids (and the video engine's participant ids) are 32 hex digits.
+    const engineId = "0f3c9a1b-2d4e-4f6a-8b7c-9d0e1f2a3b4c";
+    const track = remoteMicrophone("track-1");
+    track.track.participantId = engineId;
+    const update = { ...remoteMeter("track-1", -20), participantId: engineId };
+
+    const activity = new ParticipantVoiceActivityTracker().processMeter(mixerState([], [track]), update, 0);
+    expect(activity["0f3c9a1b2d4e4f6a8b7c9d0e1f2a3b4c"]?.speaking).toBe(true);
+  });
 });
 
 function mixerState(
