@@ -4563,7 +4563,7 @@ dependencies = [
 
 [[package]]
 name = "raven-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ashpd",
  "base64 0.22.1",
