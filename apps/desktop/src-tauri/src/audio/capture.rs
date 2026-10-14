@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     f32::consts::TAU,
+    panic::AssertUnwindSafe,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender},
@@ -45,6 +46,13 @@ const CAPTURE_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(3),
 ];
 const CAPTURE_SUPERVISE_TICK: Duration = Duration::from_millis(100);
+/// A running input stream that delivers no block for this long is reopened. WASAPI can
+/// stop signalling an endpoint without ever reporting an error (cpal waits on it with no
+/// timeout), which otherwise leaves the microphone silent until the device is switched.
+const CAPTURE_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// A stream that ran at least this long before it had to be recovered starts the
+/// recovery backoff from the beginning again.
+const CAPTURE_HEALTHY_RUN: Duration = Duration::from_secs(30);
 /// Upper bound the processor chain is prepared for. Capture callbacks vary in size and
 /// are never close to this; it only has to be larger than any real block.
 const CAPTURE_MAX_BLOCK_FRAMES: usize = 1 << 20;
@@ -115,11 +123,10 @@ impl LiveControls {
     /// Publish an edited chain to the capture thread. A no-op when nothing changed, so it
     /// can be called on every reconcile.
     fn set_chain(&self, chain: &ProcessorChainState) {
-        if let Ok(mut current) = self.chain.lock() {
-            if *current != *chain {
-                *current = chain.clone();
-                self.chain_version.fetch_add(1, Ordering::Release);
-            }
+        let mut current = lock_recovering(&self.chain);
+        if *current != *chain {
+            *current = chain.clone();
+            self.chain_version.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -128,7 +135,7 @@ impl LiveControls {
     }
 
     fn chain(&self) -> Option<ProcessorChainState> {
-        self.chain.lock().ok().map(|chain| chain.clone())
+        Some(lock_recovering(&self.chain).clone())
     }
 
     fn set_gain_linear(&self, gain: f32) {
@@ -148,18 +155,24 @@ impl LiveControls {
     }
 
     fn set_sink(&self, sink: Option<Arc<dyn ProcessedSampleSink>>) {
-        if let Ok(mut guard) = self.sink.lock() {
-            *guard = sink;
-        }
+        *lock_recovering(&self.sink) = sink;
     }
 
     fn push_to_sink(&self, samples: &[f32], channels: usize, sample_rate: u32) {
-        if let Ok(guard) = self.sink.lock() {
-            if let Some(sink) = guard.as_ref() {
-                sink.push_samples(samples, channels, sample_rate);
-            }
+        if let Some(sink) = lock_recovering(&self.sink).as_ref() {
+            sink.push_samples(samples, channels, sample_rate);
         }
     }
+}
+
+/// Lock a mutex even if a panic poisoned it. Capture catches panics in its processing
+/// and rebuilds; these controls outlive the capture, so a poisoned lock here would
+/// otherwise cut the source off from its sink and edits for the rest of the session.
+fn lock_recovering<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        mutex.clear_poison();
+        poisoned.into_inner()
+    })
 }
 
 #[derive(Debug, Default)]
@@ -628,18 +641,79 @@ struct OpenedMicrophone {
     state: AudioSourceRuntimeState,
     device_name: String,
     fallback: bool,
-    failed: Arc<AtomicBool>,
+    watch: Arc<StreamWatch>,
+}
+
+/// Shared between an input stream's callbacks and its supervisor: whether the stream has
+/// failed, and how many blocks it has delivered (so a stream that silently stopped can be
+/// told apart from one that is running).
+#[derive(Debug, Default)]
+struct StreamWatch {
+    failed: AtomicBool,
+    blocks: AtomicU64,
+    reason: Mutex<Option<String>>,
+}
+
+impl StreamWatch {
+    fn fail(&self, reason: String) {
+        if let Ok(mut current) = self.reason.lock() {
+            current.get_or_insert(reason);
+        }
+        self.failed.store(true, Ordering::Release);
+    }
+
+    fn has_failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
+    fn reason(&self) -> String {
+        self.reason
+            .lock()
+            .ok()
+            .and_then(|reason| reason.clone())
+            .unwrap_or_else(|| "the input stream failed".to_string())
+    }
+}
+
+/// Notices a stream that stopped delivering blocks without reporting an error.
+#[derive(Debug)]
+struct StallDetector {
+    last_blocks: u64,
+    last_progress: Instant,
+}
+
+impl StallDetector {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_blocks: 0,
+            last_progress: now,
+        }
+    }
+
+    /// True once `blocks` has not moved for [`CAPTURE_STALL_TIMEOUT`].
+    fn stalled(&mut self, blocks: u64, now: Instant) -> bool {
+        if blocks != self.last_blocks {
+            self.last_blocks = blocks;
+            self.last_progress = now;
+            return false;
+        }
+        now.saturating_duration_since(self.last_progress) >= CAPTURE_STALL_TIMEOUT
+    }
 }
 
 enum CaptureSupervision {
     Stop,
-    Restart,
+    /// The device to use changed: reopen straight away.
+    Reopen,
+    /// The stream broke (error, stall, panic, bad output): reopen after a backoff.
+    Recover(String),
 }
 
 /// Capture thread body: open the microphone, keep it running, and reopen it whenever the
-/// stream fails, the system default moves (when following the default), or a preferred
-/// device that was missing comes back. Only the very first open reports failure to the
-/// caller; after that the source keeps retrying until it is stopped.
+/// stream fails or stalls, its processing breaks, the system default moves (when
+/// following the default), or a preferred device that was missing comes back. Only the
+/// very first open reports failure to the caller; after that the source keeps retrying
+/// until it is stopped.
 fn run_microphone_capture(
     source: AudioSourceState,
     controls: Arc<LiveControls>,
@@ -650,6 +724,7 @@ fn run_microphone_capture(
 ) {
     let mut ready = Some(ready);
     let mut failures = 0_usize;
+    let mut recoveries = 0_usize;
     loop {
         match open_microphone_stream(&source, &controls, &render_reference, &events) {
             Ok(opened) => {
@@ -662,11 +737,28 @@ fn run_microphone_capture(
                         let _ = events.send(CaptureEvent::Runtime(opened.state.clone()));
                     }
                 }
+                let opened_at = Instant::now();
                 let outcome = supervise_microphone(&source, &opened, &stop);
                 let _ = opened.stream.pause();
                 drop(opened);
-                if matches!(outcome, CaptureSupervision::Stop) {
-                    return;
+                match outcome {
+                    CaptureSupervision::Stop => return,
+                    CaptureSupervision::Reopen => recoveries = 0,
+                    CaptureSupervision::Recover(reason) => {
+                        if opened_at.elapsed() >= CAPTURE_HEALTHY_RUN {
+                            recoveries = 0;
+                        }
+                        eprintln!(
+                            "[audio-engine] reopening microphone {}: {reason}",
+                            source.id
+                        );
+                        let delay =
+                            CAPTURE_RETRY_DELAYS[recoveries.min(CAPTURE_RETRY_DELAYS.len() - 1)];
+                        recoveries += 1;
+                        if stop_requested_within(&stop, delay) {
+                            return;
+                        }
+                    }
                 }
             }
             Err(error) => {
@@ -696,12 +788,20 @@ fn supervise_microphone(
     stop: &Receiver<()>,
 ) -> CaptureSupervision {
     let mut last_probe = Instant::now();
+    let mut stall = StallDetector::new(Instant::now());
     loop {
         if stop_requested_within(stop, CAPTURE_SUPERVISE_TICK) {
             return CaptureSupervision::Stop;
         }
-        if opened.failed.load(Ordering::Relaxed) {
-            return CaptureSupervision::Restart;
+        if opened.watch.has_failed() {
+            return CaptureSupervision::Recover(opened.watch.reason());
+        }
+        if stall.stalled(opened.watch.blocks.load(Ordering::Relaxed), Instant::now()) {
+            return CaptureSupervision::Recover(format!(
+                "no audio from `{}` for {} s",
+                opened.device_name,
+                CAPTURE_STALL_TIMEOUT.as_secs()
+            ));
         }
         if last_probe.elapsed() < CAPTURE_DEVICE_PROBE_INTERVAL {
             continue;
@@ -719,7 +819,7 @@ fn supervise_microphone(
                 .is_some_and(|current| current != opened.device_name),
         };
         if should_restart {
-            return CaptureSupervision::Restart;
+            return CaptureSupervision::Reopen;
         }
     }
 }
@@ -819,14 +919,14 @@ fn open_input_device(
         sample_rate,
         Arc::clone(render_reference),
     )?;
-    let failed = Arc::new(AtomicBool::new(false));
+    let watch = Arc::new(StreamWatch::default());
     let stream = build_input_stream(
         device,
         &stream_config,
         supported_config.sample_format(),
         processing,
         events.clone(),
-        Arc::clone(&failed),
+        Arc::clone(&watch),
     )?;
     stream.play().map_err(|error| CaptureError::StreamFailed {
         message: error.to_string(),
@@ -846,7 +946,7 @@ fn open_input_device(
         state,
         device_name,
         fallback,
-        failed,
+        watch,
     })
 }
 
@@ -924,38 +1024,38 @@ fn build_input_stream(
     format: cpal::SampleFormat,
     processing: SourceProcessingConfig,
     sender: SyncSender<CaptureEvent>,
-    failed: Arc<AtomicBool>,
+    watch: Arc<StreamWatch>,
 ) -> Result<cpal::Stream, CaptureError> {
     match format {
         cpal::SampleFormat::F32 => {
-            build_typed_input_stream::<f32>(device, config, processing, sender, failed)
+            build_typed_input_stream::<f32>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::F64 => {
-            build_typed_input_stream::<f64>(device, config, processing, sender, failed)
+            build_typed_input_stream::<f64>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::I8 => {
-            build_typed_input_stream::<i8>(device, config, processing, sender, failed)
+            build_typed_input_stream::<i8>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::I16 => {
-            build_typed_input_stream::<i16>(device, config, processing, sender, failed)
+            build_typed_input_stream::<i16>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::I32 => {
-            build_typed_input_stream::<i32>(device, config, processing, sender, failed)
+            build_typed_input_stream::<i32>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::I64 => {
-            build_typed_input_stream::<i64>(device, config, processing, sender, failed)
+            build_typed_input_stream::<i64>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::U8 => {
-            build_typed_input_stream::<u8>(device, config, processing, sender, failed)
+            build_typed_input_stream::<u8>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::U16 => {
-            build_typed_input_stream::<u16>(device, config, processing, sender, failed)
+            build_typed_input_stream::<u16>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::U32 => {
-            build_typed_input_stream::<u32>(device, config, processing, sender, failed)
+            build_typed_input_stream::<u32>(device, config, processing, sender, watch)
         }
         cpal::SampleFormat::U64 => {
-            build_typed_input_stream::<u64>(device, config, processing, sender, failed)
+            build_typed_input_stream::<u64>(device, config, processing, sender, watch)
         }
         other => Err(CaptureError::StreamFailed {
             message: format!("unsupported input sample format {other:?}"),
@@ -968,7 +1068,7 @@ fn build_typed_input_stream<T>(
     config: &cpal::StreamConfig,
     mut processing: SourceProcessingConfig,
     sender: SyncSender<CaptureEvent>,
-    failed: Arc<AtomicBool>,
+    watch: Arc<StreamWatch>,
 ) -> Result<cpal::Stream, CaptureError>
 where
     T: SizedSample,
@@ -977,17 +1077,28 @@ where
     let mut buffer = Vec::new();
     let mut last_meter = Instant::now();
     let error_sender = sender.clone();
+    let error_watch = Arc::clone(&watch);
     device
         .build_input_stream(
             config,
             move |data: &[T], _| {
+                watch.blocks.fetch_add(1, Ordering::Relaxed);
+                // Once processing has broken, its state cannot be trusted; the supervisor
+                // reopens the device with fresh processing.
+                if watch.has_failed() {
+                    return;
+                }
                 buffer.clear();
                 buffer.extend(data.iter().map(|sample| f32::from_sample(*sample)));
-                handle_input_block(&mut processing, &mut buffer, &sender, &mut last_meter);
+                if let Err(reason) =
+                    handle_input_block(&mut processing, &mut buffer, &sender, &mut last_meter)
+                {
+                    watch.fail(reason);
+                }
             },
             move |error| {
                 // The supervisor reopens the device; the event surfaces why it dropped.
-                failed.store(true, Ordering::Relaxed);
+                error_watch.fail(error.to_string());
                 let _ = error_sender.try_send(CaptureEvent::Error(error.to_string()));
             },
             None,
@@ -997,23 +1108,48 @@ where
         })
 }
 
+/// Process one device block. Any failure, including a panic inside the processing, is
+/// returned instead of escaping: a panic unwinding out of a cpal callback ends the
+/// device thread silently, and the microphone would stay dead with no error.
 fn handle_input_block(
     processing: &mut SourceProcessingConfig,
     samples: &mut Vec<f32>,
     sender: &SyncSender<CaptureEvent>,
     last_meter: &mut Instant,
-) {
-    let analysis = match process_source_samples(processing, samples) {
-        Ok(analysis) => analysis,
-        Err(error) => {
-            let _ = sender.try_send(CaptureEvent::Error(error.to_string()));
-            return;
-        }
-    };
+) -> Result<(), String> {
+    let analysis = process_source_samples_guarded(processing, samples)?;
     if last_meter.elapsed() >= METER_INTERVAL {
         let _ = sender.try_send(CaptureEvent::Health(analysis));
         *last_meter = Instant::now();
     }
+    Ok(())
+}
+
+/// [`process_source_samples`] with panics turned into errors.
+fn process_source_samples_guarded(
+    processing: &mut SourceProcessingConfig,
+    samples: &mut Vec<f32>,
+) -> Result<SourceBlockAnalysis, String> {
+    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+        process_source_samples(processing, samples)
+    })) {
+        Ok(result) => result.map_err(|error| error.to_string()),
+        Err(payload) => {
+            samples.clear();
+            Err(format!(
+                "audio processing panicked: {}",
+                panic_message(&*payload)
+            ))
+        }
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
 }
 
 #[derive(Debug)]
@@ -1411,6 +1547,16 @@ fn process_source_samples(
             message: error.to_string(),
         })?;
     *samples = audio_buffer.into_samples();
+    // A NaN or infinity from the canceller or the chain stays in their filter state, so
+    // every later block is broken too. The safety limiter would quietly turn it into
+    // silence, and the source would go mute for good. Check before it, never send the
+    // block, and report it so the capture is rebuilt with fresh state.
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        samples.fill(0.0);
+        return Err(CaptureError::ProcessorFailed {
+            message: "audio processing produced invalid samples".to_string(),
+        });
+    }
     let analysis = processing.safety.analyze_and_limit(
         samples,
         ceiling_db,
@@ -2116,10 +2262,17 @@ pub mod platform {
                             .map(|&s| s as f32 / i16::MAX as f32)
                             .collect()
                     };
-                    if let Ok(analysis) = process_source_samples(processing, &mut samples) {
-                        if last_meter.elapsed() >= METER_INTERVAL {
-                            let _ = sender.try_send(CaptureEvent::Health(analysis));
-                            last_meter = Instant::now();
+                    match process_source_samples_guarded(processing, &mut samples) {
+                        Ok(analysis) => {
+                            if last_meter.elapsed() >= METER_INTERVAL {
+                                let _ = sender.try_send(CaptureEvent::Health(analysis));
+                                last_meter = Instant::now();
+                            }
+                        }
+                        Err(reason) => {
+                            // The caller reopens the capture with fresh processing.
+                            let _ = capture_client.ReleaseBuffer(frames_available);
+                            return LoopbackExit::Failed(reason);
                         }
                     }
                 }
@@ -3104,12 +3257,7 @@ pub mod platform {
                 for bytes in complete.chunks_exact(std::mem::size_of::<f32>()) {
                     samples.push(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
                 }
-                handle_input_block(
-                    &mut processing,
-                    &mut samples,
-                    &sender,
-                    &mut last_meter,
-                );
+                handle_input_block(&mut processing, &mut samples, &sender, &mut last_meter);
             }
 
             if !stop.load(Ordering::Relaxed) {
@@ -3506,6 +3654,91 @@ mod tests {
         let mut samples = vec![level; 4_800];
         process_source_samples(processing, &mut samples).expect("process samples");
         *samples.last().expect("samples")
+    }
+
+    #[derive(Default)]
+    struct RecordingSink {
+        pushed: Mutex<Vec<f32>>,
+    }
+
+    impl ProcessedSampleSink for RecordingSink {
+        fn push_samples(&self, samples: &[f32], _channels: usize, _sample_rate: u32) {
+            self.pushed.lock().unwrap().extend_from_slice(samples);
+        }
+    }
+
+    #[test]
+    fn a_stream_that_stops_delivering_blocks_is_detected_as_stalled() {
+        let start = Instant::now();
+        let mut stall = StallDetector::new(start);
+
+        // Blocks keep arriving: never stalled, however long the stream runs.
+        for tick in 1..=50_u64 {
+            assert!(!stall.stalled(tick, start + Duration::from_millis(100 * tick)));
+        }
+        let last = start + Duration::from_millis(5_000);
+
+        // The count stops moving: stalled only once the timeout has passed.
+        assert!(!stall.stalled(50, last + CAPTURE_STALL_TIMEOUT - Duration::from_millis(1)));
+        assert!(stall.stalled(50, last + CAPTURE_STALL_TIMEOUT));
+        // A block arriving late clears it.
+        assert!(!stall.stalled(51, last + CAPTURE_STALL_TIMEOUT));
+    }
+
+    #[test]
+    fn a_stream_that_never_starts_is_detected_as_stalled() {
+        let start = Instant::now();
+        let mut stall = StallDetector::new(start);
+        assert!(!stall.stalled(0, start + Duration::from_millis(500)));
+        assert!(stall.stalled(0, start + CAPTURE_STALL_TIMEOUT));
+    }
+
+    #[test]
+    fn invalid_samples_are_never_sent_and_fail_the_block() {
+        let controls = LiveControls::new(1.0, false);
+        let sink = Arc::new(RecordingSink::default());
+        controls.set_sink(Some(sink.clone()));
+        let mut processing = SourceProcessingConfig::from_source(
+            &tone_source(Vec::new()),
+            controls,
+            48_000,
+            Arc::new(RenderReference::default()),
+        )
+        .expect("build processing config");
+
+        let mut samples = vec![f32::NAN; 4_800];
+        let result = process_source_samples_guarded(&mut processing, &mut samples);
+
+        assert!(result.is_err());
+        assert!(samples.iter().all(|sample| *sample == 0.0));
+        assert!(sink.pushed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_poisoned_sink_lock_still_reaches_the_sink() {
+        let controls = LiveControls::new(1.0, false);
+        let sink = Arc::new(RecordingSink::default());
+        controls.set_sink(Some(sink.clone()));
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = controls.sink.lock().unwrap();
+            panic!("poison the sink slot");
+        }));
+
+        controls.push_to_sink(&[0.5; 4], 1, 48_000);
+
+        assert_eq!(sink.pushed.lock().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_panic_in_processing_becomes_an_error() {
+        let message = std::panic::catch_unwind(|| panic!("boom"))
+            .err()
+            .map(|payload| panic_message(&*payload).to_string());
+        assert_eq!(message.as_deref(), Some("boom"));
+        let formatted = std::panic::catch_unwind(|| panic!("bad index {}", 3))
+            .err()
+            .map(|payload| panic_message(&*payload).to_string());
+        assert_eq!(formatted.as_deref(), Some("bad index 3"));
     }
 
     #[test]

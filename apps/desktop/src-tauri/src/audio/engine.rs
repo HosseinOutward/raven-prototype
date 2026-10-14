@@ -153,6 +153,23 @@ mod publish_framer_tests {
     use super::*;
 
     #[test]
+    fn a_poisoned_publish_sink_keeps_publishing() {
+        let (sender, mut receiver) = mpsc::channel::<Vec<i16>>(PUBLISH_BACKLOG_FRAMES);
+        let sink = PublishSink::new(sender);
+        let _ = std::panic::catch_unwind(|| {
+            let _framer = sink.framer.lock().unwrap();
+            panic!("poison the framer");
+        });
+
+        sink.push_samples(&vec![0.25; 480 * 2], 2, 48_000);
+
+        let frame = receiver
+            .try_recv()
+            .expect("a frame after the poisoned lock");
+        assert_eq!(frame.len(), PUBLISH_FRAME_SAMPLES);
+    }
+
+    #[test]
     fn capture_blocks_become_exact_ten_millisecond_frames() {
         let mut framer = PublishFramer::new();
         // 7 ms of 48 kHz stereo: not a whole frame yet.
@@ -412,7 +429,14 @@ impl ProcessedSampleSink for PublishSink {
     fn push_samples(&self, samples: &[f32], channels: usize, sample_rate: u32) {
         let frames = match self.framer.lock() {
             Ok(mut framer) => framer.push(samples, channels, sample_rate),
-            Err(_) => return,
+            // A panic mid-push (caught by capture) left the framer half-updated: start it
+            // over rather than dropping this track's audio for the rest of the call.
+            Err(poisoned) => {
+                self.framer.clear_poison();
+                let mut framer = poisoned.into_inner();
+                *framer = PublishFramer::new();
+                framer.push(samples, channels, sample_rate)
+            }
         };
         for frame in frames {
             // Drop on backpressure rather than block the audio thread; bounds latency.

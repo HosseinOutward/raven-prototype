@@ -115,9 +115,7 @@ impl RenderReference {
         if interleaved_stereo.is_empty() || sample_rate == 0 {
             return;
         }
-        let Ok(mut ring) = self.ring.lock() else {
-            return;
-        };
+        let mut ring = self.lock_ring();
         if ring.sample_rate != sample_rate {
             ring.samples.clear();
             ring.sample_rate = sample_rate;
@@ -141,7 +139,7 @@ impl RenderReference {
         left: &mut Vec<f32>,
         right: &mut Vec<f32>,
     ) -> Option<u32> {
-        let ring = self.ring.lock().ok()?;
+        let ring = self.lock_ring();
         let rate = u64::from(ring.sample_rate);
         let frame_len = rate / 100;
         if frame_len == 0 {
@@ -171,6 +169,22 @@ impl RenderReference {
         }
         cursor.next_frame += frame_len;
         Some(ring.sample_rate)
+    }
+
+    /// The ring, emptied if a panic (caught by capture) poisoned it. A poisoned ring would
+    /// otherwise stop feeding echo cancellation for the rest of the session; an emptied
+    /// one starts a new epoch and every cursor resynchronises.
+    fn lock_ring(&self) -> std::sync::MutexGuard<'_, RenderRing> {
+        self.ring.lock().unwrap_or_else(|poisoned| {
+            self.ring.clear_poison();
+            let mut ring = poisoned.into_inner();
+            let epoch = ring.epoch + 1;
+            *ring = RenderRing {
+                epoch,
+                ..RenderRing::default()
+            };
+            ring
+        })
     }
 }
 
@@ -1183,6 +1197,25 @@ mod tests {
         assert_eq!(rate, Some(44_100));
         assert_eq!(left.len(), 441);
         assert!(left.iter().all(|sample| *sample == 3.0));
+    }
+
+    #[test]
+    fn a_poisoned_reference_starts_over_instead_of_going_quiet() {
+        let reference = RenderReference::default();
+        let mut cursor = RenderCursor::default();
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        played(&reference, 960, 1.0);
+        let _ = std::panic::catch_unwind(|| {
+            let _ring = reference.ring.lock().unwrap();
+            panic!("poison the render reference");
+        });
+
+        played(&reference, 960, 2.0);
+        assert_eq!(
+            reference.next_frame(&mut cursor, &mut left, &mut right),
+            Some(48_000)
+        );
+        assert!(left.iter().all(|sample| *sample == 2.0));
     }
 
     #[test]
