@@ -538,7 +538,7 @@ function DockDeviceControls({
             <div className="min-w-0">
               <p className="text-small font-medium">You’re muted</p>
               <p className="text-small text-muted-foreground">
-                Nobody here can hear you.{micShortcut ? ` Press ${micShortcut} to unmute.` : ""}
+                Nobody here can hear you.{micShortcut ? ` Press ${micShortcut.replace(/ /g, "+")} to unmute.` : ""}
               </p>
             </div>
             <Button
