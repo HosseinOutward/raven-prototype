@@ -468,7 +468,7 @@ export function DeviceDock({
         open={leaveConfirmOpen && media.activeNestId != null}
         onOpenChange={setLeaveConfirmOpen}
         title={`Leave ${leaveName}?`}
-        description="People here will stop hearing you, and you them. You can join again at any time."
+        description="Everyone here will stop hearing you. You can join again at any time."
         confirmLabel="Leave"
         cancelLabel="Stay"
         focusCancel
