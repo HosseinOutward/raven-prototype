@@ -1281,7 +1281,9 @@ fn should_receive_video(
     if base_participant_identity(participant_identity) == base_participant_identity(local_id) {
         return self_preview_mode == SelfPreviewMode::Rtc;
     }
-    remote_preference.unwrap_or(true)
+    // Cameras arrive unless someone hides them; screen shares are opt-in (Watch), so an
+    // unwatched share costs neither download bandwidth nor a software decode.
+    remote_preference.unwrap_or(source != Some(VideoTrackSource::Screenshare))
 }
 
 fn reflect_viewer_state(app: &AppHandle, shared: &SharedVideoEngineState, room: &Room) {
@@ -1558,22 +1560,52 @@ mod tests {
     }
 
     #[test]
-    fn remote_video_defaults_on_and_respects_native_preferences() {
-        assert!(should_receive_video(
-            "person",
-            "other#video",
-            TrackKind::Video,
-            Some(VideoTrackSource::Screenshare),
-            SelfPreviewMode::Local,
-            None,
-        ));
-        assert!(!should_receive_video(
-            "person",
-            "other#video",
-            TrackKind::Video,
-            Some(VideoTrackSource::Camera),
-            SelfPreviewMode::Local,
-            Some(false),
-        ));
+    fn remote_cameras_default_on_and_respect_preferences() {
+        let receive = |preference| {
+            should_receive_video(
+                "person",
+                "other#video",
+                TrackKind::Video,
+                Some(VideoTrackSource::Camera),
+                SelfPreviewMode::Local,
+                preference,
+            )
+        };
+        assert!(receive(None));
+        assert!(!receive(Some(false)));
+        assert!(receive(Some(true)));
+    }
+
+    #[test]
+    fn remote_screen_shares_are_received_only_when_watched() {
+        let receive = |preference| {
+            should_receive_video(
+                "person",
+                "other#video",
+                TrackKind::Video,
+                Some(VideoTrackSource::Screenshare),
+                SelfPreviewMode::Local,
+                preference,
+            )
+        };
+        assert!(!receive(None));
+        assert!(receive(Some(true)));
+        assert!(!receive(Some(false)));
+    }
+
+    #[test]
+    fn own_screen_share_follows_self_preview_not_the_watch_default() {
+        let receive = |mode| {
+            should_receive_video(
+                "person",
+                "person#video",
+                TrackKind::Video,
+                Some(VideoTrackSource::Screenshare),
+                mode,
+                None,
+            )
+        };
+        assert!(receive(SelfPreviewMode::Rtc));
+        assert!(!receive(SelfPreviewMode::Local));
     }
 }

@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { VideoConnectionQuality } from "@/lib/video";
+import type { VideoConnectionQuality, VideoPresentationProfile } from "@/lib/video";
 import {
+  Activity,
   Check,
+  Eye,
+  EyeOff,
   Loader2,
   Maximize2,
   MicOff,
@@ -10,24 +13,26 @@ import {
   MonitorUp,
   Pin,
   PinOff,
-  Video,
-  VideoOff,
   WifiLow,
   WifiOff,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
+import { StreamInfo } from "./StreamInfo";
 import type { NativeMediaTile } from "./useNativeMediaTiles";
-import type { ParticipantMediaPreference } from "./useParticipantMediaPreferences";
 
 export type MediaFit = "fit" | "fill";
 
 /**
  * One piece of video on the stage: a camera or a shared screen. The label says
  * who it is and only mentions state worth noticing (muted, a weak connection).
+ * Remote video can be stopped from the tile itself ("Stop watching"); your own
+ * share's preview can be hidden the same way.
  */
 export function MediaTile({
   tile,
@@ -35,24 +40,29 @@ export function MediaTile({
   pinned = false,
   reconnecting = false,
   fit,
-  preference,
+  receiving,
+  presentationProfile,
   onTogglePin,
   onFitChange,
-  onPreferenceChange,
+  onReceivingChange,
 }: {
   tile: NativeMediaTile;
   prominent?: boolean;
   pinned?: boolean;
   reconnecting?: boolean;
   fit: MediaFit;
-  preference: ParticipantMediaPreference;
+  /** Whether you are receiving (or, for your own share, previewing) this video. */
+  receiving: boolean;
+  presentationProfile: VideoPresentationProfile;
   onTogglePin: () => void;
   onFitChange: (fit: MediaFit) => void;
-  onPreferenceChange: (patch: Partial<ParticipantMediaPreference>) => void;
+  /** Absent for video that cannot be turned off here (your own camera). */
+  onReceivingChange?: (receiving: boolean) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [playbackWaiting, setPlaybackWaiting] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const canFullscreen = typeof document !== "undefined" && document.fullscreenEnabled;
 
   useEffect(() => {
@@ -76,11 +86,21 @@ export function MediaTile({
       ? { title: isShare ? "Screen share stopped working" : "Camera stopped working", detail: tile.mediaError, loading: false }
       : tile.loading
         ? { title: isShare ? "Starting screen share…" : "Starting camera…", detail: "", loading: true }
-        : tile.source === "camera" && !preference.cameraReceiving
-          ? { title: "Video hidden for you", detail: "Show it again from the menu", loading: false }
+        : !receiving
+          ? { title: "Video hidden for you", detail: "", loading: false }
           : { title: isShare ? "Waiting for the screen…" : "Waiting for video…", detail: "", loading: true };
 
   const label = isShare ? (tile.isLocal ? "Your screen" : `${tile.displayName}’s screen`) : tile.isLocal ? "You" : tile.displayName;
+  const receiveAction = onReceivingChange
+    ? tile.isLocal
+      ? { label: "Hide preview", fullLabel: "Hide the preview of your screen", icon: <EyeOff />, receiving: false }
+      : receiving
+        ? { label: "Stop watching", fullLabel: `Stop watching ${label}`, icon: <EyeOff />, receiving: false }
+        : { label: "Watch again", fullLabel: `Watch ${label} again`, icon: <Eye />, receiving: true }
+    : null;
+  const canShowInfo = Boolean(tile.streamId) && receiving && !tile.isLocal;
+  // A filmstrip tile is too small for avatar, words and button: "Watch again" says it all.
+  const hiddenCompact = !receiving && !prominent && Boolean(receiveAction);
   const weak = tile.connectionQuality === "poor";
   const lost = tile.connectionQuality === "lost";
 
@@ -106,7 +126,7 @@ export function MediaTile({
         fullscreen && "rounded-none",
       )}
     >
-      {tile.streamUrl ? (
+      {tile.streamUrl && receiving ? (
         <img
           src={tile.streamUrl}
           alt=""
@@ -116,19 +136,34 @@ export function MediaTile({
           className={cn("absolute inset-0 h-full w-full", fit === "fill" ? "object-cover" : "object-contain")}
         />
       ) : (
-        <div className="absolute inset-0 flex items-center justify-center px-5 text-center">
+        <div className={cn("absolute inset-0 flex items-center justify-center px-5 text-center", hiddenCompact && "pb-7")}>
           <div>
-            {fallback.loading ? (
+            {hiddenCompact ? null : fallback.loading ? (
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-subtle" />
             ) : (
               <Avatar name={tile.displayName} src={api.userAvatarUrl(tile.participantId)} className={cn("mx-auto", prominent ? "h-20 w-20 text-display" : "h-12 w-12 text-body")} />
             )}
-            <div className="mt-3 text-small text-muted-foreground">{fallback.title}</div>
+            {hiddenCompact ? null : <div className="mt-3 text-small text-muted-foreground">{fallback.title}</div>}
             {fallback.detail ? <div className="mt-0.5 text-caption text-subtle">{fallback.detail}</div> : null}
+            {!receiving && receiveAction ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                className={hiddenCompact ? undefined : "mt-3"}
+                aria-label={receiveAction.fullLabel}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onReceivingChange?.(receiveAction.receiving);
+                }}
+              >
+                {receiveAction.icon}
+                {receiveAction.label}
+              </Button>
+            ) : null}
           </div>
         </div>
       )}
-      {playbackWaiting && tile.streamUrl ? (
+      {playbackWaiting && tile.streamUrl && receiving ? (
         <div className="absolute inset-0 flex items-center justify-center bg-black/40">
           <span className="inline-flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-caption text-white">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Video paused
@@ -136,11 +171,26 @@ export function MediaTile({
         </div>
       ) : null}
 
-      <div
-        className="absolute right-2 top-2 flex items-center gap-0.5 rounded-control bg-black/65 p-0.5 opacity-0 backdrop-blur-md transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-visible:opacity-100"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <TileAction label={pinned ? "Unpin" : "Pin"} onClick={onTogglePin}>{pinned ? <PinOff /> : <Pin />}</TileAction>
+      <Popover open={infoOpen} onOpenChange={setInfoOpen}>
+        <PopoverAnchor asChild>
+          <div
+            className={cn(
+              "absolute right-2 top-2 flex items-center gap-0.5 rounded-control bg-black/65 p-0.5 opacity-0 backdrop-blur-md transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-visible:opacity-100",
+              infoOpen && "opacity-100",
+            )}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {receiveAction && receiving ? (
+              prominent ? (
+                <button type="button" className={TILE_TEXT_ACTION_CLASS} aria-label={receiveAction.fullLabel} onClick={() => onReceivingChange?.(receiveAction.receiving)}>
+                  {receiveAction.icon}
+                  {receiveAction.label}
+                </button>
+              ) : (
+                <TileAction label={receiveAction.fullLabel} onClick={() => onReceivingChange?.(receiveAction.receiving)}>{receiveAction.icon}</TileAction>
+              )
+            ) : null}
+            <TileAction label={pinned ? "Unpin" : "Pin"} onClick={onTogglePin}>{pinned ? <PinOff /> : <Pin />}</TileAction>
         {canFullscreen ? <TileAction label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</TileAction> : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -149,15 +199,20 @@ export function MediaTile({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56" onClick={(event) => event.stopPropagation()}>
-            {!tile.isLocal && tile.cameraPublished ? (
-              <>
-                <DropdownMenuItem onSelect={() => onPreferenceChange({ cameraReceiving: !preference.cameraReceiving })}>
-                  {preference.cameraReceiving ? <VideoOff /> : <Video />}
-                  {preference.cameraReceiving ? "Hide their video for me" : "Show their video again"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
+            {receiveAction ? (
+              <DropdownMenuItem onSelect={() => onReceivingChange?.(receiveAction.receiving)}>
+                {receiveAction.icon}
+                {receiveAction.label}
+              </DropdownMenuItem>
             ) : null}
+            {canShowInfo ? (
+              // Opened once the menu has closed and handed focus back, so the popover keeps it.
+              <DropdownMenuItem onSelect={() => window.setTimeout(() => setInfoOpen(true), 0)}>
+                <Activity />
+                Stream info
+              </DropdownMenuItem>
+            ) : null}
+            {receiveAction || canShowInfo ? <DropdownMenuSeparator /> : null}
             <DropdownMenuLabel>Fit</DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => onFitChange("fit")}>
               <span className="flex-1">Show the whole picture</span>
@@ -169,7 +224,19 @@ export function MediaTile({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      </div>
+          </div>
+        </PopoverAnchor>
+        <PopoverContent
+          align="end"
+          className="w-72"
+          aria-label={`Stream info for ${label}`}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {infoOpen && tile.streamId ? (
+            <StreamInfo streamId={tile.streamId} source={tile.source} presentationProfile={presentationProfile} />
+          ) : null}
+        </PopoverContent>
+      </Popover>
 
       <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-chip bg-black/65 px-2 py-1 text-caption font-medium text-white backdrop-blur-md">
         {isShare ? <MonitorUp className="h-3.5 w-3.5 shrink-0" /> : null}
@@ -184,6 +251,8 @@ export function MediaTile({
 
 const TILE_ACTION_CLASS =
   "flex h-7 w-7 items-center justify-center rounded-chip text-white/80 transition-colors hover:bg-white/15 hover:text-white [&>svg]:h-4 [&>svg]:w-4";
+const TILE_TEXT_ACTION_CLASS =
+  "flex h-7 items-center gap-1.5 rounded-chip px-2 text-caption font-medium text-white/90 transition-colors hover:bg-white/15 hover:text-white [&>svg]:h-4 [&>svg]:w-4";
 
 function TileAction({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactElement }) {
   return (

@@ -81,7 +81,13 @@ export interface UserPreferences {
   alwaysJoinMuted: boolean;
   joinWithCameraOff: boolean;
   joinWithoutScreenSharing: boolean;
+  /** Read by older clients, where every share was received and this brought a new one to the front. */
   followScreenShares: boolean;
+  /**
+   * Watch a share as soon as someone starts it. Off unless chosen; absent from servers
+   * that predate it. Not derived from `followScreenShares` (which defaulted on).
+   */
+  watchNewShares?: boolean;
   updatedAt: string;
 }
 
@@ -715,7 +721,7 @@ export class ApiClient {
     return this.request<{ preferences: UserPreferences }>("/v1/preferences");
   }
 
-  updatePreferences(patch: Partial<Pick<UserPreferences, "displayName" | "uiLabels" | "colorPalette" | "alwaysJoinMuted" | "joinWithCameraOff" | "joinWithoutScreenSharing" | "followScreenShares">>) {
+  updatePreferences(patch: Partial<Pick<UserPreferences, "displayName" | "uiLabels" | "colorPalette" | "alwaysJoinMuted" | "joinWithCameraOff" | "joinWithoutScreenSharing" | "followScreenShares" | "watchNewShares">>) {
     return this.request<{ preferences: UserPreferences; user: User }>("/v1/preferences", {
       method: "POST",
       body: JSON.stringify(patch),

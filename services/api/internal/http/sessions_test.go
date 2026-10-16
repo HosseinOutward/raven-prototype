@@ -101,11 +101,15 @@ func TestJoinMediaPreferencesPersistAndSupportPartialUpdates(t *testing.T) {
 	if !initial.Preferences.FollowScreenShares {
 		t.Fatalf("screen-share following should default on: %+v", initial.Preferences)
 	}
+	if initial.Preferences.WatchNewShares {
+		t.Fatalf("watching new shares automatically should default off: %+v", initial.Preferences)
+	}
 
 	response = postJSON(t, server, token, "/v1/preferences", map[string]any{
 		"joinWithCameraOff":        true,
 		"joinWithoutScreenSharing": true,
 		"followScreenShares":       false,
+		"watchNewShares":           true,
 	}, http.StatusOK)
 	var updated struct {
 		Preferences UserPreferences `json:"preferences"`
@@ -113,13 +117,13 @@ func TestJoinMediaPreferencesPersistAndSupportPartialUpdates(t *testing.T) {
 	if err := json.Unmarshal(response, &updated); err != nil {
 		t.Fatal(err)
 	}
-	if !updated.Preferences.JoinWithCameraOff || !updated.Preferences.JoinWithoutScreenSharing || updated.Preferences.FollowScreenShares {
+	if !updated.Preferences.JoinWithCameraOff || !updated.Preferences.JoinWithoutScreenSharing || updated.Preferences.FollowScreenShares || !updated.Preferences.WatchNewShares {
 		t.Fatalf("join preferences were not persisted: %+v", updated.Preferences)
 	}
 
 	postJSON(t, server, token, "/v1/preferences", map[string]any{"alwaysJoinMuted": true}, http.StatusOK)
 	persisted := currentTestUser(t, server, "alice").Preferences
-	if !persisted.AlwaysJoinMuted || !persisted.JoinWithCameraOff || !persisted.JoinWithoutScreenSharing || persisted.FollowScreenShares {
+	if !persisted.AlwaysJoinMuted || !persisted.JoinWithCameraOff || !persisted.JoinWithoutScreenSharing || persisted.FollowScreenShares || !persisted.WatchNewShares {
 		t.Fatalf("partial update overwrote join preferences: %+v", persisted)
 	}
 }

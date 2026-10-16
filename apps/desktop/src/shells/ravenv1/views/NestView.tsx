@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { AlertCircle, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
 import { LiveMediaStage } from "@/components/media/LiveMediaStage";
+import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import type { LauncherNest, Nest } from "@/lib/api";
@@ -45,8 +46,9 @@ export function NestView({
         speakingActivity={media.speakingActivity}
         videoStreamEndpoint={media.videoStreamEndpoint}
         selfMediaPreviewMode={media.selfMediaPreviewMode}
-        followScreenShares={data.preferences.followScreenShares}
-        onFollowScreenSharesChange={(followScreenShares) => void data.updatePreferences({ followScreenShares }).catch(() => undefined)}
+        watchNewShares={watchNewSharesPreference(data.preferences)}
+        onWatchNewSharesChange={(watchNewShares) => void data.updatePreferences({ watchNewShares }).catch(() => undefined)}
+        onStopScreenShare={() => void media.stopScreenShare().catch(() => undefined)}
         onRetryAudio={() => void media.retryIncomingAudio()}
         roomLabel={data.labels.nestSingular}
       />

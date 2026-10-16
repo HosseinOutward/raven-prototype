@@ -20,6 +20,8 @@ export type NativeMediaTile = {
   isLocal: boolean;
   source: VideoTrackSource;
   streamUrl?: string;
+  /** The received stream's id, for Stream info. Only for remote video you receive. */
+  streamId?: string;
   mediaError?: string;
   audioMuted: boolean;
   cameraEnabled: boolean;
@@ -29,6 +31,12 @@ export type NativeMediaTile = {
   speakingIntensity: number;
   connectionQuality: VideoConnectionQuality;
   videoAvailable: boolean;
+  /**
+   * Whether the engine is set to receive this remote video: cameras by default, shares
+   * only once watched. Your own video is always true; the stage decides whether your
+   * share is previewed.
+   */
+  receiving: boolean;
   shareStartedAt?: number;
   loading?: boolean;
 };
@@ -88,30 +96,33 @@ export function useNativeMediaTiles(
         localScreen?.id,
         screenTrack,
       );
+      const cameraReceiving = participant.isLocal || !cameraTrack || cameraTrack.desired;
       const cameraStreamUrl = endpoint && cameraStreamId ? videoStreamUrl(endpoint, cameraStreamId) : undefined;
       const screenStreamUrl = endpoint && screenStreamId ? videoStreamUrl(endpoint, screenStreamId) : undefined;
 
-      if (cameraTrack || (participant.isLocal && localCamera) || !screenSharing) {
-        next.push({
-          key: `${participant.participantId}:camera`,
-          participantId: participant.participantId,
-          displayName: participant.isLocal ? "You" : participant.displayName,
-          isLocal: participant.isLocal,
-          source: "camera",
-          streamUrl: cameraStreamUrl,
-          mediaError: participant.isLocal && localCamera?.runtime.status === "error"
-            ? localCamera.runtime.error ?? "Camera capture could not start"
-            : undefined,
-          audioMuted: participant.audioMuted,
-          cameraEnabled,
-          cameraPublished: participant.isLocal ? Boolean(localCamera?.publishedTrack) : Boolean(cameraTrack),
-          screenSharing,
-          ...voice,
-          connectionQuality: participant.connectionQuality,
-          videoAvailable: Boolean(cameraStreamUrl),
-          loading: cameraEnabled && !cameraStreamUrl,
-        });
-      }
+      // Everyone has a person tile, so someone sharing without a camera still sits in
+      // the voice room or strip (with a sharing mark) while their share is a card.
+      next.push({
+        key: `${participant.participantId}:camera`,
+        participantId: participant.participantId,
+        displayName: participant.isLocal ? "You" : participant.displayName,
+        isLocal: participant.isLocal,
+        source: "camera",
+        streamUrl: cameraStreamUrl,
+        streamId: !participant.isLocal && cameraStreamUrl ? cameraStreamId : undefined,
+        mediaError: participant.isLocal && localCamera?.runtime.status === "error"
+          ? localCamera.runtime.error ?? "Camera capture could not start"
+          : undefined,
+        audioMuted: participant.audioMuted,
+        cameraEnabled,
+        cameraPublished: participant.isLocal ? Boolean(localCamera?.publishedTrack) : Boolean(cameraTrack),
+        screenSharing,
+        ...voice,
+        connectionQuality: participant.connectionQuality,
+        videoAvailable: Boolean(cameraStreamUrl),
+        receiving: cameraReceiving,
+        loading: cameraEnabled && cameraReceiving && !cameraStreamUrl,
+      });
 
       if (screenSharing) {
         const key = `${participant.participantId}:screen`;
@@ -126,6 +137,7 @@ export function useNativeMediaTiles(
           isLocal: participant.isLocal,
           source: "screenshare",
           streamUrl: screenStreamUrl,
+          streamId: !participant.isLocal && screenStreamUrl ? screenStreamId : undefined,
           mediaError: participant.isLocal && localScreen?.runtime.status === "error"
             ? localScreen.runtime.error ?? "Screen capture could not start"
             : undefined,
@@ -136,6 +148,7 @@ export function useNativeMediaTiles(
           ...voice,
           connectionQuality: participant.connectionQuality,
           videoAvailable: Boolean(screenStreamUrl),
+          receiving: participant.isLocal || Boolean(screenTrack?.desired),
           loading: !screenStreamUrl,
           shareStartedAt: shareStartOrderRef.current.get(key),
         });

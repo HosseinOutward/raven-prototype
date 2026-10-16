@@ -1,26 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Focus, LayoutGrid, Loader2, Maximize2, MicOff, Minimize2, MoreHorizontal, WifiLow, WifiOff } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Eye, Focus, LayoutGrid, Loader2, Maximize2, MicOff, Minimize2, MonitorUp, MoreHorizontal, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { type SelfPreviewMode, type VideoMixerState, type VideoStreamEndpoint, videoCommands } from "@/lib/video";
+import type { SelfPreviewMode, VideoMixerState, VideoStreamEndpoint } from "@/lib/video";
 import { speakingGlowStyle, type ParticipantVoiceActivityMap } from "@/lib/speakingActivity";
 import { MediaTile, type MediaFit } from "./MediaTile";
-import { bestGridColumns, newestScreenShareKey, partitionStageTiles, resolveStageFocusKey } from "./stageState";
+import { bestGridColumns, newestScreenShareKey, newShareKeys, partitionStageTiles, resolveStageFocusKeys } from "./stageState";
 import { useNativeMediaTiles, type NativeMediaTile } from "./useNativeMediaTiles";
-import { useParticipantMediaPreferences } from "./useParticipantMediaPreferences";
+import { effectiveReceiving, receivingKey, useVideoReceiving } from "./useVideoReceiving";
 
 type StageView = "grid" | "focus";
 type StagePhase = "idle" | "joining" | "connected" | "leaving" | "error";
+type StageTile = NativeMediaTile & { watching: boolean };
+type StageNotice = { text: string; watch?: StageTile };
+
+/** Shares that show up this soon after the viewer (re)connects were already running: absorb them quietly. */
+const SETTLE_MS = 2500;
+const FILMSTRIP_WIDTH = 176;
+const FILMSTRIP_HEIGHT = 112;
 
 /**
  * The room while you are in it. Raven is voice-first, so people who are only
- * talking are shown as people, not as empty video tiles. Tiles appear when
- * someone turns on a camera or shares a screen, and voice-only people move to
- * a strip underneath.
+ * talking are shown as people, not as empty video tiles. Cameras get tiles.
+ * Screen shares are opt-in: until you choose Watch a share is a small card, so it
+ * costs neither download nor decoding. Watched shares come forward; several share
+ * the main area equally.
  */
 export function LiveMediaStage({
   title,
@@ -33,8 +41,9 @@ export function LiveMediaStage({
   speakingActivity,
   videoStreamEndpoint,
   selfMediaPreviewMode,
-  followScreenShares = true,
-  onFollowScreenSharesChange,
+  watchNewShares = false,
+  onWatchNewSharesChange,
+  onStopScreenShare,
   onRetryAudio,
   roomLabel = "Nest",
   className,
@@ -49,8 +58,9 @@ export function LiveMediaStage({
   speakingActivity: ParticipantVoiceActivityMap;
   videoStreamEndpoint: VideoStreamEndpoint | null;
   selfMediaPreviewMode: SelfPreviewMode;
-  followScreenShares?: boolean;
-  onFollowScreenSharesChange?: (follow: boolean) => void;
+  watchNewShares?: boolean;
+  onWatchNewSharesChange?: (watch: boolean) => void;
+  onStopScreenShare?: () => void;
   onRetryAudio?: () => void;
   roomLabel?: string;
   className?: string;
@@ -58,55 +68,123 @@ export function LiveMediaStage({
   const stageRef = useRef<HTMLElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const previousManualViewRef = useRef<StageView>("grid");
-  const previousAutomaticFocusRef = useRef<string | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
+  const seenSharesRef = useRef<Set<string> | null>(null);
+  const settleUntilRef = useRef(0);
   const [view, setView] = useState<StageView>("grid");
   const [manualPinKey, setManualPinKey] = useState<string | null>(null);
   const [automaticFocusAfter, setAutomaticFocusAfter] = useState(0);
   const [filmstripCollapsed, setFilmstripCollapsed] = useState(false);
   const [fitModes, setFitModes] = useState<Record<string, MediaFit>>({});
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<StageNotice | null>(null);
   const [stageFullscreen, setStageFullscreen] = useState(false);
+  const [ownPreview, setOwnPreview] = useState(false);
   const size = useElementSize(contentRef);
-  const { tiles } = useNativeMediaTiles(
+  const { tiles: nativeTiles } = useNativeMediaTiles(
     connected ? videoState : null,
     videoStreamEndpoint,
     selfMediaPreviewMode,
     speakingActivity,
   );
-  const setCameraReceiving = useCallback(async (participantId: string, receiving: boolean) => {
-    await videoCommands.setRemoteVideoReceiving(participantId, "camera", receiving);
-  }, []);
-  const { getPreference, updatePreference } = useParticipantMediaPreferences(connected, setCameraReceiving);
+  const viewerConnected = connected && Boolean(videoState?.viewerConnected);
+  const presentationProfile = videoState?.presentation.profile ?? "balanced";
 
-  const { visual, voice } = useMemo(() => partitionStageTiles(tiles), [tiles]);
+  const engineDesired = useMemo(() => {
+    const desired = new Map<string, boolean>();
+    for (const track of videoState?.remoteTracks ?? []) desired.set(receivingKey(track.participantId, track.source), track.desired);
+    return desired;
+  }, [videoState?.remoteTracks]);
+  const readEngineDesired = useCallback((key: string) => engineDesired.get(key), [engineDesired]);
+  const { pendingFor, setReceiving } = useVideoReceiving(connected, readEngineDesired);
+
+  const tiles = useMemo<StageTile[]>(() => nativeTiles.map((tile) => {
+    if (tile.isLocal) {
+      // Your own share is a card unless you ask for a preview. Without an <img> nothing
+      // subscribes to its frames, so no JPEGs are made for it.
+      return tile.source === "screenshare" ? { ...tile, receiving: ownPreview, watching: ownPreview } : { ...tile, watching: true };
+    }
+    const receiving = effectiveReceiving(tile.receiving, pendingFor(tile.participantId, tile.source));
+    return { ...tile, receiving, watching: receiving, loading: tile.source === "screenshare" ? receiving && !tile.streamUrl : tile.loading };
+  }), [nativeTiles, ownPreview, pendingFor]);
+
+  const { visual, cards, voice } = useMemo(() => partitionStageTiles(tiles), [tiles]);
+  const sharers = useMemo(() => {
+    const byPerson = new Map<string, StageTile>();
+    for (const tile of tiles) if (tile.source === "screenshare") byPerson.set(tile.participantId, tile);
+    return byPerson;
+  }, [tiles]);
   const focusCandidates = useMemo(
-    () => visual.filter((tile) => tile.source !== "screenshare" || (tile.shareStartedAt ?? 0) > automaticFocusAfter),
-    [automaticFocusAfter, visual],
+    () => visual.filter((tile) => tile.key === manualPinKey || tile.source !== "screenshare" || (tile.shareStartedAt ?? 0) > automaticFocusAfter),
+    [automaticFocusAfter, manualPinKey, visual],
   );
-  const focusKey = resolveStageFocusKey({ tiles: focusCandidates, manualPinKey, followScreenShares, focusMode: view === "focus" });
-  const focusTile = visual.find((tile) => tile.key === focusKey) ?? null;
-  const sideTiles = focusTile ? visual.filter((tile) => tile.key !== focusTile.key) : visual;
+  const focusKeys = resolveStageFocusKeys({ tiles: focusCandidates, manualPinKey, focusMode: view === "focus" });
+  const focusTiles = focusKeys.flatMap((key) => visual.filter((tile) => tile.key === key));
+  const sideTiles = focusTiles.length ? visual.filter((tile) => !focusKeys.includes(tile.key)) : [];
   const reconnecting = connected && !videoState?.viewerConnected;
   const participantCount = new Set(tiles.map((tile) => tile.participantId)).size;
-  const gridColumns = bestGridColumns(visual.length, size.width || 900, size.height || 460);
   const narrowFocus = size.width > 0 && size.width < 720;
+  const filmstripShown = sideTiles.length > 0 && !filmstripCollapsed;
+  const mainWidth = (size.width || 900) - (filmstripShown && !narrowFocus ? FILMSTRIP_WIDTH + 8 : 0);
+  const mainHeight = (size.height || 460) - (filmstripShown && narrowFocus ? FILMSTRIP_HEIGHT + 8 : 0);
+  const gridColumns = bestGridColumns(visual.length, size.width || 900, size.height || 460);
+  const focusColumns = bestGridColumns(focusTiles.length, mainWidth, mainHeight);
   const canFullscreen = typeof document !== "undefined" && document.fullscreenEnabled;
+  const ownShareActive = tiles.some((tile) => tile.isLocal && tile.source === "screenshare");
 
+  const showNotice = useCallback((next: StageNotice, durationMs: number) => {
+    setNotice(next);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), durationMs);
+  }, []);
+
+  const changeReceiving = useCallback((tile: StageTile, receiving: boolean) => {
+    setReceiving(tile.participantId, tile.source, receiving);
+    // A share you just chose to watch comes forward, even after you went back to the grid.
+    if (receiving && tile.source === "screenshare") setAutomaticFocusAfter(0);
+  }, [setReceiving]);
+  const watchShare = useCallback((tile: StageTile) => {
+    changeReceiving(tile, true);
+    setNotice((current) => (current?.watch?.key === tile.key ? null : current));
+  }, [changeReceiving]);
+
+  // A pinned tile that leaves (stopped watching, stopped sharing) hands back the layout it took over.
   useEffect(() => {
-    if (manualPinKey && !visual.some((tile) => tile.key === manualPinKey)) setManualPinKey(null);
+    if (manualPinKey && !visual.some((tile) => tile.key === manualPinKey)) {
+      setManualPinKey(null);
+      setView(previousManualViewRef.current);
+    }
   }, [manualPinKey, visual]);
 
   useEffect(() => {
-    const autoKey = !manualPinKey && followScreenShares && focusTile?.source === "screenshare" ? focusTile.key : null;
-    if (autoKey && autoKey !== previousAutomaticFocusRef.current) {
-      if ((focusTile?.shareStartedAt ?? 0) > automaticFocusAfter && automaticFocusAfter > 0) setAutomaticFocusAfter(0);
-      setNotice(`${focusTile?.isLocal ? "You" : focusTile?.displayName ?? "Someone"} started sharing`);
-      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-      noticeTimerRef.current = window.setTimeout(() => setNotice(""), 3200);
+    if (!ownShareActive) setOwnPreview(false);
+  }, [ownShareActive]);
+
+  // Announce shares that start while you are here, and watch them if you asked to.
+  // Shares already running when you join or reconnect are absorbed without a notice.
+  useEffect(() => {
+    if (!viewerConnected) {
+      settleUntilRef.current = 0;
+      return;
     }
-    previousAutomaticFocusRef.current = autoKey;
-  }, [automaticFocusAfter, focusTile, followScreenShares, manualPinKey]);
+    const now = Date.now();
+    if (settleUntilRef.current === 0) settleUntilRef.current = now + SETTLE_MS;
+    const remoteShares = tiles.filter((tile) => tile.source === "screenshare" && !tile.isLocal);
+    const keys = remoteShares.map((tile) => tile.key);
+    const fresh = now < settleUntilRef.current ? [] : newShareKeys(seenSharesRef.current, keys);
+    seenSharesRef.current = new Set(keys);
+    const latest = remoteShares.find((tile) => tile.key === fresh[fresh.length - 1]);
+    if (!latest) return;
+    if (watchNewShares) {
+      for (const tile of remoteShares) if (fresh.includes(tile.key) && !tile.receiving) changeReceiving(tile, true);
+      showNotice({ text: `${latest.displayName} started sharing` }, 3200);
+    } else {
+      showNotice({ text: `${latest.displayName} started sharing`, watch: latest }, 8000);
+    }
+  }, [changeReceiving, showNotice, tiles, viewerConnected, watchNewShares]);
+
+  useEffect(() => {
+    if (notice?.watch && !cards.some((tile) => tile.key === notice.watch?.key)) setNotice(null);
+  }, [cards, notice]);
 
   useEffect(() => {
     const syncFullscreen = () => setStageFullscreen(document.fullscreenElement === stageRef.current);
@@ -117,7 +195,7 @@ export function LiveMediaStage({
     };
   }, []);
 
-  const togglePin = (tile: NativeMediaTile) => {
+  const togglePin = (tile: StageTile) => {
     if (manualPinKey === tile.key) {
       setManualPinKey(null);
       setView(previousManualViewRef.current);
@@ -134,28 +212,27 @@ export function LiveMediaStage({
     const newestShare = visual.find((tile) => tile.key === newestShareKey);
     setAutomaticFocusAfter(newestShare?.shareStartedAt ?? 0);
   };
-  const setFollowScreenShares = (follow: boolean) => {
-    if (follow) setAutomaticFocusAfter(0);
-    onFollowScreenSharesChange?.(follow);
+
+  const receivingHandler = (tile: StageTile): ((receiving: boolean) => void) | undefined => {
+    if (!tile.isLocal) return (receiving) => changeReceiving(tile, receiving);
+    return tile.source === "screenshare" ? setOwnPreview : undefined;
   };
 
-  const renderTile = (tile: NativeMediaTile, prominent = false) => {
-    const preference = getPreference(tile.participantId);
-    return (
-      <MediaTile
-        key={tile.key}
-        tile={tile}
-        prominent={prominent}
-        pinned={manualPinKey === tile.key}
-        reconnecting={reconnecting}
-        fit={fitModes[tile.key] ?? (tile.source === "screenshare" ? "fit" : "fill")}
-        preference={preference}
-        onTogglePin={() => togglePin(tile)}
-        onFitChange={(fit) => setFitModes((current) => ({ ...current, [tile.key]: fit }))}
-        onPreferenceChange={(patch) => updatePreference(tile.participantId, patch)}
-      />
-    );
-  };
+  const renderTile = (tile: StageTile, prominent = false) => (
+    <MediaTile
+      key={tile.key}
+      tile={tile}
+      prominent={prominent}
+      pinned={manualPinKey === tile.key}
+      reconnecting={reconnecting}
+      fit={fitModes[tile.key] ?? (tile.source === "screenshare" ? "fit" : "fill")}
+      receiving={tile.receiving}
+      presentationProfile={presentationProfile}
+      onTogglePin={() => togglePin(tile)}
+      onFitChange={(fit) => setFitModes((current) => ({ ...current, [tile.key]: fit }))}
+      onReceivingChange={receivingHandler(tile)}
+    />
+  );
 
   const status = phase === "leaving"
     ? "Leaving…"
@@ -182,8 +259,8 @@ export function LiveMediaStage({
         <div className="flex shrink-0 items-center gap-1">
           {visual.length > 1 ? (
             <div className="flex rounded-control bg-background/60 p-0.5" role="group" aria-label="Layout">
-              <LayoutButton active={view === "grid" && !focusTile} label="Grid" onClick={returnToGrid}><LayoutGrid /></LayoutButton>
-              <LayoutButton active={view === "focus" || Boolean(focusTile)} label="Focus on one" onClick={() => setView("focus")}><Focus /></LayoutButton>
+              <LayoutButton active={focusTiles.length !== 1} label="Grid" onClick={returnToGrid}><LayoutGrid /></LayoutButton>
+              <LayoutButton active={focusTiles.length === 1} label="Focus on one" onClick={() => setView("focus")}><Focus /></LayoutButton>
             </div>
           ) : null}
           <DropdownMenu>
@@ -195,12 +272,12 @@ export function LiveMediaStage({
               </DropdownMenuTrigger>
             </Tooltip>
             <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuItem onSelect={() => setFollowScreenShares(!followScreenShares)}>
+              <DropdownMenuItem onSelect={() => onWatchNewSharesChange?.(!watchNewShares)}>
                 <span className="flex-1">
-                  <span className="block">Follow screen shares</span>
-                  <span className="block text-caption text-muted-foreground">Bring a new share to the front automatically.</span>
+                  <span className="block">Watch new shares automatically</span>
+                  <span className="block text-caption text-muted-foreground">Start watching a screen as soon as someone shares it.</span>
                 </span>
-                {followScreenShares ? <Check /> : null}
+                {watchNewShares ? <Check /> : null}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -228,11 +305,16 @@ export function LiveMediaStage({
                 {phase === "leaving" ? "Leaving…" : "Getting the room ready…"}
               </div>
             ) : !visual.length ? (
-              <VoiceRoom people={voice} />
-            ) : focusTile ? (
+              <VoiceRoom people={voice} sharers={sharers} onWatch={watchShare} />
+            ) : focusTiles.length ? (
               <div className={cn("relative flex h-full min-h-0 gap-2", narrowFocus && "flex-col")}>
-                <div className="relative min-h-0 min-w-0 flex-1">{renderTile(focusTile, true)}</div>
-                {sideTiles.length && !filmstripCollapsed ? (
+                <div
+                  className="grid min-h-0 min-w-0 flex-1 gap-2"
+                  style={{ gridTemplateColumns: `repeat(${focusColumns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${Math.ceil(focusTiles.length / focusColumns)}, minmax(0, 1fr))` }}
+                >
+                  {focusTiles.map((tile) => renderTile(tile, focusTiles.length <= 4))}
+                </div>
+                {filmstripShown ? (
                   <aside className={cn("flex min-h-0 w-44 shrink-0 flex-col gap-1.5", narrowFocus && "h-28 w-full flex-row")} aria-label="Other video">
                     <button
                       type="button"
@@ -261,16 +343,44 @@ export function LiveMediaStage({
                 className="grid h-full min-h-0 gap-2"
                 style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${Math.ceil(visual.length / gridColumns)}, minmax(0, 1fr))` }}
               >
-                {visual.map((tile) => renderTile(tile, visual.length === 1))}
+                {visual.map((tile) => renderTile(tile, visual.length <= 4))}
               </div>
             )}
           </div>
         </div>
-        {visual.length && voice.length ? <VoiceStrip people={voice} /> : null}
+        {cards.length ? (
+          <div className="flex shrink-0 flex-wrap justify-center gap-2" aria-label="Screen shares">
+            {cards.map((tile) => tile.isLocal ? (
+              <OwnShareCard key={tile.key} onPreview={() => setOwnPreview(true)} onStop={onStopScreenShare} />
+            ) : (
+              <ShareCard key={tile.key} tile={tile} onWatch={() => watchShare(tile)} />
+            ))}
+          </div>
+        ) : null}
+        {visual.length && voice.length ? <VoiceStrip people={voice} sharers={sharers} onWatch={watchShare} /> : null}
       </div>
 
       {notice ? (
-        <div role="status" className="pointer-events-none absolute left-1/2 top-14 z-20 -translate-x-1/2 animate-fade-in rounded-full bg-popover px-3 py-1.5 text-caption text-popover-foreground shadow-raised">{notice}</div>
+        <div
+          role="status"
+          className={cn(
+            "absolute left-1/2 top-14 z-20 flex -translate-x-1/2 animate-fade-in items-center gap-2 rounded-full bg-popover py-1.5 text-caption text-popover-foreground shadow-raised",
+            notice.watch ? "pl-3 pr-1.5" : "pointer-events-none px-3",
+          )}
+        >
+          <span>{notice.text}</span>
+          {notice.watch ? (
+            <Button
+              variant="secondary"
+              size="xs"
+              className="rounded-full"
+              aria-label={`Watch ${notice.watch.displayName}’s screen`}
+              onClick={() => notice.watch && watchShare(notice.watch)}
+            >
+              Watch
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {connected && audioNotice ? (
         <div
@@ -307,50 +417,118 @@ function LayoutButton({ active, label, onClick, children }: { active: boolean; l
   );
 }
 
+const SHARE_CARD_CLASS = "flex h-12 min-w-0 max-w-sm items-center gap-2.5 rounded-card bg-secondary/50 pl-2 pr-1.5";
+
+/** Someone is sharing and you have not chosen to watch. Nothing is downloaded until you do. */
+function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) {
+  return (
+    <div className={SHARE_CARD_CLASS}>
+      <span
+        className={cn("block shrink-0 rounded-full", tile.speaking && "raven-speaking-ring")}
+        style={speakingGlowStyle(tile.speakingIntensity, "avatar")}
+      >
+        <Avatar name={tile.displayName} src={api.userAvatarUrl(tile.participantId)} className="h-8 w-8" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-small">{tile.displayName} is sharing their screen</span>
+      <Button variant="secondary" size="xs" aria-label={`Watch ${tile.displayName}’s screen`} onClick={onWatch}>
+        <Eye />
+        Watch
+      </Button>
+    </div>
+  );
+}
+
+/** Your share, kept small: a large tile of your own screen is rarely what you want to look at. */
+function OwnShareCard({ onPreview, onStop }: { onPreview: () => void; onStop?: () => void }) {
+  return (
+    <div className={SHARE_CARD_CLASS}>
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-foreground">
+        <MonitorUp className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-small">You’re sharing your screen</span>
+      <Button variant="ghost" size="xs" aria-label="Preview your screen" onClick={onPreview}>Preview</Button>
+      {onStop ? <Button variant="secondary" size="xs" aria-label="Stop sharing your screen" onClick={onStop}>Stop</Button> : null}
+    </div>
+  );
+}
+
+/** Beside a sharing person's avatar: says they are sharing, and offers Watch until you do. */
+function SharingMark({ person, share, onWatch, className }: { person: NativeMediaTile; share: StageTile; onWatch: (share: StageTile) => void; className?: string }) {
+  if (person.isLocal || share.receiving) {
+    const label = person.isLocal ? "You’re sharing your screen" : `${person.displayName} is sharing their screen`;
+    return (
+      <span className={cn("flex items-center justify-center text-muted-foreground", className)} title={label} aria-label={label} role="img">
+        <MonitorUp className="h-3.5 w-3.5" />
+      </span>
+    );
+  }
+  const label = `Watch ${person.displayName}’s screen`;
+  return (
+    <Tooltip label={label}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={() => onWatch(share)}
+        className={cn("flex items-center justify-center text-foreground transition-colors hover:bg-accent", className)}
+      >
+        <MonitorUp className="h-3.5 w-3.5" />
+      </button>
+    </Tooltip>
+  );
+}
+
 /** Everyone is here by voice: show people, give them room, ring whoever speaks. */
-function VoiceRoom({ people }: { people: NativeMediaTile[] }) {
+function VoiceRoom({ people, sharers, onWatch }: { people: NativeMediaTile[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void }) {
   const size = people.length <= 4 ? "h-24 w-24 text-display" : people.length <= 9 ? "h-20 w-20 text-title" : "h-16 w-16 text-body";
   return (
     <div className="flex h-full flex-wrap content-center items-start justify-center gap-x-8 gap-y-8 overflow-y-auto p-6">
-      {people.map((person) => (
-        <div key={person.key} className="flex w-32 flex-col items-center text-center">
-          <span className="relative">
-            <span
-              className={cn("block rounded-full", person.speaking && "raven-speaking-avatar")}
-              style={speakingGlowStyle(person.speakingIntensity, "avatar")}
-            >
-              <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className={size} />
-            </span>
-            {person.audioMuted ? (
-              <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-card text-destructive" title="Muted" aria-label="Muted">
-                <MicOff className="h-3.5 w-3.5" />
+      {people.map((person) => {
+        const share = sharers.get(person.participantId);
+        return (
+          <div key={person.key} className="flex w-32 flex-col items-center text-center">
+            <span className="relative">
+              <span
+                className={cn("block rounded-full", person.speaking && "raven-speaking-avatar")}
+                style={speakingGlowStyle(person.speakingIntensity, "avatar")}
+              >
+                <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className={size} />
               </span>
-            ) : null}
-          </span>
-          <span className="mt-3 max-w-full truncate text-small font-medium">{person.isLocal ? "You" : person.displayName}</span>
-          <ConnectionCaption person={person} />
-        </div>
-      ))}
+              {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="absolute -bottom-0.5 -left-0.5 h-6 w-6 rounded-full bg-card" /> : null}
+              {person.audioMuted ? (
+                <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-card text-destructive" title="Muted" aria-label="Muted">
+                  <MicOff className="h-3.5 w-3.5" />
+                </span>
+              ) : null}
+            </span>
+            <span className="mt-3 max-w-full truncate text-small font-medium">{person.isLocal ? "You" : person.displayName}</span>
+            <ConnectionCaption person={person} />
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 /** Voice-only people while video is on the stage. */
-function VoiceStrip({ people }: { people: NativeMediaTile[] }) {
+function VoiceStrip({ people, sharers, onWatch }: { people: NativeMediaTile[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-1.5 overflow-x-auto" aria-label="Here by voice">
-      {people.map((person) => (
-        <span key={person.key} className="flex h-9 shrink-0 items-center gap-2 rounded-full bg-secondary pl-1 pr-3">
-          <span
-            className={cn("block rounded-full", person.speaking && "raven-speaking-ring")}
-            style={speakingGlowStyle(person.speakingIntensity, "avatar")}
-          >
-            <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className="h-7 w-7" />
+      {people.map((person) => {
+        const share = sharers.get(person.participantId);
+        return (
+          <span key={person.key} className="flex h-9 shrink-0 items-center gap-2 rounded-full bg-secondary pl-1 pr-3">
+            <span
+              className={cn("block rounded-full", person.speaking && "raven-speaking-ring")}
+              style={speakingGlowStyle(person.speakingIntensity, "avatar")}
+            >
+              <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className="h-7 w-7" />
+            </span>
+            <span className="max-w-[140px] truncate text-small">{person.isLocal ? "You" : person.displayName}</span>
+            {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="-mr-1.5 h-6 w-6 shrink-0 rounded-full" /> : null}
+            {person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
           </span>
-          <span className="max-w-[140px] truncate text-small">{person.isLocal ? "You" : person.displayName}</span>
-          {person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
-        </span>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -379,3 +557,4 @@ function useElementSize(ref: React.RefObject<HTMLElement | null>) {
   }, [ref]);
   return size;
 }
+

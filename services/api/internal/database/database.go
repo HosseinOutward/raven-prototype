@@ -206,6 +206,7 @@ func migrate(db *sql.DB) error {
 			join_with_camera_off BOOLEAN NOT NULL DEFAULT FALSE,
 			join_without_screen_sharing BOOLEAN NOT NULL DEFAULT FALSE,
 			follow_screen_shares BOOLEAN NOT NULL DEFAULT TRUE,
+			watch_new_shares BOOLEAN NOT NULL DEFAULT FALSE,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
@@ -302,6 +303,7 @@ func migrate(db *sql.DB) error {
 		`ALTER TABLE user_preferences ADD COLUMN join_with_camera_off BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE user_preferences ADD COLUMN join_without_screen_sharing BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE user_preferences ADD COLUMN follow_screen_shares BOOLEAN NOT NULL DEFAULT TRUE`,
+		`ALTER TABLE user_preferences ADD COLUMN watch_new_shares BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE users ADD COLUMN avatar_object_key TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE trees ADD COLUMN avatar_object_key TEXT NOT NULL DEFAULT ''`,
 	}

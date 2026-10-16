@@ -83,7 +83,11 @@ type UserPreferences struct {
 	JoinWithCameraOff        bool   `json:"joinWithCameraOff"`
 	JoinWithoutScreenSharing bool   `json:"joinWithoutScreenSharing"`
 	FollowScreenShares       bool   `json:"followScreenShares"`
-	UpdatedAt                string `json:"updatedAt"`
+	// WatchNewShares replaces FollowScreenShares for clients where screen shares are
+	// opt-in. It starts off for everyone: the old value defaulted to true and meant
+	// something cheaper ("bring a share to the front"), so it is not carried over.
+	WatchNewShares bool   `json:"watchNewShares"`
+	UpdatedAt      string `json:"updatedAt"`
 }
 
 type Nest struct {
@@ -572,6 +576,7 @@ func (s *Server) updatePreferences(c *fiber.Ctx) error {
 		JoinWithCameraOff        *bool   `json:"joinWithCameraOff"`
 		JoinWithoutScreenSharing *bool   `json:"joinWithoutScreenSharing"`
 		FollowScreenShares       *bool   `json:"followScreenShares"`
+		WatchNewShares           *bool   `json:"watchNewShares"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid preferences payload")
@@ -613,6 +618,10 @@ func (s *Server) updatePreferences(c *fiber.Ctx) error {
 	if body.FollowScreenShares != nil {
 		followScreenShares = *body.FollowScreenShares
 	}
+	watchNewShares := user.Preferences.WatchNewShares
+	if body.WatchNewShares != nil {
+		watchNewShares = *body.WatchNewShares
+	}
 
 	now := database.Now()
 	var persistedDisplayName any
@@ -620,8 +629,8 @@ func (s *Server) updatePreferences(c *fiber.Ctx) error {
 		persistedDisplayName = displayName
 	}
 	if _, err := s.db.Exec(
-		`INSERT INTO user_preferences (user_id, display_name, ui_labels, color_palette, always_join_muted, join_with_camera_off, join_without_screen_sharing, follow_screen_shares, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO user_preferences (user_id, display_name, ui_labels, color_palette, always_join_muted, join_with_camera_off, join_without_screen_sharing, follow_screen_shares, watch_new_shares, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id) DO UPDATE SET
 			display_name = excluded.display_name,
 			ui_labels = excluded.ui_labels,
@@ -630,8 +639,9 @@ func (s *Server) updatePreferences(c *fiber.Ctx) error {
 			join_with_camera_off = excluded.join_with_camera_off,
 			join_without_screen_sharing = excluded.join_without_screen_sharing,
 			follow_screen_shares = excluded.follow_screen_shares,
+			watch_new_shares = excluded.watch_new_shares,
 			updated_at = excluded.updated_at`,
-		user.ID, persistedDisplayName, uiLabels, colorPalette, alwaysJoinMuted, joinWithCameraOff, joinWithoutScreenSharing, followScreenShares, now, now,
+		user.ID, persistedDisplayName, uiLabels, colorPalette, alwaysJoinMuted, joinWithCameraOff, joinWithoutScreenSharing, followScreenShares, watchNewShares, now, now,
 	); err != nil {
 		return err
 	}
@@ -1286,6 +1296,7 @@ func userSelectSQL() string {
 		CASE WHEN COALESCE(up.join_with_camera_off, FALSE) THEN 'true' ELSE 'false' END,
 		CASE WHEN COALESCE(up.join_without_screen_sharing, FALSE) THEN 'true' ELSE 'false' END,
 		CASE WHEN COALESCE(up.follow_screen_shares, TRUE) THEN 'true' ELSE 'false' END,
+		CASE WHEN COALESCE(up.watch_new_shares, FALSE) THEN 'true' ELSE 'false' END,
 		COALESCE(up.updated_at, u.updated_at), u.created_at, u.updated_at
 		FROM users u
 		LEFT JOIN user_preferences up ON up.user_id = u.id`
@@ -1310,6 +1321,7 @@ func scanUser(scanner rowScanner, user *User, passwordHash *string) error {
 		&user.Preferences.JoinWithCameraOff,
 		&user.Preferences.JoinWithoutScreenSharing,
 		&user.Preferences.FollowScreenShares,
+		&user.Preferences.WatchNewShares,
 		&user.Preferences.UpdatedAt,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -1339,6 +1351,7 @@ func defaultUserPreferences(username, updatedAt string) UserPreferences {
 		JoinWithCameraOff:        false,
 		JoinWithoutScreenSharing: false,
 		FollowScreenShares:       true,
+		WatchNewShares:           false,
 		UpdatedAt:                updatedAt,
 	}
 }
