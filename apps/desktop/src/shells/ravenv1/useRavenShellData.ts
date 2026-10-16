@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
+import { loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
 import type { NestEntryNotice, PendingItem, RavenShellData, SelectablePresence, ShellPerson, UILabelCopy } from "./state";
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
 import { ApiError, type ProfileKnockState } from "@/lib/api";
@@ -58,6 +59,20 @@ export function useRavenShellData(): RavenShellData {
   // replaces a newer one.
   const homeFetchRef = useRef({ started: 0, applied: 0 });
   const authenticated = home !== null && Boolean(api.getSessionId());
+  // Profile knocks already accounted for on this device; signing out forgets them.
+  const seenKnocksRef = useRef<SeenKnocks | null>(null);
+
+  // A new profile knock becomes a notification when the user asked for one and is not
+  // in Do not disturb. Whether Raven is in front is decided natively, beside the window.
+  useEffect(() => {
+    if (!home) return;
+    const { seen, fresh } = newProfileKnocks(seenKnocksRef.current, home.user.id, home.pendingKnocks);
+    seenKnocksRef.current = seen;
+    if (fresh.length === 0 || home.presence?.state === "dnd" || !loadNotificationSettings().knocks) return;
+    for (const knock of fresh) {
+      void notificationCommands.notifyKnock(knock.fromDisplayName || knock.fromUsername, "wants to reach you").catch(() => undefined);
+    }
+  }, [home]);
 
   const hydrateTrees = useCallback(async (nextHome: HomeState) => {
     const entries = await Promise.all(
@@ -336,6 +351,7 @@ export function useRavenShellData(): RavenShellData {
   // was signed out from another device). Same outcome as finding that out at startup.
   const sessionExpired = useCallback(() => {
     api.clearSession();
+    seenKnocksRef.current = null;
     setServerUnreachable(false);
     setHome(null);
     setTreeDetails({});
@@ -431,6 +447,7 @@ export function useRavenShellData(): RavenShellData {
     api.clearSession();
     setPasswordChangeRequired(false);
     forgetUnsentMessages(localStorage);
+    seenKnocksRef.current = null;
     setServerUnreachable(false);
     setHome(null);
     setTreeDetails({});

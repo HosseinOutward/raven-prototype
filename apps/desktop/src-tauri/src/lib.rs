@@ -7,6 +7,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 
 pub mod audio;
 pub mod media_hotkeys;
+mod notifications;
 pub mod overlay;
 mod thumbnail_toolbar;
 pub mod tray;
@@ -164,6 +165,8 @@ pub fn run() {
             media_hotkeys_get_settings,
             media_hotkeys_update_settings,
             thumbnail_toolbar::thumbnail_toolbar_update,
+            notifications::notifications_supported,
+            notifications::notify_knock,
             tray::tray_update,
             tray::tray_set_unread,
             tray::tray_get_settings,

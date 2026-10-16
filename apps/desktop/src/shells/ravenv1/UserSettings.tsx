@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PasswordChangeForm } from "./PasswordChangeForm";
-import { Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
+import { Bell, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { VoiceOverlaySettingsPanel } from "@/components/VoiceOverlaySettings";
 import { MediaHotkeySettingsPanel } from "@/components/MediaHotkeySettings";
 import { TraySettingsPanel } from "@/components/TraySettings";
+import { NotificationSettingsPanel } from "@/components/NotificationSettings";
 import { SquareImageUpload } from "@/components/SquareImageUpload";
 import { UpdatesSettingsPanel } from "@/components/updates/UpdatesSettings";
 import { api, type AuthSession, type UILabelPreference } from "@/lib/api";
@@ -36,7 +37,7 @@ import type {
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
 
-export type UserSettingsSection = "profile" | "messages" | "sessions" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "server" | "updates";
+export type UserSettingsSection = "profile" | "messages" | "sessions" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates";
 
 const GROUPS: SettingsCategoryGroup[] = [
   {
@@ -55,6 +56,7 @@ const GROUPS: SettingsCategoryGroup[] = [
       { id: "hotkeys", label: "Hotkeys", icon: <Keyboard /> },
       { id: "voice-overlay", label: "Voice overlay", icon: <MonitorUp /> },
       { id: "tray", label: "Tray", icon: <PanelBottom /> },
+      { id: "notifications", label: "Notifications", icon: <Bell /> },
     ],
   },
   {
@@ -151,6 +153,12 @@ export function UserSettingsView({
       return (
         <SettingsPage title="Tray" description="Raven’s icon next to the clock, and what closing the window does.">
           <TraySettingsPanel />
+        </SettingsPage>
+      );
+    case "notifications":
+      return (
+        <SettingsPage title="Notifications" description="What Raven tells you about while you are in another app or it is in the tray.">
+          <NotificationSettingsPanel />
         </SettingsPage>
       );
     case "server":
