@@ -444,13 +444,20 @@ export function useRavenMediaAdapter(
     if (phase === "error") setPhase(activeNestRef.current ? "connected" : "idle");
   }, [phase]);
 
+  /**
+   * End the call's media: leave both rooms and release local capture. Every caller is a
+   * real end of the call (leave, a failed join, a reconnect the user left during); the
+   * reconnect loop itself only calls `connectMedia`, so the mic stays open across it.
+   */
   const cleanupMediaOnly = useCallback(async () => {
     const [audioResult, videoResult] = await Promise.allSettled([
       audioCommands.disconnectRoom(),
       videoCommands.disconnectRoom(),
     ]);
-    if (audioResult.status === "fulfilled") setAudioState(audioResult.value);
     if (videoResult.status === "fulfilled") setVideoState(videoResult.value);
+    const released = await audioCommands.setCallActive(false).catch(() => null);
+    if (released) setAudioState(released);
+    else if (audioResult.status === "fulfilled") setAudioState(audioResult.value);
   }, []);
 
   const muteLocalMicrophones = useCallback(async () => {
@@ -531,7 +538,7 @@ export function useRavenMediaAdapter(
     activeNestRef.current = null;
     if (nestId) void api.disconnectFromNest(nestId).catch(() => undefined);
     void Promise.allSettled([
-      audioCommands.disconnectRoom(),
+      audioCommands.disconnectRoom().then(() => audioCommands.setCallActive(false)),
       videoCommands.disconnectRoom(),
     ]);
   }, []);
@@ -622,6 +629,10 @@ export function useRavenMediaAdapter(
           await applyVideoJoinDefaults();
           if (alwaysJoinMutedRef.current) await muteLocalMicrophones();
 
+          // Open local capture before connecting, so a microphone kept from an earlier
+          // call is already running when its track is published. A device that fails to
+          // open is reported on its strip and retried; it must not fail the join.
+          await audioCommands.setCallActive(true).catch(() => undefined);
           await connectMedia(nestId);
           await prepareMicrophoneRef.current().catch(() => undefined);
 

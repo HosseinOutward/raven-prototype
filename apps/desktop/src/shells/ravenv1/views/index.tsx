@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { AudioMixerPanel } from "@/components/AudioMixerPanel";
 import { Button } from "@/components/ui/button";
+import { audioCommands } from "@/lib/audio";
 import type { ChatStore } from "@/lib/chat/store";
 import type { RavenUpdater } from "@/lib/updater";
 import { EmptyState } from "../atoms";
@@ -122,6 +123,13 @@ function MissingView({ what, onNavigate }: { what: string; onNavigate: (view: Ra
  * in the main surface so the bottom bar stays in reach while you adjust it.
  */
 function MixerView({ onClose }: { onClose: () => void }) {
+  // Outside a call nothing else keeps local capture open; ask for it while the meters
+  // are on screen.
+  useEffect(() => {
+    void audioCommands.setMonitoring(true).catch(() => undefined);
+    return () => void audioCommands.setMonitoring(false).catch(() => undefined);
+  }, []);
+
   return (
     <>
       <ViewHeader

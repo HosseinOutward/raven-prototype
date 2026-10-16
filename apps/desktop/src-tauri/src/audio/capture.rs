@@ -175,6 +175,26 @@ fn lock_recovering<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     })
 }
 
+/// Why local capture may run at all. An enabled source holds its device open only while
+/// one of these is true; otherwise leaving a call would keep the microphone (and APM,
+/// the chain and the meters) running until the app quits.
+///
+/// `call_active` is set by the app from join until a real leave and is deliberately not
+/// the LiveKit connection state: the app's own reconnect cycle disconnects and connects
+/// the room, and the device must stay open across it. `monitoring` is set while the
+/// Mixer is on screen, the one place that shows input levels outside a call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureDemand {
+    pub call_active: bool,
+    pub monitoring: bool,
+}
+
+impl CaptureDemand {
+    pub fn wants_capture(self) -> bool {
+        self.call_active || self.monitoring
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CaptureRuntimeManager {
     runtimes: HashMap<AudioSourceId, Box<dyn AudioSourceRuntime>>,
@@ -196,13 +216,14 @@ impl CaptureRuntimeManager {
         app: &AppHandle,
         shared_state: SharedAudioEngineState,
         sources: &[AudioSourceState],
+        demand: CaptureDemand,
         sinks: &HashMap<AudioSourceId, Arc<dyn ProcessedSampleSink>>,
         render_reference: Arc<RenderReference>,
     ) -> CaptureReconcileOutcome {
         let mut outcome = CaptureReconcileOutcome::default();
         let desired_ids: HashSet<_> = sources
             .iter()
-            .filter(|source| should_capture_source(source))
+            .filter(|source| should_capture_source(source, demand))
             .map(|source| source.id)
             .collect();
 
@@ -294,10 +315,14 @@ impl CaptureRuntimeManager {
     }
 
     #[cfg(test)]
-    fn reconcile_without_start_for_test(&mut self, sources: &mut [AudioSourceState]) {
+    fn reconcile_without_start_for_test(
+        &mut self,
+        sources: &mut [AudioSourceState],
+        demand: CaptureDemand,
+    ) {
         let desired_ids: HashSet<_> = sources
             .iter()
-            .filter(|source| should_capture_source(source))
+            .filter(|source| should_capture_source(source, demand))
             .map(|source| source.id)
             .collect();
         let existing_ids: Vec<_> = self.runtimes.keys().copied().collect();
@@ -1646,8 +1671,8 @@ enum CaptureEvent {
     Runtime(AudioSourceRuntimeState),
 }
 
-fn should_capture_source(source: &AudioSourceState) -> bool {
-    source.enabled
+fn should_capture_source(source: &AudioSourceState, demand: CaptureDemand) -> bool {
+    source.enabled && demand.wants_capture()
 }
 
 fn inactive_runtime_state() -> AudioSourceRuntimeState {
@@ -3894,7 +3919,7 @@ mod tests {
             enabled: false,
             ..source
         }];
-        manager.reconcile_without_start_for_test(&mut sources);
+        manager.reconcile_without_start_for_test(&mut sources, IN_CALL);
 
         assert!(stopped.load(Ordering::Relaxed));
         assert!(!manager.contains(source_id));
@@ -3902,5 +3927,93 @@ mod tests {
             sources[0].runtime.status,
             AudioSourceRuntimeStatus::Inactive
         );
+    }
+
+    const IDLE: CaptureDemand = CaptureDemand {
+        call_active: false,
+        monitoring: false,
+    };
+    const IN_CALL: CaptureDemand = CaptureDemand {
+        call_active: true,
+        monitoring: false,
+    };
+    const MONITORING: CaptureDemand = CaptureDemand {
+        call_active: false,
+        monitoring: true,
+    };
+
+    #[test]
+    fn captures_only_an_enabled_source_with_a_reason_to() {
+        let enabled =
+            AudioSourceState::new(ParticipantId::new(), AudioSourceType::Microphone, "Mic");
+        let disabled = AudioSourceState {
+            enabled: false,
+            ..enabled.clone()
+        };
+        let both = CaptureDemand {
+            call_active: true,
+            monitoring: true,
+        };
+
+        for demand in [IDLE, IN_CALL, MONITORING, both] {
+            assert_eq!(
+                should_capture_source(&enabled, demand),
+                demand != IDLE,
+                "enabled source with {demand:?}"
+            );
+            assert!(
+                !should_capture_source(&disabled, demand),
+                "disabled source with {demand:?}"
+            );
+        }
+    }
+
+    fn running_fake(
+        manager: &mut CaptureRuntimeManager,
+        source: &AudioSourceState,
+    ) -> Arc<AtomicBool> {
+        let stopped = Arc::new(AtomicBool::new(false));
+        manager.insert_for_test(Box::new(FakeRuntime {
+            source_id: source.id,
+            signature: CaptureConfigSignature::from_source(source),
+            stopped: Arc::clone(&stopped),
+        }));
+        stopped
+    }
+
+    #[test]
+    fn manager_releases_capture_when_the_call_ends() {
+        let mut manager = CaptureRuntimeManager::default();
+        let source =
+            AudioSourceState::new(ParticipantId::new(), AudioSourceType::Microphone, "Mic");
+        let stopped = running_fake(&mut manager, &source);
+        let mut sources = vec![source.clone()];
+
+        manager.reconcile_without_start_for_test(&mut sources, IN_CALL);
+        assert!(!stopped.load(Ordering::Relaxed));
+        assert!(manager.contains(source.id));
+
+        manager.reconcile_without_start_for_test(&mut sources, IDLE);
+        assert!(stopped.load(Ordering::Relaxed));
+        assert!(!manager.contains(source.id));
+        assert_eq!(
+            sources[0].runtime.status,
+            AudioSourceRuntimeStatus::Inactive
+        );
+    }
+
+    #[test]
+    fn monitoring_keeps_capture_open_outside_a_call() {
+        let mut manager = CaptureRuntimeManager::default();
+        let source =
+            AudioSourceState::new(ParticipantId::new(), AudioSourceType::Microphone, "Mic");
+        let stopped = running_fake(&mut manager, &source);
+        let mut sources = vec![source.clone()];
+
+        manager.reconcile_without_start_for_test(&mut sources, MONITORING);
+        assert!(!stopped.load(Ordering::Relaxed));
+
+        manager.reconcile_without_start_for_test(&mut sources, IDLE);
+        assert!(stopped.load(Ordering::Relaxed));
     }
 }

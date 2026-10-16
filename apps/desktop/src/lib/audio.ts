@@ -393,6 +393,17 @@ export const audioCommands = {
   /** Disconnect the native audio sidecar (on leaving the nest). */
   disconnectRoom: () => invoke<AudioMixerState>("audio_disconnect_room"),
 
+  /**
+   * In a call from join until a real leave. Local capture runs only while this or
+   * monitoring is set; reconnecting the room leaves it alone so the mic stays open.
+   */
+  setCallActive: (active: boolean) =>
+    invoke<AudioMixerState>("audio_set_call_active", { active }),
+
+  /** Keep local capture (and its meters) running outside a call while the Mixer is shown. */
+  setMonitoring: (enabled: boolean) =>
+    invoke<AudioMixerState>("audio_set_monitoring", { enabled }),
+
   getChannelHealth: (
     sourceId?: AudioSourceId | null,
     remoteParticipantId?: ParticipantId | null,

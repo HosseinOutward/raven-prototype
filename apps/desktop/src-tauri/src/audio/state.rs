@@ -11,7 +11,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use thiserror::Error;
 
 use crate::audio::capture::{
-    list_input_devices, list_output_devices, system_audio_runtime_readiness, CaptureRuntimeManager,
+    list_input_devices, list_output_devices, system_audio_runtime_readiness, CaptureDemand,
+    CaptureRuntimeManager,
 };
 use crate::audio::domain::RemoteChannelStripState;
 use crate::audio::domain::{
@@ -113,6 +114,9 @@ pub struct AudioEngineState {
     pub user_presets: Vec<AudioPresetDefinition>,
     pub user_presets_loaded: bool,
     pub runtime: SharedAudioRuntime,
+    /// Whether local capture may run at all (in a call, or the Mixer is open). Survives a
+    /// room disconnect on purpose: the app's reconnect cycle must not reopen the device.
+    pub capture_demand: CaptureDemand,
     /// This peer's own strip settings for remote tracks that are not currently
     /// subscribed. A track disappears and reappears whenever its owner reconnects, the
     /// room reconnects, or receiving is paused; the listener's fader, mute and chain for
@@ -804,6 +808,18 @@ impl AudioEngineState {
 
     /// Drop every remote track (the sidecar left or lost the room), keeping each one's
     /// receiver settings for when it is subscribed again.
+    /// The model half of leaving the LiveKit room: drop remote tracks and reset the
+    /// session. Capture demand is kept, because the app disconnects the room before each
+    /// reconnect attempt too; only `audio_set_call_active(false)` ends the call.
+    fn reset_after_disconnect(&mut self, output_muted: bool) {
+        self.clear_remote_tracks();
+        self.mixer.session = AudioSessionHealth {
+            // Deafen is a user choice that outlives the room.
+            output_muted,
+            ..Default::default()
+        };
+    }
+
     pub fn clear_remote_tracks(&mut self) {
         for remote in std::mem::take(&mut self.mixer.remote_tracks) {
             self.remember_remote_strip(&remote);
@@ -1458,6 +1474,7 @@ impl Default for AudioEngineState {
             user_presets: Vec::new(),
             user_presets_loaded: false,
             runtime: Arc::new(AudioRuntime::default()),
+            capture_demand: CaptureDemand::default(),
             remembered_remote_strips: HashMap::new(),
             remembered_volumes: HashMap::new(),
             remembered_volumes_changed: false,
@@ -2214,16 +2231,42 @@ pub async fn disconnect_audio_room(
     ops.engine.disconnect().await;
     {
         let mut guard = shared.write().map_err(|_| AudioStateError::StatePoisoned)?;
-        guard.clear_remote_tracks();
-        guard.mixer.session = AudioSessionHealth {
-            // Deafen is a user choice that outlives the room.
-            output_muted: runtime.output.is_muted(),
-            ..Default::default()
-        };
+        guard.reset_after_disconnect(runtime.output.is_muted());
     }
     let _ = reconcile_media(app, shared, &mut ops).await?;
     drop(ops);
     snapshot_audio_state(shared)
+}
+
+/// Mark the user as in a call (from join) or not (after a real leave). Local capture runs
+/// only while this or monitoring is set. The app's reconnect cycle leaves it alone, so a
+/// rejoin after a lost connection keeps the microphone open.
+#[tauri::command]
+pub async fn audio_set_call_active(
+    app: AppHandle,
+    state: State<'_, SharedAudioEngineState>,
+    active: bool,
+) -> Result<AudioMixerState, AudioStateError> {
+    mutate_audio_state(&app, &state, |engine| {
+        engine.capture_demand.call_active = active;
+        Ok(())
+    })
+    .await
+}
+
+/// Keep local capture running outside a call while the Mixer is on screen, so its input
+/// meters are live.
+#[tauri::command]
+pub async fn audio_set_monitoring(
+    app: AppHandle,
+    state: State<'_, SharedAudioEngineState>,
+    enabled: bool,
+) -> Result<AudioMixerState, AudioStateError> {
+    mutate_audio_state(&app, &state, |engine| {
+        engine.capture_demand.monitoring = enabled;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2532,9 +2575,9 @@ async fn reconcile_media(
     state: &SharedAudioEngineState,
     ops: &mut AudioOps,
 ) -> Result<Option<String>, AudioStateError> {
-    let sources = {
+    let (sources, demand) = {
         let guard = state.read().map_err(|_| AudioStateError::StatePoisoned)?;
-        guard.mixer.local_sources.clone()
+        (guard.mixer.local_sources.clone(), guard.capture_demand)
     };
     // Reconcile published LiveKit tracks first so the capture manager can attach the
     // matching publish sinks to the (possibly already running) capture threads.
@@ -2543,7 +2586,14 @@ async fn reconcile_media(
     let render_reference = ops.engine.render_reference();
     let capture = &mut ops.capture;
     let outcome = tokio::task::block_in_place(|| {
-        capture.reconcile(app, Arc::clone(state), &sources, &sinks, render_reference)
+        capture.reconcile(
+            app,
+            Arc::clone(state),
+            &sources,
+            demand,
+            &sinks,
+            render_reference,
+        )
     });
     if !outcome.runtime_updates.is_empty() {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
@@ -3275,6 +3325,29 @@ fn audio_track_source_from_source(source: &AudioSourceState) -> AudioTrackSource
 mod tests {
     use super::*;
     use crate::audio::domain::{AudioProcessorKind, AudioProcessorState};
+
+    #[test]
+    fn a_room_disconnect_keeps_the_call_holding_capture() {
+        let mut engine = AudioEngineState::default();
+        engine.add_local_source(AudioSourceType::Microphone, "Mic");
+        engine.capture_demand.call_active = true;
+
+        // The reconnect cycle disconnects the room and connects it again.
+        engine.reset_after_disconnect(false);
+        assert!(engine.capture_demand.call_active);
+        assert!(engine.capture_demand.wants_capture());
+
+        // Only an explicit end of the call releases it.
+        engine.capture_demand.call_active = false;
+        assert!(!engine.capture_demand.wants_capture());
+    }
+
+    #[test]
+    fn a_room_disconnect_keeps_deafen() {
+        let mut engine = AudioEngineState::default();
+        engine.reset_after_disconnect(true);
+        assert!(engine.mixer.session.output_muted);
+    }
 
     #[test]
     fn adds_and_mutates_local_source_state() {
