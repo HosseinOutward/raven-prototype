@@ -5,14 +5,15 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { api, type LauncherNest } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
-import { UnreadDot } from "@/components/chat/ConversationRow";
+import { ConversationAvatar, UnreadDot } from "@/components/chat/ConversationRow";
 import type { ChatStore } from "@/lib/chat/store";
 import { AvatarStack, LiveDot, PersonAvatar, SectionLabel } from "./atoms";
 import { PendingList } from "./Inbox";
 import { OFFLINE_RANK, personStatus, reachRank } from "./people";
-import { SidebarMessages, TreeTextNests } from "./SidebarChat";
+import { rowUnread } from "./friendsAndGroups";
+import { SidebarFriendsAndGroups, TreeTextNests } from "./SidebarChat";
 import { displayNameFor, PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "./state";
-import { useMessagesUnread, useTreeChatSummaries } from "./useChat";
+import { useChatSelector, useFriendsAndGroups, useMessagesUnread, useOpenPerson, useTreeChatSummaries } from "./useChat";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
 import type { NestEntryController } from "./useNestEntry";
 import { NameDialog } from "./views/dialogs";
@@ -47,6 +48,19 @@ export function Sidebar({
 }) {
   const treeChat = useTreeChatSummaries(chat);
   const messagesUnread = useMessagesUnread(chat);
+  const people = useFriendsAndGroups(chat, data, view);
+  const { open: openPerson, openingId } = useOpenPerson(chat, onNavigate);
+  // The tree whose text nest is open: that nest stays listed under it.
+  const activeChatId = view.kind === "chat" ? view.id : "";
+  const openTextNestTree = useChatSelector(
+    chat,
+    (state) => {
+      const summary = activeChatId ? state.conversations[activeChatId]?.summary : undefined;
+      return summary?.kind === "nest" ? summary.treeId ?? "" : "";
+    },
+    "",
+    activeChatId,
+  );
   const [collapsedTrees, setCollapsedTrees] = useState<Set<string>>(() => readIdSet(COLLAPSED_TREES_KEY));
   const [showOffline, setShowOffline] = useStoredFlag(SHOW_OFFLINE_KEY, false);
   const [showTreePeople, setShowTreePeople] = useStoredFlag(SHOW_TREE_PEOPLE_KEY, false);
@@ -78,12 +92,8 @@ export function Sidebar({
     return result;
   }, [data.activeNests, data.temporaryNests]);
 
-  const friends = useMemo(
-    () => data.people.filter((person) => person.relationship === "friend").sort((a, b) => reachRank(a) - reachRank(b) || a.name.localeCompare(b.name)),
-    [data.people],
-  );
-  const reachableFriends = friends.filter((person) => reachRank(person) < OFFLINE_RANK);
-  const offlineFriends = friends.filter((person) => reachRank(person) >= OFFLINE_RANK);
+  // On the rail: friends who are reachable, and anyone or any group with unread messages.
+  const railPeople = people.shown.filter((row) => rowUnread(row) > 0 || (row.kind === "person" && !row.former && reachRank(row.person) < OFFLINE_RANK));
   const treePeople = useMemo(
     () => data.people.filter((person) => person.relationship !== "friend").sort((a, b) => reachRank(a) - reachRank(b) || a.name.localeCompare(b.name)),
     [data.people],
@@ -136,7 +146,7 @@ export function Sidebar({
           <Avatar name={serverName} src={serverAvatar} className="h-7 w-7 rounded-control bg-foreground text-background" />
         </RailButton>
         {chat ? (
-          <RailButton label={messagesUnread ? "Messages · unread" : "Messages"} active={view.kind === "messages" || view.kind === "chat"} onClick={() => onNavigate({ kind: "messages" })}>
+          <RailButton label={messagesUnread ? "All conversations · unread" : "All conversations"} active={view.kind === "messages"} onClick={() => onNavigate({ kind: "messages" })}>
             <span className="relative">
               <MessageSquare className="h-4 w-4" />
               {messagesUnread ? <UnreadDot className="absolute -right-1.5 -top-1.5 h-2 w-2 outline outline-2 outline-background" /> : null}
@@ -163,17 +173,41 @@ export function Sidebar({
               </RailButton>
             );
           })}
-          {reachableFriends.length ? <div className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
-          {reachableFriends.map((person) => (
-            <RailButton
-              key={person.id}
-              label={`${person.name} · ${personStatus(person, data) ?? PRESENCE[person.presence].label}`}
-              active={view.kind === "user" && view.id === person.id}
-              onClick={() => onNavigate({ kind: "user", id: person.id })}
-            >
-              <PersonAvatar id={person.id} name={person.name} presence={person.presence} surface="canvas" className="h-7 w-7" />
-            </RailButton>
-          ))}
+          {railPeople.length ? <div className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
+          {railPeople.map((row) => {
+            const unread = rowUnread(row) > 0;
+            if (row.kind === "group") {
+              return (
+                <RailButton
+                  key={row.conversation.id}
+                  label={[row.conversation.name, "group", unread ? "unread" : null].filter(Boolean).join(" · ")}
+                  active={row.conversation.id === people.activeConversationId}
+                  onClick={() => onNavigate({ kind: "chat", id: row.conversation.id })}
+                >
+                  <span className="relative">
+                    <ConversationAvatar conversation={row.conversation} className="h-7 w-7 rounded-chip text-caption" />
+                    {unread ? <UnreadDot className="absolute -right-0.5 -top-0.5 h-2 w-2 outline outline-2 outline-background" /> : null}
+                  </span>
+                </RailButton>
+              );
+            }
+            const { person, former } = row;
+            const status = former ? null : personStatus(person, data) ?? PRESENCE[person.presence].label;
+            return (
+              <RailButton
+                key={person.id}
+                label={[person.name, status, unread ? "unread" : null].filter(Boolean).join(" · ")}
+                active={person.id === people.activePersonId}
+                disabled={openingId === person.id}
+                onClick={() => openPerson(person.id)}
+              >
+                <span className="relative">
+                  <PersonAvatar id={person.id} name={person.name} presence={former ? undefined : person.presence} surface="canvas" className="h-7 w-7" />
+                  {unread ? <UnreadDot className="absolute -right-0.5 -top-0.5 h-2 w-2 outline outline-2 outline-background" /> : null}
+                </span>
+              </RailButton>
+            );
+          })}
         </div>
       </nav>
     );
@@ -215,8 +249,6 @@ export function Sidebar({
           </section>
         ) : null}
 
-        {chat ? <SidebarMessages chat={chat} data={data} view={view} onNavigate={onNavigate} /> : null}
-
         <section>
           <SectionLabel
             className="px-2"
@@ -240,8 +272,10 @@ export function Sidebar({
               {data.trees.map((tree) => {
                 const live = liveByTree.get(tree.id) ?? [];
                 const text = treeChat.get(tree.id);
-                // A tree opens to show what is in it now: its text nests and its live nests.
-                const expandable = live.length > 0 || Boolean(text?.count);
+                // A tree opens to show what is alive in it now: its live nests, its text nests
+                // with unread messages, and the text nest that is open. The rest are in its lobby.
+                const showsText = Boolean(chat && (text?.unread || openTextNestTree === tree.id));
+                const expandable = live.length > 0 || showsText;
                 const open = expandable && !collapsedTrees.has(tree.id);
                 const active = (view.kind === "tree" || view.kind === "tree-settings") && view.id === tree.id;
                 return (
@@ -276,7 +310,7 @@ export function Sidebar({
                     </div>
                     {open ? (
                       <div className="space-y-px">
-                        {chat && text?.count ? <TreeTextNests chat={chat} treeId={tree.id} view={view} onNavigate={onNavigate} /> : null}
+                        {chat && showsText ? <TreeTextNests chat={chat} treeId={tree.id} view={view} onNavigate={onNavigate} /> : null}
                         {live.map((nest) => nestRow(nest, true))}
                       </div>
                     ) : null}
@@ -298,30 +332,14 @@ export function Sidebar({
           </section>
         ) : null}
 
-        <section>
-          <SectionLabel className="px-2">Friends</SectionLabel>
-          {friends.length ? (
-            <div className="space-y-px">
-              {reachableFriends.map((person) => (
-                <PersonRow key={person.id} person={person} data={data} active={view.kind === "user" && view.id === person.id} onNavigate={onNavigate} />
-              ))}
-              {offlineFriends.length ? (
-                <>
-                  <DisclosureRow open={showOffline} onToggle={() => setShowOffline(!showOffline)}>
-                    Offline · {offlineFriends.length}
-                  </DisclosureRow>
-                  {showOffline
-                    ? offlineFriends.map((person) => (
-                        <PersonRow key={person.id} person={person} data={data} active={view.kind === "user" && view.id === person.id} onNavigate={onNavigate} />
-                      ))
-                    : null}
-                </>
-              ) : null}
-            </div>
-          ) : (
-            <p className="px-2 py-1 text-small text-muted-foreground">Search for someone to add them as a friend.</p>
-          )}
-        </section>
+        <SidebarFriendsAndGroups
+          chat={chat}
+          data={data}
+          view={view}
+          showOffline={showOffline}
+          onToggleOffline={() => setShowOffline(!showOffline)}
+          onNavigate={onNavigate}
+        />
 
         {treePeople.length ? (
           <section>
@@ -455,13 +473,26 @@ function DisclosureRow({ open, onToggle, children }: { open: boolean; onToggle: 
   );
 }
 
-function RailButton({ label, active, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: ReactNode }) {
+function RailButton({
+  label,
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
     <Tooltip label={label} side="right">
       <button
         type="button"
         aria-label={label}
         aria-current={active ? "page" : undefined}
+        disabled={disabled}
         onClick={onClick}
         className={cn(
           "flex h-10 w-10 shrink-0 items-center justify-center rounded-control text-muted-foreground transition-colors",

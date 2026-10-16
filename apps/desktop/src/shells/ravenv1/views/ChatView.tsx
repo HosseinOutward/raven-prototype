@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Eraser, LogOut, MoreHorizontal, Pencil, Trash2, UserRound, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Eraser, Hand, LogIn, LogOut, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
 import { GroupPeopleDialog, RenameDialog } from "@/components/chat/ChatDialogs";
 import { Composer } from "@/components/chat/Composer";
 import { ConversationAvatar } from "@/components/chat/ConversationRow";
@@ -13,8 +13,11 @@ import { excerptOf } from "@/lib/chat/reducer";
 import type { ChatStore } from "@/lib/chat/store";
 import type { ChatMember, ChatMessage, ConversationState } from "@/lib/chat/types";
 import { EmptyState, PersonAvatar } from "../atoms";
-import { personStatus } from "../people";
-import type { RavenShellData, RavenView } from "../state";
+import { personNestAction, personStatus } from "../people";
+import { PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
+import type { NestEntryController } from "../useNestEntry";
+import { useProfileKnock } from "../useProfileKnock";
+import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useChatSelector, useConversation, useWindowActive } from "../useChat";
 import { ViewHeader } from "./shared";
 
@@ -31,12 +34,16 @@ export function ChatView({
   conversationId,
   chat,
   data,
+  media,
+  entry,
   onNavigate,
   onBack,
 }: {
   conversationId: string;
   chat: ChatStore | null;
   data: RavenShellData;
+  media: RavenMediaAdapterState;
+  entry: NestEntryController;
   onNavigate: (view: RavenView) => void;
   onBack: () => void;
 }) {
@@ -62,7 +69,7 @@ export function ChatView({
       <Unavailable title="This conversation isn’t available" text="It may have been deleted, or you may no longer be part of it." onNavigate={onNavigate} />
     );
   }
-  return <OpenConversation key={conversationId} conversation={conversation} chat={chat} data={data} onNavigate={onNavigate} onBack={onBack} />;
+  return <OpenConversation key={conversationId} conversation={conversation} chat={chat} data={data} media={media} entry={entry} onNavigate={onNavigate} onBack={onBack} />;
 }
 
 function Unavailable({ title, text, onNavigate }: { title: string; text: string; onNavigate: (view: RavenView) => void }) {
@@ -79,12 +86,16 @@ function OpenConversation({
   conversation,
   chat,
   data,
+  media,
+  entry,
   onNavigate,
   onBack,
 }: {
   conversation: ConversationState;
   chat: ChatStore;
   data: RavenShellData;
+  media: RavenMediaAdapterState;
+  entry: NestEntryController;
   onNavigate: (view: RavenView) => void;
   onBack: () => void;
 }) {
@@ -176,7 +187,9 @@ function OpenConversation({
     }
   };
 
-  const status = peer ? personStatus(peer, data) : null;
+  // Their presence and status, as in the sidebar. "Around" needs no words there, but here
+  // the line would otherwise be empty, so it is said.
+  const status = peer && !peer.presenceUnknown ? personStatus(peer, data) ?? PRESENCE[peer.presence].label : null;
   const subtitle: ReactNode = connection === "offline"
     ? <span className="text-warning">Reconnecting… Messages you send will go when Raven is back online.</span>
     : summary.kind === "dm"
@@ -205,57 +218,55 @@ function OpenConversation({
         }
         title={summary.name}
         subtitle={subtitle}
+        titleLink={summary.kind === "dm" && summary.peer ? { label: `Open ${summary.name}’s profile`, onOpen: () => onNavigate({ kind: "user", id: summary.peer!.id }) } : undefined}
         actions={
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon-sm" variant="ghost" aria-label={`More for ${summary.name}`}>
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {summary.kind === "dm" && summary.peer ? (
-                <DropdownMenuItem onSelect={() => onNavigate({ kind: "user", id: summary.peer!.id })}>
-                  <UserRound className="text-muted-foreground" />
-                  Open {summary.name}’s page
+          <>
+            {peer ? <PersonActions person={peer} data={data} media={media} entry={entry} onNavigate={onNavigate} /> : null}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon-sm" variant="ghost" aria-label={`More for ${summary.name}`}>
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {summary.kind === "group" ? (
+                  <DropdownMenuItem onSelect={() => setPeopleOpen(true)}>
+                    <Users className="text-muted-foreground" />
+                    People
+                  </DropdownMenuItem>
+                ) : null}
+                {summary.kind !== "dm" && summary.canManage ? (
+                  <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
+                    <Pencil className="text-muted-foreground" />
+                    Rename
+                  </DropdownMenuItem>
+                ) : null}
+                {summary.kind !== "nest" ? (
+                  <DropdownMenuItem onSelect={() => void chat.setArchived(id, !summary.archived).catch(report("Couldn’t change that."))}>
+                    {summary.archived ? <ArchiveRestore className="text-muted-foreground" /> : <Archive className="text-muted-foreground" />}
+                    {summary.archived ? "Move out of archive" : "Archive"}
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setConfirming({ kind: "clear" })}>
+                  <Eraser className="text-muted-foreground" />
+                  Clear for me
                 </DropdownMenuItem>
-              ) : null}
-              {summary.kind === "group" ? (
-                <DropdownMenuItem onSelect={() => setPeopleOpen(true)}>
-                  <Users className="text-muted-foreground" />
-                  People
-                </DropdownMenuItem>
-              ) : null}
-              {summary.kind !== "dm" && summary.canManage ? (
-                <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
-                  <Pencil className="text-muted-foreground" />
-                  Rename
-                </DropdownMenuItem>
-              ) : null}
-              {summary.kind !== "nest" ? (
-                <DropdownMenuItem onSelect={() => void chat.setArchived(id, !summary.archived).catch(report("Couldn’t change that."))}>
-                  {summary.archived ? <ArchiveRestore className="text-muted-foreground" /> : <Archive className="text-muted-foreground" />}
-                  {summary.archived ? "Move out of archive" : "Archive"}
-                </DropdownMenuItem>
-              ) : null}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setConfirming({ kind: "clear" })}>
-                <Eraser className="text-muted-foreground" />
-                Clear for me
-              </DropdownMenuItem>
-              {summary.kind === "group" ? (
-                <DropdownMenuItem onSelect={() => setConfirming({ kind: "leave" })}>
-                  <LogOut className="text-muted-foreground" />
-                  Leave group
-                </DropdownMenuItem>
-              ) : null}
-              {summary.kind !== "dm" && summary.canManage ? (
-                <DropdownMenuItem destructive onSelect={() => setConfirming({ kind: "delete" })}>
-                  <Trash2 />
-                  Delete for everyone
-                </DropdownMenuItem>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                {summary.kind === "group" ? (
+                  <DropdownMenuItem onSelect={() => setConfirming({ kind: "leave" })}>
+                    <LogOut className="text-muted-foreground" />
+                    Leave group
+                  </DropdownMenuItem>
+                ) : null}
+                {summary.kind !== "dm" && summary.canManage ? (
+                  <DropdownMenuItem destructive onSelect={() => setConfirming({ kind: "delete" })}>
+                    <Trash2 />
+                    Delete for everyone
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
         }
       />
 
@@ -341,6 +352,57 @@ function OpenConversation({
           await chat.rename(id, { name });
         }}
       />
+    </>
+  );
+}
+
+/**
+ * The voice-first actions for the person in a direct message, so they stay one click from
+ * the sidebar: join them where they are, or knock. In a call the dock has Leave; nothing
+ * here repeats it.
+ */
+function PersonActions({
+  person,
+  data,
+  media,
+  entry,
+  onNavigate,
+}: {
+  person: ShellPerson;
+  data: RavenShellData;
+  media: RavenMediaAdapterState;
+  entry: NestEntryController;
+  onNavigate: (view: RavenView) => void;
+}) {
+  const knock = useProfileKnock(data, person.id);
+  const where = personNestAction(person, data, { activeNestId: media.activeNestId, entering: Boolean(entry.pending) || media.phase === "joining" });
+  const join = (nestId: string) => {
+    onNavigate({ kind: "nest", id: nestId });
+    void entry
+      .enter(nestId)
+      .then((result) => {
+        if (result === "waiting") onNavigate({ kind: "waiting", id: nestId });
+      })
+      .catch(() => undefined);
+  };
+  return (
+    <>
+      {where?.action === "join" ? (
+        <Button size="sm" onClick={() => join(where.nest.id)} aria-label={`Join ${where.nest.name}`} title={`Join ${person.name} in ${where.nest.name}`}>
+          <LogIn className="h-4 w-4" />
+          Join
+        </Button>
+      ) : where?.action === "open" ? (
+        <Button size="sm" variant="secondary" className="max-w-48" onClick={() => onNavigate({ kind: "nest", id: where.nest.id })}>
+          <LogIn className="h-4 w-4" />
+          <span className="truncate">Go to {where.nest.name}</span>
+        </Button>
+      ) : null}
+      <Button size="sm" variant="secondary" disabled={knock.disabled} onClick={knock.knock} title={knock.description} aria-describedby="chat-knock-help">
+        <Hand className="h-4 w-4" />
+        {knock.label}
+      </Button>
+      <span id="chat-knock-help" className="sr-only" role="status">{knock.description}</span>
     </>
   );
 }

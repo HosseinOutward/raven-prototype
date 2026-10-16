@@ -1,4 +1,4 @@
-import type { UserRelationship } from "@/lib/api";
+import type { LauncherNest, Nest, UserRelationship } from "@/lib/api";
 import { PRESENCE, type RavenShellData, type ShellPerson } from "./state";
 
 export const OFFLINE_RANK = 5;
@@ -43,4 +43,27 @@ export function friendStanding(
 /** Someone Raven can name but knows nothing else about: no shared tree, no friendship. */
 export function strangerNamed(id: string, name: string): ShellPerson {
   return { id, name, presence: "offline", presenceUnknown: true, treeIds: [], activeNestIds: [], relationship: "context" };
+}
+
+export interface PersonNestAction {
+  nest: Nest | LauncherNest;
+  /** "here": you are in it together; "join": one click joins; "open": look at it first. */
+  action: "here" | "join" | "open";
+}
+
+/**
+ * The nest someone is in and what you can do about it from their profile or your
+ * conversation with them. Joining is offered only when you are in no call and no entry
+ * is running, and the nest is live; otherwise its threshold is one click away.
+ */
+export function personNestAction(
+  person: ShellPerson,
+  data: Pick<RavenShellData, "getNest">,
+  call: { activeNestId: string | null; entering: boolean },
+): PersonNestAction | null {
+  const nest = person.activeNestIds.map((id) => data.getNest(id)).find((candidate) => candidate != null);
+  if (!nest) return null;
+  if (call.activeNestId === nest.id) return { nest, action: "here" };
+  const joinable = nest.lifecycleState === "active" && !call.activeNestId && !call.entering;
+  return { nest, action: joinable ? "join" : "open" };
 }

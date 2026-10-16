@@ -20,7 +20,7 @@ These were decided with Soroush on 2026-10-11.
 
 | Topic | Rule |
 |---|---|
-| Layout | The sidebar stays the live map and gains a **Messages** section (recent direct messages and groups) with an "All messages" view. An expanded tree lists its text nests by category and order. Categories and order for voice and text nests are managed in the tree lobby. |
+| Layout | The sidebar stays the live map. One **Friends and groups** section (changed on 2026-10-16, replacing a separate Messages section) has a row per friend, which opens your conversation with them, and a row per recent group; a round avatar with presence is a person, a square one a group. "All conversations" opens the full list. An expanded tree lists its live voice nests, its text nests with unread messages and the open one; the rest are in the tree lobby, where categories and order for voice and text nests are managed. |
 | Who can write to whom | Friends only, for direct messages and for adding to a group. If a friendship ends, the history stays readable and new messages and edits are refused. Deleting your own messages still works. |
 | Read status | Shown to the other person in direct messages only. It is mutual: one setting (Settings › Messages) turns it off in both directions. Groups and text nests never show who has read. Your own read position always syncs across your devices. |
 | Unread | A neutral count on the conversation's own row; a plain dot on tree rows, the collapsed rail and the Windows taskbar icon. No sound and no OS notifications. |

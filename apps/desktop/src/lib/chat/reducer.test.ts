@@ -363,9 +363,9 @@ describe("the conversation list", () => {
 
   test("lists are split by kind and ordered by latest activity", () => {
     const listed = applyList(emptyChatState(ME), [
-      summary({ id: "old", lastActivityMs: 10 }),
-      summary({ id: "new", lastActivityMs: 30, unreadCount: 2 }),
-      summary({ id: "archived", lastActivityMs: 50, archived: true, unreadCount: 4 }),
+      summary({ id: "old", lastActivityMs: 10, lastSeq: 1 }),
+      summary({ id: "new", lastActivityMs: 30, lastSeq: 2, unreadCount: 2 }),
+      summary({ id: "archived", lastActivityMs: 50, lastSeq: 4, archived: true, unreadCount: 4 }),
       summary({ id: "nest", kind: "nest", treeId: "tree-1", lastActivityMs: 40, unreadCount: 1 }),
     ], { shareReadStatus: true }).state;
 
@@ -375,6 +375,17 @@ describe("the conversation list", () => {
     expect(treeHasUnread(listed, "tree-2")).toBe(false);
     expect(hasUnread(listed)).toBe(true);
     expect(hasUnread(applyList(emptyChatState(ME), [summary({ archived: true, unreadCount: 3 })], { shareReadStatus: true }).state)).toBe(false);
+  });
+
+  test("a direct message nobody has written in is not listed until it has a message", () => {
+    const empty = applyList(emptyChatState(ME), [
+      summary({ id: "empty", lastActivityMs: 90 }),
+      summary({ id: "group", kind: "group", peer: undefined, name: "Crew", lastActivityMs: 20 }),
+    ], { shareReadStatus: true }).state;
+    expect(listedConversations(empty).map((item) => item.summary.id)).toEqual(["group"]);
+
+    const written = applyEvent(applyList(emptyChatState(ME), [summary({ id: C })], { shareReadStatus: true }).state, created(1), NOW).state;
+    expect(listedConversations(written).map((item) => item.summary.id)).toEqual([C]);
   });
 });
 

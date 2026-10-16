@@ -553,10 +553,18 @@ export function setSettings(state: ChatState, settings: ChatSettings): ChatState
 
 // ---- reading the state ---------------------------------------------------------------
 
+/**
+ * A direct message nobody has written in yet. Opening a friend's row creates one on the
+ * server, so it is left out of lists until there is something in it.
+ */
+export function isEmptyDM(summary: ChatConversation): boolean {
+  return summary.kind === "dm" && summary.lastSeq === 0 && !summary.lastMessage;
+}
+
 /** Conversations for the Messages list: direct messages and groups, newest activity first. */
 export function listedConversations(state: ChatState, archived = false): ConversationState[] {
   return Object.values(state.conversations)
-    .filter((conversation) => conversation.summary.kind !== "nest" && conversation.summary.archived === archived)
+    .filter((conversation) => conversation.summary.kind !== "nest" && conversation.summary.archived === archived && !isEmptyDM(conversation.summary))
     .sort((a, b) => b.summary.lastActivityMs - a.summary.lastActivityMs || a.summary.id.localeCompare(b.summary.id));
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { FriendRequest, HomeState } from "@/lib/api";
-import { friendStanding } from "./people";
+import type { FriendRequest, HomeState, Nest } from "@/lib/api";
+import { friendStanding, personNestAction } from "./people";
+import type { ShellPerson } from "./state";
 import { derivePeople } from "./useRavenShellData";
 
 function request(id: string, fromUserId: string, toUserId: string): FriendRequest {
@@ -53,5 +54,29 @@ describe("derivePeople", () => {
     expect(byId.fay.presence).toBe("open");
     expect(byId.ivy.presenceUnknown).toBe(true);
     expect(byId.omar.presenceUnknown).toBe(true);
+  });
+});
+
+describe("personNestAction", () => {
+  const nest = (id: string, lifecycleState: Nest["lifecycleState"] = "active") => ({ id, name: id, lifecycleState }) as Nest;
+  const nests = new Map([["standup", nest("standup")], ["quiet", nest("quiet", "empty")]]);
+  const data = { getNest: (id: string) => nests.get(id) };
+  const sam = (activeNestIds: string[]): ShellPerson => ({ id: "sam", name: "Sam", presence: "open", treeIds: [], activeNestIds, relationship: "friend" });
+  const idle = { activeNestId: null, entering: false };
+
+  test("nothing when they are in no nest this client knows", () => {
+    expect(personNestAction(sam([]), data, idle)).toBeNull();
+    expect(personNestAction(sam(["unknown"]), data, idle)).toBeNull();
+  });
+
+  test("join only from outside a call, into a live nest", () => {
+    expect(personNestAction(sam(["standup"]), data, idle)?.action).toBe("join");
+    expect(personNestAction(sam(["standup"]), data, { activeNestId: "other", entering: false })?.action).toBe("open");
+    expect(personNestAction(sam(["standup"]), data, { activeNestId: null, entering: true })?.action).toBe("open");
+    expect(personNestAction(sam(["quiet"]), data, idle)?.action).toBe("open");
+  });
+
+  test("here when you are in it together", () => {
+    expect(personNestAction(sam(["standup"]), data, { activeNestId: "standup", entering: false })?.action).toBe("here");
   });
 });

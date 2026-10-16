@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { toast } from "@/components/ui/toast";
+import { failureText } from "@/lib/chat/errors";
 import { capabilitiesOf } from "@/lib/permissions";
 import { chatApi } from "@/lib/chat/chatApi";
 import { hasUnread } from "@/lib/chat/reducer";
@@ -7,7 +9,9 @@ import type { ChatEvent, ChatState, ConversationState } from "@/lib/chat/types";
 import { eventStream } from "@/lib/eventStream";
 import { setTaskbarUnread } from "@/lib/taskbarBadge";
 import { trayCommands } from "@/lib/tray";
-import type { RavenShellData } from "./state";
+import { friendsAndGroups, type FriendsAndGroups } from "./friendsAndGroups";
+import { strangerNamed } from "./people";
+import type { RavenShellData, RavenView } from "./state";
 
 /**
  * Text chat for the signed-in person, or null when there is none: signed out, or
@@ -141,6 +145,73 @@ export function useTreeChatSummaries(store: ChatStore | null): Map<string, TreeC
 /** Whether any direct message or group that is not archived has something unread. */
 export function useMessagesUnread(store: ChatStore | null): boolean {
   return useChatSelector(store, (state) => Object.values(state.conversations).some(({ summary }) => summary.kind !== "nest" && !summary.archived && summary.unreadCount > 0), false);
+}
+
+/**
+ * The "Friends and groups" list for the sidebar and the rail, plus which person or group
+ * the open view belongs to (a friend's row is current on their profile and in their
+ * direct message).
+ */
+export function useFriendsAndGroups(
+  store: ChatStore | null,
+  data: RavenShellData,
+  view: RavenView,
+): FriendsAndGroups & { activePersonId: string; activeConversationId: string } {
+  const state = useChatState(store);
+  const activeConversationId = view.kind === "chat" ? view.id : "";
+  const lists = useMemo(() => {
+    const friends = data.people.filter((person) => person.relationship === "friend");
+    // Empty direct messages are included: a friend's row is there either way.
+    const conversations = state
+      ? Object.values(state.conversations).map(({ summary }) => summary).filter((summary) => summary.kind !== "nest" && !summary.archived)
+      : [];
+    return friendsAndGroups({
+      friends,
+      conversations,
+      personFor: (id, name) => strangerNamed(id, data.getPerson(id)?.name ?? name),
+      activeConversationId,
+      now: Date.now(),
+    });
+  }, [state, data, activeConversationId]);
+  const activePeer = activeConversationId ? state?.conversations[activeConversationId]?.summary.peer?.id : undefined;
+  const activePersonId = view.kind === "user" ? view.id : activePeer ?? "";
+  return { ...lists, activePersonId, activeConversationId };
+}
+
+/**
+ * Opens the conversation with a friend from their row: the direct message if there is one,
+ * otherwise it asks the server for it (which creates it). Without chat, their profile.
+ * `openingId` is the person being opened, so their row can wait instead of asking twice.
+ */
+export function useOpenPerson(store: ChatStore | null, onNavigate: (view: RavenView) => void) {
+  const [openingId, setOpeningId] = useState("");
+  const opening = useRef("");
+  const open = useCallback(
+    (personId: string) => {
+      if (!store) {
+        onNavigate({ kind: "user", id: personId });
+        return;
+      }
+      const known = Object.values(store.getState().conversations).find(({ summary }) => summary.kind === "dm" && summary.peer?.id === personId);
+      if (known) {
+        onNavigate({ kind: "chat", id: known.summary.id });
+        return;
+      }
+      if (opening.current) return;
+      opening.current = personId;
+      setOpeningId(personId);
+      void store
+        .openDM(personId)
+        .then((conversation) => onNavigate({ kind: "chat", id: conversation.id }))
+        .catch((failure) => toast({ title: failureText(failure, "Couldn’t open that conversation."), tone: "error" }))
+        .finally(() => {
+          opening.current = "";
+          setOpeningId("");
+        });
+    },
+    [store, onNavigate],
+  );
+  return { open, openingId };
 }
 
 /**

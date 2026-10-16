@@ -11,7 +11,7 @@ import type { RavenShellData, RavenView } from "../state";
 import { useChatState } from "../useChat";
 import { ViewBody, ViewHeader } from "./shared";
 
-/** Every direct message and group, most recent first, with the archive below. */
+/** All conversations: every direct message and group, most recent first, with the archive below. */
 export function MessagesView({
   chat,
   data,
@@ -43,7 +43,7 @@ export function MessagesView({
   return (
     <>
       <ViewHeader
-        title="Messages"
+        title="All conversations"
         actions={
           <>
             {capabilitiesOf(data.user).createGroups ? (

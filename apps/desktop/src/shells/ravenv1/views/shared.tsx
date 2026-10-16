@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import type { LauncherNest, Nest } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AvatarStack, LiveDot, type StackPerson } from "../atoms";
@@ -11,17 +12,37 @@ export function ViewHeader({
   title,
   subtitle,
   actions,
+  titleLink,
 }: {
   leading?: ReactNode;
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  /** Makes the picture and the title open something, such as the person's profile. */
+  titleLink?: { label: string; onOpen: () => void };
 }) {
   return (
     <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border/70 px-6 py-2.5">
-      {leading}
+      {leading && titleLink ? (
+        // The name below is the keyboard stop; the picture is the same link for the mouse.
+        <button type="button" tabIndex={-1} aria-hidden onClick={titleLink.onOpen} className="shrink-0 rounded-full">
+          {leading}
+        </button>
+      ) : (
+        leading
+      )}
       <div className="min-w-0 flex-1">
-        <h1 className="truncate text-title-sm font-semibold">{title}</h1>
+        {titleLink ? (
+          <h1 className="flex min-w-0 text-title-sm font-semibold">
+            <Tooltip label={titleLink.label} side="bottom" align="start">
+              <button type="button" onClick={titleLink.onOpen} className="min-w-0 truncate rounded-chip text-left underline-offset-4 hover:underline">
+                {title}
+              </button>
+            </Tooltip>
+          </h1>
+        ) : (
+          <h1 className="truncate text-title-sm font-semibold">{title}</h1>
+        )}
         {subtitle ? <p className="truncate text-caption text-muted-foreground">{subtitle}</p> : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
