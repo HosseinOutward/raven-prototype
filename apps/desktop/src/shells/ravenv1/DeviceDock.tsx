@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { horizontalListSortingStrategy, SortableContext, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
@@ -27,7 +31,7 @@ import { buildTraySnapshot, subscribeTrayActions, trayCommands } from "@/lib/tra
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
 import { ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
@@ -40,6 +44,19 @@ import type {
 } from "./networkActivity";
 import { receivedScreenShareQualityNotice, screenShareQualityNotice } from "./networkActivity";
 import { useNetworkActivity } from "./useNetworkActivity";
+import {
+  DEFAULT_DOCK_ORDER,
+  DOCK_ARRANGE_INSTRUCTIONS,
+  DOCK_CONTROL_NAMES,
+  dockAnnouncements,
+  isDefaultDockOrder,
+  reorderDockControls,
+  restrictToRow,
+  useConfirmLeave,
+  useDockOrder,
+  writeDockOrder,
+  type DockControlId,
+} from "./dockLayout";
 import {
   sendQualityDetail,
   sendQualityExplanation,
@@ -83,6 +100,9 @@ export function DeviceDock({
   onToggleMixer: () => void;
 }) {
   const [screenPickerOpen, setScreenPickerOpen] = useState(false);
+  const [arranging, setArranging] = useState(false);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const confirmLeave = useConfirmLeave();
   const mediaRef = useRef(media);
   const hotkeyActionRef = useRef<Set<string>>(new Set());
   const callActionRef = useRef<Set<ThumbnailToolbarAction>>(new Set());
@@ -322,7 +342,8 @@ export function DeviceDock({
   ]);
 
   const micLevel = connected && media.localMicEnabled && data.user ? media.speakingActivity[data.user.id]?.intensity ?? 0 : null;
-  const controls = (
+  const endArranging = useCallback(() => setArranging(false), []);
+  const controls = (placement: "dock" | "fullscreen") => (
     <DockDeviceControls
       data={data}
       media={media}
@@ -331,8 +352,13 @@ export function DeviceDock({
       onScreenPicker={() => setScreenPickerOpen(true)}
       pendingActions={pendingCallActions}
       onCallAction={runCallAction}
+      // Arranging happens in the dock itself; the fullscreen copy only follows the order.
+      arranging={placement === "dock" && arranging}
+      onArrange={placement === "dock" ? () => setArranging(true) : undefined}
+      onArrangeEnd={endArranging}
     />
   );
+  const leaveName = activeNest?.name ?? data.labels.nestSingular.toLowerCase();
 
   return (
     <>
@@ -377,7 +403,7 @@ export function DeviceDock({
           </DropdownMenu>
         </div>
 
-        <div className="flex items-center gap-2 justify-self-center">{controls}</div>
+        <div className="justify-self-center">{controls("dock")}</div>
 
         <div className="flex min-w-0 items-center justify-end gap-2 justify-self-end">
           {media.lastError ? <MediaErrorChip media={media} /> : null}
@@ -406,7 +432,7 @@ export function DeviceDock({
                 size="sm"
                 className="gap-1.5"
                 disabled={media.phase === "leaving" || pendingCallActions.has("leave")}
-                onClick={() => runCallAction("leave")}
+                onClick={() => (confirmLeave ? setLeaveConfirmOpen(true) : runCallAction("leave"))}
               >
                 <PhoneOff className="h-4 w-4" />
                 Leave
@@ -433,10 +459,25 @@ export function DeviceDock({
 
       {fullscreenHost
         ? createPortal(
-            <FullscreenDeviceOverlay networkActivity={networkActivity}>{controls}</FullscreenDeviceOverlay>,
+            <FullscreenDeviceOverlay networkActivity={networkActivity}>{controls("fullscreen")}</FullscreenDeviceOverlay>,
             fullscreenHost,
           )
         : null}
+
+      <ConfirmDialog
+        open={leaveConfirmOpen && media.activeNestId != null}
+        onOpenChange={setLeaveConfirmOpen}
+        title={`Leave ${leaveName}?`}
+        description="People here will stop hearing you, and you them. You can join again at any time."
+        confirmLabel="Leave"
+        cancelLabel="Stay"
+        focusCancel
+        destructive
+        onConfirm={() => {
+          setLeaveConfirmOpen(false);
+          runCallAction("leave");
+        }}
+      />
 
       <ScreenSharePickerDialog
         open={screenPickerOpen}
@@ -512,6 +553,9 @@ function DockDeviceControls({
   onScreenPicker,
   pendingActions,
   onCallAction,
+  arranging,
+  onArrange,
+  onArrangeEnd,
 }: {
   data: RavenShellData;
   media: RavenMediaAdapterState;
@@ -520,7 +564,21 @@ function DockDeviceControls({
   onScreenPicker: () => void;
   pendingActions: ReadonlySet<ThumbnailToolbarAction>;
   onCallAction: (action: ThumbnailToolbarAction) => void;
+  arranging: boolean;
+  /** Offered from the group's context menu and from each device menu. */
+  onArrange?: () => void;
+  onArrangeEnd: () => void;
 }) {
+  const order = useDockOrder();
+  const groupRef = useRef<HTMLDivElement>(null);
+  const wasArrangingRef = useRef(arranging);
+  useEffect(() => {
+    // Leaving arrange mode removes the focused control; keep keyboard users in the dock.
+    if (wasArrangingRef.current && !arranging && (!document.activeElement || document.activeElement === document.body)) {
+      groupRef.current?.querySelector<HTMLElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    }
+    wasArrangingRef.current = arranging;
+  }, [arranging]);
   const inCall = media.phase === "connected" && media.activeNestId != null;
   const nest = data.labels.nestSingular.toLowerCase();
   const talkingWhileMuted = useTalkingWhileMuted(
@@ -529,10 +587,10 @@ function DockDeviceControls({
   );
   const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const micShortcut = hotkeyLabel(hotkeys?.mic);
-  return (
-    <>
+  const controls: Record<DockControlId, ReactNode> = {
+    mic: (
       <DockControl
-        callout={mutedHint ? (
+        callout={mutedHint && !arranging ? (
           <div className="flex items-center gap-3">
             <MicOff className="h-4 w-4 shrink-0 text-destructive" aria-hidden />
             <div className="min-w-0">
@@ -570,10 +628,13 @@ function DockDeviceControls({
         onClick={() => onCallAction("mic")}
         menuLabel="Microphone settings"
         menu={<MicMenu media={media} />}
+        onArrange={onArrange}
       >
         {media.localMicEnabled ? <Mic /> : <MicOff />}
         {micLevel !== null ? <LevelBars level={micLevel} /> : null}
       </DockControl>
+    ),
+    camera: (
       <DockControl
         label={!media.cameraSupported ? "No camera available" : media.localCameraEnabled ? "Turn camera off" : "Turn camera on"}
         description={videoDescription(media.cameraStatus, inCall, {
@@ -589,10 +650,13 @@ function DockDeviceControls({
         onClick={() => void media.toggleCamera().catch(() => undefined)}
         menuLabel="Camera settings"
         menu={<CameraMenu media={media} />}
+        onArrange={onArrange}
       >
         {media.localCameraEnabled ? <Video /> : <VideoOff />}
         {inCall && media.localCameraEnabled && media.cameraStatus !== "live" ? <Loader2 className="animate-spin" /> : null}
       </DockControl>
+    ),
+    screen: (
       <DockControl
         label={!media.screenShareSupported ? "Screen sharing is not available" : media.screenSharing ? "Stop sharing" : "Share your screen"}
         description={videoDescription(media.screenShareStatus, inCall, {
@@ -610,6 +674,8 @@ function DockDeviceControls({
         <MonitorUp />
         {inCall && media.screenSharing && media.screenShareStatus !== "live" ? <Loader2 className="animate-spin" /> : null}
       </DockControl>
+    ),
+    hear: (
       <DockControl
         label={media.localDeafened ? "Hear people again" : "Stop hearing people"}
         description={media.localDeafened ? "Incoming sound is off. You cannot hear anyone." : undefined}
@@ -620,10 +686,142 @@ function DockDeviceControls({
         onClick={() => onCallAction("deafen")}
         menuLabel="Speaker settings"
         menu={<OutputMenu media={media} />}
+        onArrange={onArrange}
       >
         {media.localDeafened ? <HeadphoneOff /> : <Headphones />}
       </DockControl>
-    </>
+    ),
+  };
+
+  if (arranging) return <DockArrangeGroup initial={order} controls={controls} onEnd={onArrangeEnd} />;
+  return (
+    <div
+      ref={groupRef}
+      className="flex items-center gap-2"
+      onContextMenu={onArrange ? (event) => {
+        event.preventDefault();
+        onArrange();
+      } : undefined}
+    >
+      {order.map((id) => <Fragment key={id}>{controls[id]}</Fragment>)}
+    </div>
+  );
+}
+
+/**
+ * The device controls while they are being rearranged. They are inert, so a click can
+ * never mute or start a share; the global hotkeys still work. Done, Enter or a click
+ * elsewhere saves the new order; Escape leaves it as it was.
+ */
+function DockArrangeGroup({
+  initial,
+  controls,
+  onEnd,
+}: {
+  initial: DockControlId[];
+  controls: Record<DockControlId, ReactNode>;
+  onEnd: () => void;
+}) {
+  const [order, setOrder] = useState(initial);
+  const groupRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  const onEndRef = useRef(onEnd);
+  onEndRef.current = onEnd;
+  const sensors = useSensors(
+    // A few pixels of movement before a drag starts, as when arranging nests.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const commit = useCallback(() => {
+    writeDockOrder(orderRef.current);
+    onEndRef.current();
+  }, []);
+
+  useEffect(() => {
+    // After a menu that opened this has handed focus back.
+    const focusTimer = window.setTimeout(() => {
+      groupRef.current?.querySelector<HTMLElement>("[data-dock-item]")?.focus({ preventScroll: true });
+    }, 0);
+    // Capture, so this runs before dnd-kit: while a button is picked up, its keys are dnd-kit's.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (draggingRef.current) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onEndRef.current();
+      } else if (event.key === "Enter") {
+        // On a dock button Enter picks it up; on Reset or Done it presses them.
+        if ((event.target as HTMLElement | null)?.closest("[data-dock-item], button, input, textarea, select")) return;
+        event.preventDefault();
+        commit();
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!groupRef.current?.contains(event.target as Node)) commit();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [commit]);
+
+  return (
+    <div ref={groupRef} role="group" aria-label="Arrange the device buttons" className="relative flex items-center gap-2">
+      <div className="absolute bottom-full left-1/2 z-20 mb-2.5 flex -translate-x-1/2 animate-fade-in items-center gap-1 whitespace-nowrap rounded-full bg-popover py-1 pl-3.5 pr-1 shadow-raised">
+        <span className="pr-1.5 text-caption text-muted-foreground">Drag to reorder</span>
+        <Button size="xs" variant="ghost" className="rounded-full" disabled={isDefaultDockOrder(order)} onClick={() => setOrder([...DEFAULT_DOCK_ORDER])}>
+          Reset
+        </Button>
+        <Button size="xs" className="rounded-full" onClick={commit}>Done</Button>
+      </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictToRow]}
+        accessibility={{ announcements: dockAnnouncements(order), screenReaderInstructions: { draggable: DOCK_ARRANGE_INSTRUCTIONS } }}
+        onDragStart={() => { draggingRef.current = true; }}
+        onDragCancel={() => { draggingRef.current = false; }}
+        onDragEnd={({ active, over }) => {
+          draggingRef.current = false;
+          if (!over || active.id === over.id) return;
+          setOrder((current) => reorderDockControls(current, active.id as DockControlId, over.id as DockControlId));
+        }}
+      >
+        <SortableContext items={order} strategy={horizontalListSortingStrategy}>
+          {order.map((id, index) => (
+            <SortableDockItem key={id} id={id} label={`${DOCK_CONTROL_NAMES[id]}, ${index + 1} of ${order.length}`}>
+              {controls[id]}
+            </SortableDockItem>
+          ))}
+        </SortableContext>
+      </DndContext>
+    </div>
+  );
+}
+
+function SortableDockItem({ id, label, children }: { id: DockControlId; label: string; children: ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      data-dock-item
+      aria-label={label}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={cn(
+        "relative cursor-grab touch-none rounded-card ring-1 ring-subtle ring-offset-2 ring-offset-background",
+        isDragging && "z-10 cursor-grabbing shadow-raised",
+      )}
+    >
+      <div inert className="pointer-events-none">{children}</div>
+    </div>
   );
 }
 
@@ -658,6 +856,7 @@ function DockControl({
   menuLabel,
   callout,
   onCalloutDismiss,
+  onArrange,
 }: {
   children: ReactNode;
   label: string;
@@ -672,7 +871,10 @@ function DockControl({
   /** A short notice above the control that does not take focus, e.g. "You're muted". */
   callout?: ReactNode;
   onCalloutDismiss?: () => void;
+  /** Adds "Arrange buttons…" at the bottom of the menu. */
+  onArrange?: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
     <Popover open={callout != null} onOpenChange={(open) => { if (!open) onCalloutDismiss?.(); }}>
       <PopoverAnchor asChild>
@@ -701,7 +903,7 @@ function DockControl({
             </button>
           </Tooltip>
           {menu ? (
-            <Popover>
+            <Popover open={menuOpen} onOpenChange={setMenuOpen}>
               <Tooltip label={menuLabel ?? "Settings"}>
                 <PopoverTrigger asChild>
                   <button
@@ -715,6 +917,22 @@ function DockControl({
               </Tooltip>
               <PopoverContent side="top" align="center" className="w-[360px] p-2">
                 {menu}
+                {onArrange ? (
+                  <>
+                    <div className="mx-2 my-1.5 h-px bg-border" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onArrange();
+                      }}
+                      className="flex min-h-8 w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-small transition-colors hover:bg-accent"
+                    >
+                      <ArrowLeftRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      Arrange buttons…
+                    </button>
+                  </>
+                ) : null}
               </PopoverContent>
             </Popover>
           ) : null}

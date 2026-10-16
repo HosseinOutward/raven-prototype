@@ -32,11 +32,12 @@ export function Dialog({
           <DialogPrimitive.Content
             {...(description ? {} : { "aria-describedby": undefined })}
             onOpenAutoFocus={(event) => {
-              // Start in the first thing to fill in, when there is one, rather than on
+              // Start on a control marked data-autofocus, or else in the first thing to
+              // fill in, when there is one, rather than on
               // the close button. A dialog opened from a menu loses React's autoFocus,
               // because the menu still holds focus while the dialog mounts.
               const field = (event.currentTarget as HTMLElement | null)?.querySelector<HTMLElement>(
-                "input:not([type=hidden]):not(:disabled), textarea:not(:disabled)",
+                "[data-autofocus], input:not([type=hidden]):not(:disabled), textarea:not(:disabled)",
               );
               if (!field) return;
               event.preventDefault();
@@ -78,6 +79,8 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
+  cancelLabel = "Cancel",
+  focusCancel = false,
   destructive = false,
   busy = false,
   onConfirm,
@@ -87,6 +90,9 @@ export function ConfirmDialog({
   title: string;
   description: string;
   confirmLabel: string;
+  cancelLabel?: string;
+  /** Start on the way out, so a stray Enter does not confirm. */
+  focusCancel?: boolean;
   destructive?: boolean;
   busy?: boolean;
   onConfirm: () => void | Promise<void>;
@@ -97,9 +103,10 @@ export function ConfirmDialog({
         <button
           type="button"
           className="h-9 rounded-control px-3.5 text-body font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          data-autofocus={focusCancel || undefined}
           onClick={() => onOpenChange(false)}
         >
-          Cancel
+          {cancelLabel}
         </button>
         <button
           type="button"

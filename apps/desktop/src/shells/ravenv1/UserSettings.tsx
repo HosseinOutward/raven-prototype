@@ -28,6 +28,7 @@ import {
   type SettingsCategoryGroup,
 } from "./SettingsScaffold";
 import { InfoTooltip } from "./atoms";
+import { DockSettingsSection } from "./DockSettings";
 import type { RavenShellData } from "./state";
 import type {
   NetworkActivityCategory,
@@ -294,6 +295,8 @@ function AudioVideoSettings({ data, media }: { data: RavenShellData; media: Rave
           <SettingsToggleRow label="Never join already sharing" description="A screen share you started earlier does not carry into the next call." checked={joinNoShare} onChange={setJoinNoShare} />
         </SettingsRows>
       </SettingsSection>
+
+      <DockSettingsSection />
 
       <SettingsSection title="Seeing yourself" description="How Raven shows your own camera or screen back to you. Other people are not affected.">
         <SettingsRows>
