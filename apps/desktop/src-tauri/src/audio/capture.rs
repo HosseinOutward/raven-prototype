@@ -2322,6 +2322,17 @@ pub mod platform {
             Ok(sources)
         }
 
+        /// The app behind one process (name, executable, icon), without enumerating
+        /// every audio session.
+        pub fn app_audio_source_for_process(process_id: u32) -> Option<AppAudioSource> {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                let source = build_app_source_from_process(process_id, false);
+                CoUninitialize();
+                source
+            }
+        }
+
         pub fn list_output_devices() -> Result<Vec<AudioOutputDevice>, CaptureError> {
             let mut devices = Vec::new();
             unsafe {

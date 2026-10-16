@@ -284,6 +284,8 @@ export interface AudioSourceState {
   sourceType: AudioSourceType;
   displayName: string;
   captureDeviceId: string | null;
+  appExeName: string | null;
+  appIconDataUrl: string | null;
   enabled: boolean;
   publishing: boolean;
   runtime: AudioSourceRuntimeState;

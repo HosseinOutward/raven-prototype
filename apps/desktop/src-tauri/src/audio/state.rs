@@ -16,7 +16,7 @@ use crate::audio::capture::{
 };
 use crate::audio::domain::RemoteChannelStripState;
 use crate::audio::domain::{
-    AudioConnectionStatus, AudioInputDevice, AudioMixerState, AudioOutputDevice,
+    AppAudioSource, AudioConnectionStatus, AudioInputDevice, AudioMixerState, AudioOutputDevice,
     AudioPlaybackStatus, AudioPreset, AudioPresetDefinition, AudioPresetTarget, AudioProcessorId,
     AudioProcessorKind, AudioProcessorParameters, AudioProcessorState, AudioSessionHealth,
     AudioSourceId, AudioSourceRuntimeStatus, AudioSourceState, AudioSourceType,
@@ -494,6 +494,25 @@ impl AudioEngineState {
         Ok(source.clone())
     }
 
+    /// Records which app an app-audio source captures, so peers can show its icon and
+    /// executable. `None` clears it; other source types ignore it.
+    pub fn set_local_source_app_identity(
+        &mut self,
+        source_id: AudioSourceId,
+        app: Option<&AppAudioSource>,
+    ) -> Result<AudioSourceState, AudioStateError> {
+        let source = self.local_source_mut(source_id)?;
+        if source.source_type == AudioSourceType::AppAudio {
+            source.app_exe_name = app.map(|app| app.exe_name.clone());
+            source.app_icon_data_url = app.and_then(|app| app.icon_data_url.clone());
+            if let Some(track) = &mut source.published_track {
+                track.app_exe_name = source.app_exe_name.clone();
+                track.app_icon_data_url = source.app_icon_data_url.clone();
+            }
+        }
+        Ok(source.clone())
+    }
+
     pub fn set_local_channel_gain(
         &mut self,
         source_id: AudioSourceId,
@@ -617,6 +636,8 @@ impl AudioEngineState {
         track.device_name = source_snapshot.runtime.device_name.clone();
         track.app_name = (source_snapshot.source_type == AudioSourceType::AppAudio)
             .then(|| source_snapshot.display_name.clone());
+        track.app_exe_name = source_snapshot.app_exe_name.clone();
+        track.app_icon_data_url = source_snapshot.app_icon_data_url.clone();
         track.default_gain_db = source_snapshot.channel_strip.gain_db;
         track.muted = source_snapshot.channel_strip.mute.muted;
         track.webrtc_track_id = Some(publication.webrtc_track_id.clone());
@@ -1724,6 +1745,50 @@ pub async fn audio_set_remote_audio_receiving(
     Ok(snapshot)
 }
 
+/// Looks up the app that owns a process (its name, executable and icon). Runs the shell
+/// and COM calls on a blocking thread, outside every lock.
+pub async fn resolve_app_identity(process_id: u32) -> Option<AppAudioSource> {
+    if process_id == 0 {
+        return None;
+    }
+    tauri::async_runtime::spawn_blocking(move || lookup_app_identity(process_id))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn lookup_app_identity(process_id: u32) -> Option<AppAudioSource> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::audio::capture::platform::windows::app_audio_source_for_process(process_id)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::audio::capture::platform::macos::list_app_audio_sources()
+            .ok()?
+            .into_iter()
+            .find(|app| app.process_id == process_id)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// The process id an app-audio source captures, which is what its capture device id holds.
+fn app_process_id(capture_device_id: Option<&str>) -> Option<u32> {
+    capture_device_id?.trim().parse().ok()
+}
+
+/// Name for the app audio that comes with a window share. It is named after the app,
+/// never the window: a window title can reveal what the person is looking at.
+pub fn linked_app_audio_name(app: Option<&AppAudioSource>) -> String {
+    app.map(|app| app.display_name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "App audio".to_string())
+}
+
 #[tauri::command]
 pub fn audio_list_app_audio_sources() -> Result<Vec<crate::audio::domain::AppAudioSource>, String> {
     #[cfg(target_os = "windows")]
@@ -1998,9 +2063,18 @@ pub async fn audio_add_local_source(
 ) -> Result<AudioMixerState, AudioStateError> {
     // The device (or, for app audio, the process id) goes in with the source, so the first
     // reconcile starts it correctly instead of failing on a half-configured source.
+    let identity = if source_type == AudioSourceType::AppAudio {
+        match app_process_id(capture_device_id.as_deref()) {
+            Some(process_id) => resolve_app_identity(process_id).await,
+            None => None,
+        }
+    } else {
+        None
+    };
     mutate_audio_state(&app, &state, |engine| {
         let source = engine.add_local_source(source_type, display_name);
         engine.set_local_source_capture_device(source.id, capture_device_id)?;
+        engine.set_local_source_app_identity(source.id, identity.as_ref())?;
         Ok(())
     })
     .await
@@ -2054,8 +2128,14 @@ pub async fn audio_set_local_source_capture_device(
     source_id: AudioSourceId,
     capture_device_id: Option<String>,
 ) -> Result<AudioMixerState, AudioStateError> {
+    // Only app-audio ids parse as a process id; the identity is ignored for other types.
+    let identity = match app_process_id(capture_device_id.as_deref()) {
+        Some(process_id) => resolve_app_identity(process_id).await,
+        None => None,
+    };
     mutate_audio_state(&app, &state, |engine| {
         engine.set_local_source_capture_device(source_id, capture_device_id)?;
+        engine.set_local_source_app_identity(source_id, identity.as_ref())?;
         Ok(())
     })
     .await
@@ -2689,6 +2769,7 @@ pub async fn add_and_publish_shared_audio_source(
     source_type: AudioSourceType,
     display_name: String,
     capture_device_id: Option<String>,
+    app_identity: Option<AppAudioSource>,
 ) -> Result<AudioSourceId, AudioStateError> {
     let runtime = audio_runtime(state)?;
     let mut ops = runtime.ops.lock().await;
@@ -2718,6 +2799,7 @@ pub async fn add_and_publish_shared_audio_source(
         if capture_device_id.is_some() {
             guard.set_local_source_capture_device(new_id, capture_device_id)?;
         }
+        guard.set_local_source_app_identity(new_id, app_identity.as_ref())?;
         let instruction = guard.publish_audio_source(new_id)?.instruction;
         (new_id, instruction)
     };
@@ -3313,8 +3395,8 @@ fn audio_track_source_from_source(source: &AudioSourceState) -> AudioTrackSource
         device_name: source.runtime.device_name.clone(),
         app_name: (source.source_type == AudioSourceType::AppAudio)
             .then(|| source.display_name.clone()),
-        app_exe_name: None,
-        app_icon_data_url: None,
+        app_exe_name: source.app_exe_name.clone(),
+        app_icon_data_url: source.app_icon_data_url.clone(),
         default_gain_db: source.channel_strip.gain_db,
         muted: source.channel_strip.mute.muted,
         webrtc_processing: source.channel_strip.webrtc_processing.clone(),
@@ -3626,6 +3708,73 @@ mod tests {
                 panic!("expected publish instruction")
             }
         }
+    }
+
+    fn excel() -> AppAudioSource {
+        AppAudioSource {
+            process_id: 4242,
+            exe_name: "EXCEL".to_string(),
+            display_name: "EXCEL".to_string(),
+            icon_data_url: Some("data:image/png;base64,AAAA".to_string()),
+            has_audio_session: true,
+        }
+    }
+
+    #[test]
+    fn window_share_audio_is_named_after_the_app_not_the_window() {
+        assert_eq!(linked_app_audio_name(Some(&excel())), "EXCEL");
+        let unnamed = AppAudioSource {
+            display_name: "  ".to_string(),
+            ..excel()
+        };
+        assert_eq!(linked_app_audio_name(Some(&unnamed)), "App audio");
+        assert_eq!(linked_app_audio_name(None), "App audio");
+    }
+
+    #[test]
+    fn app_process_id_reads_only_process_ids() {
+        assert_eq!(app_process_id(Some("4242")), Some(4242));
+        assert_eq!(app_process_id(Some(" 17 ")), Some(17));
+        assert_eq!(app_process_id(Some("{0.0.1.00000000}.{abc}")), None);
+        assert_eq!(app_process_id(None), None);
+    }
+
+    #[test]
+    fn app_identity_reaches_the_published_track() {
+        let mut engine = AudioEngineState::default();
+        let source = engine.add_local_source(AudioSourceType::AppAudio, "EXCEL");
+        engine
+            .set_local_source_app_identity(source.id, Some(&excel()))
+            .expect("set identity");
+        let published = engine
+            .publish_local_source_metadata(source.id)
+            .expect("publish source metadata");
+        let track = published.published_track.expect("published track");
+        assert_eq!(track.app_name.as_deref(), Some("EXCEL"));
+        assert_eq!(track.app_exe_name.as_deref(), Some("EXCEL"));
+        assert_eq!(
+            track.app_icon_data_url.as_deref(),
+            Some("data:image/png;base64,AAAA")
+        );
+
+        // A later lookup (the process changed) updates the live track too.
+        let updated = engine
+            .set_local_source_app_identity(source.id, None)
+            .expect("clear identity");
+        let track = updated.published_track.expect("published track");
+        assert_eq!(track.app_exe_name, None);
+        assert_eq!(track.app_icon_data_url, None);
+    }
+
+    #[test]
+    fn app_identity_is_ignored_for_other_source_types() {
+        let mut engine = AudioEngineState::default();
+        let mic = engine.add_local_source(AudioSourceType::Microphone, "Mic");
+        let updated = engine
+            .set_local_source_app_identity(mic.id, Some(&excel()))
+            .expect("set identity");
+        assert_eq!(updated.app_exe_name, None);
+        assert_eq!(updated.app_icon_data_url, None);
     }
 
     #[test]

@@ -26,8 +26,8 @@ use thiserror::Error;
 use crate::audio::capture::system_audio_runtime_readiness;
 use crate::audio::domain::{AudioSourceId, AudioSourceType};
 use crate::audio::state::{
-    add_and_publish_shared_audio_source, remove_shared_audio_source, AudioStateError,
-    SharedAudioEngineState,
+    add_and_publish_shared_audio_source, linked_app_audio_name, remove_shared_audio_source,
+    resolve_app_identity, AudioStateError, SharedAudioEngineState,
 };
 use crate::video::capture::{
     list_cameras, list_displays, list_windows, screen_capture_runtime_readiness, VideoCaptureError,
@@ -526,6 +526,7 @@ pub async fn video_start_display_share(
                 AudioSourceType::SystemAudio,
                 format!("{display_name} audio"),
                 None,
+                None,
             )
             .await?,
         )
@@ -567,15 +568,18 @@ pub async fn video_start_window_share(
     source_height: u32,
 ) -> Result<VideoMixerState, VideoStateError> {
     // Create the linked per-app audio source first (outside the video lock), capturing the
-    // window's owning process via the platform app-audio backend.
+    // window's owning process via the platform app-audio backend. It is named after the
+    // app, not the window: peers see this name, and a window title is private.
     let linked_audio = if with_app_audio {
+        let identity = resolve_app_identity(process_id).await;
         Some(
             add_and_publish_shared_audio_source(
                 &app,
                 audio_state.inner(),
                 AudioSourceType::AppAudio,
-                format!("{display_name} audio"),
+                linked_app_audio_name(identity.as_ref()),
                 Some(process_id.to_string()),
+                identity,
             )
             .await?,
         )

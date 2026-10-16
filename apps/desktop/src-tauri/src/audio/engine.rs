@@ -75,6 +75,52 @@ struct SharedTrackMeta {
     app_icon_data_url: Option<String>,
 }
 
+/// Largest app icon (as a data URL) shared with peers. Raven's icons are 32 px PNGs of a
+/// few KB; anything bigger is not one of them and is left out.
+const MAX_SHARED_ICON_BYTES: usize = 16 * 1024;
+/// Ceiling for the whole metadata JSON. LiveKit v1.13 accepts up to 512 KiB, but every
+/// change is broadcast to each peer, so icons are dropped before it gets near that.
+const MAX_SHARED_META_BYTES: usize = 64 * 1024;
+
+/// What we tell peers about each published track, keyed by track id.
+fn shared_track_meta(sources: &[AudioSourceState]) -> HashMap<String, SharedTrackMeta> {
+    sources
+        .iter()
+        .filter(|source| source.publishing)
+        .filter_map(|source| {
+            let track = source.published_track.as_ref()?;
+            let is_app = source.source_type == AudioSourceType::AppAudio;
+            Some((
+                track.track_id.to_string(),
+                SharedTrackMeta {
+                    source_type: source.source_type.clone(),
+                    display_name: source.display_name.clone(),
+                    device_name: source.runtime.device_name.clone(),
+                    app_name: is_app.then(|| source.display_name.clone()),
+                    app_exe_name: source.app_exe_name.clone().filter(|_| is_app),
+                    app_icon_data_url: source
+                        .app_icon_data_url
+                        .clone()
+                        .filter(|icon| is_app && icon.len() <= MAX_SHARED_ICON_BYTES),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Serialises the shared metadata, leaving the icons out if they would push it over
+/// [`MAX_SHARED_META_BYTES`]. Names always go; icons are a nicety.
+fn encode_shared_meta(mut meta: HashMap<String, SharedTrackMeta>) -> Option<String> {
+    let json = serde_json::to_string(&meta).ok()?;
+    if json.len() <= MAX_SHARED_META_BYTES {
+        return Some(json);
+    }
+    for entry in meta.values_mut() {
+        entry.app_icon_data_url = None;
+    }
+    serde_json::to_string(&meta).ok()
+}
+
 fn parse_shared_meta(metadata: &str) -> HashMap<String, SharedTrackMeta> {
     if metadata.is_empty() {
         return HashMap::new();
@@ -803,27 +849,7 @@ impl AudioEngine {
         // Share each published track's source type + human name with peers via participant
         // metadata, so their Incoming Tracks show what we're actually sending. Only re-send
         // when it changes (this runs on every mixer mutation, incl. fader ticks).
-        let meta: HashMap<String, SharedTrackMeta> = sources
-            .iter()
-            .filter(|source| source.publishing)
-            .filter_map(|source| {
-                source.published_track.as_ref().map(|track| {
-                    (
-                        track.track_id.to_string(),
-                        SharedTrackMeta {
-                            source_type: source.source_type.clone(),
-                            display_name: source.display_name.clone(),
-                            device_name: source.runtime.device_name.clone(),
-                            app_name: (source.source_type == AudioSourceType::AppAudio)
-                                .then(|| source.display_name.clone()),
-                            app_exe_name: None,
-                            app_icon_data_url: None,
-                        },
-                    )
-                })
-            })
-            .collect();
-        if let Ok(json) = serde_json::to_string(&meta) {
+        if let Some(json) = encode_shared_meta(shared_track_meta(sources)) {
             if json != self.published_meta {
                 let metadata_room = Arc::clone(&room);
                 let metadata = json.clone();
@@ -2034,4 +2060,94 @@ fn update_remote_track_mute_state(
         guard.snapshot()
     };
     let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
+}
+
+#[cfg(test)]
+mod shared_meta_tests {
+    use super::*;
+    use crate::audio::domain::PublishedTrackMetadata;
+
+    fn published(
+        source_type: AudioSourceType,
+        name: &str,
+        icon: Option<String>,
+    ) -> AudioSourceState {
+        let mut source = AudioSourceState::new(ParticipantId::new(), source_type.clone(), name);
+        source.publishing = true;
+        source.app_exe_name = Some("EXCEL".to_string());
+        source.app_icon_data_url = icon;
+        source.published_track = Some(PublishedTrackMetadata::new(
+            source.id,
+            source.owner_id,
+            source_type,
+            name,
+        ));
+        source
+    }
+
+    fn icon(len: usize) -> String {
+        let prefix = "data:image/png;base64,";
+        format!("{prefix}{}", "A".repeat(len - prefix.len()))
+    }
+
+    #[test]
+    fn app_tracks_share_name_exe_and_icon() {
+        let source = published(AudioSourceType::AppAudio, "EXCEL", Some(icon(4_000)));
+        let meta = shared_track_meta(std::slice::from_ref(&source));
+        let json = encode_shared_meta(meta).expect("encode");
+        let parsed = parse_shared_meta(&json);
+        let entry = parsed.values().next().expect("one track");
+        assert_eq!(entry.app_name.as_deref(), Some("EXCEL"));
+        assert_eq!(entry.app_exe_name.as_deref(), Some("EXCEL"));
+        assert_eq!(
+            entry.app_icon_data_url.as_ref().map(String::len),
+            Some(4_000)
+        );
+        // The wire keys stay camelCase.
+        assert!(json.contains("\"appExeName\"") && json.contains("\"appIconDataUrl\""));
+    }
+
+    #[test]
+    fn other_tracks_share_no_app_identity() {
+        let source = published(AudioSourceType::Microphone, "Mic", Some(icon(100)));
+        let meta = shared_track_meta(std::slice::from_ref(&source));
+        let entry = meta.values().next().expect("one track");
+        assert_eq!(entry.app_name, None);
+        assert_eq!(entry.app_exe_name, None);
+        assert_eq!(entry.app_icon_data_url, None);
+    }
+
+    #[test]
+    fn oversized_icon_is_left_out() {
+        let source = published(
+            AudioSourceType::AppAudio,
+            "EXCEL",
+            Some(icon(MAX_SHARED_ICON_BYTES + 1)),
+        );
+        let meta = shared_track_meta(std::slice::from_ref(&source));
+        let entry = meta.values().next().expect("one track");
+        assert_eq!(entry.app_icon_data_url, None);
+        assert_eq!(entry.app_exe_name.as_deref(), Some("EXCEL"));
+    }
+
+    #[test]
+    fn icons_are_dropped_when_the_whole_metadata_is_too_big() {
+        let sources: Vec<_> = (0..6)
+            .map(|_| {
+                published(
+                    AudioSourceType::AppAudio,
+                    "EXCEL",
+                    Some(icon(MAX_SHARED_ICON_BYTES)),
+                )
+            })
+            .collect();
+        let json = encode_shared_meta(shared_track_meta(&sources)).expect("encode");
+        assert!(json.len() <= MAX_SHARED_META_BYTES);
+        let parsed = parse_shared_meta(&json);
+        assert_eq!(parsed.len(), 6);
+        assert!(parsed
+            .values()
+            .all(|entry| entry.app_icon_data_url.is_none()
+                && entry.app_name.as_deref() == Some("EXCEL")));
+    }
 }

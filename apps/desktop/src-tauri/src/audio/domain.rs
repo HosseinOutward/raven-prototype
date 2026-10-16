@@ -832,6 +832,10 @@ pub struct AudioSourceState {
     pub source_type: AudioSourceType,
     pub display_name: String,
     pub capture_device_id: Option<String>,
+    /// For app audio: the captured process's executable and icon, resolved when the
+    /// process is chosen. Shared with peers so they can show which app it is.
+    pub app_exe_name: Option<String>,
+    pub app_icon_data_url: Option<String>,
     pub enabled: bool,
     pub publishing: bool,
     pub runtime: AudioSourceRuntimeState,
@@ -851,6 +855,8 @@ impl AudioSourceState {
             source_type,
             display_name: display_name.into(),
             capture_device_id: None,
+            app_exe_name: None,
+            app_icon_data_url: None,
             enabled: true,
             publishing: false,
             runtime: AudioSourceRuntimeState::default(),
