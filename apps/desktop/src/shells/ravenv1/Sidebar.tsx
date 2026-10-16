@@ -129,6 +129,9 @@ export function Sidebar({
   if (collapsed) {
     return (
       <nav aria-label="Raven" className="flex min-h-0 flex-col items-center gap-1 pb-2 pt-1">
+        <RailButton label="Expand sidebar" onClick={onToggle}>
+          <PanelLeftOpen className="h-4 w-4" />
+        </RailButton>
         <RailButton label="Home" active={view.kind === "home"} onClick={() => onNavigate({ kind: "home" })}>
           <Avatar name={serverName} src={serverAvatar} className="h-7 w-7 rounded-control bg-foreground text-background" />
         </RailButton>
@@ -172,9 +175,6 @@ export function Sidebar({
             </RailButton>
           ))}
         </div>
-        <RailButton label="Expand sidebar" onClick={onToggle}>
-          <PanelLeftOpen className="h-4 w-4" />
-        </RailButton>
       </nav>
     );
   }

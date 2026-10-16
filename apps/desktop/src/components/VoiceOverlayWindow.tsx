@@ -275,16 +275,7 @@ function ParticipantAvatar({ participant }: { participant: VoiceOverlayParticipa
       )}
       style={speakingGlowStyle(participant.speakingLevel / 100, "avatar")}
     >
-      {participant.avatarUrl ? (
-        <img
-          src={participant.avatarUrl}
-          alt=""
-          className="h-8 w-8 rounded-full object-cover"
-          draggable={false}
-        />
-      ) : (
-        <Avatar name={participant.displayName} className="h-8 w-8 text-[10px]" />
-      )}
+      <Avatar name={participant.displayName} src={participant.avatarUrl ?? undefined} className="h-8 w-8 text-[10px]" />
     </div>
   );
 }

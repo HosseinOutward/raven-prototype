@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AlertTriangle, Hand, Loader2, LogOut, Settings, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Island } from "./ravenv1/atoms";
 import { DeviceDock } from "./ravenv1/DeviceDock";
 import { PasswordChangeForm } from "./ravenv1/PasswordChangeForm";
 import { Sidebar } from "./ravenv1/Sidebar";
+import { SidebarResizeHandle } from "./ravenv1/SidebarResizeHandle";
+import { readSidebarWidth, SIDEBAR_RAIL_WIDTH, useSidebarMaxWidth, writeSidebarWidth } from "./ravenv1/sidebarWidth";
 import { BareTopBar, TopBar } from "./ravenv1/TopBar";
 import { MainView } from "./ravenv1/views";
 import { resolveTreeSettingsSection, TreeSettingsNav } from "./ravenv1/views/TreeSettingsView";
@@ -25,13 +27,15 @@ import type { RavenUpdater } from "@/lib/updater";
 import type { RavenShellData } from "./ravenv1/state";
 import type { RavenMediaAdapterState } from "./ravenv1/useRavenMediaAdapter";
 import { resolveUserSettingsSection, UserSettingsNav, UserSettingsView, type UserSettingsSection } from "./ravenv1/UserSettings";
-import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 
 export function RavenShellV1() {
   const [history, setHistory] = useState<{ entries: RavenView[]; index: number }>({ entries: [{ kind: "home" }], index: 0 });
   const [recoverySettings, setRecoverySettings] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("raven.sidebarCollapsed") === "true");
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
+  const sidebarMaxWidth = useSidebarMaxWidth();
+  const shellGridRef = useRef<HTMLDivElement>(null);
   const wasUpdateRequired = useRef(false);
   const updater = useRavenUpdater();
   const data = useRavenShellData();
@@ -101,6 +105,21 @@ export function RavenShellV1() {
       return next;
     });
   }, []);
+
+  const setSidebarRail = useCallback((collapsed: boolean) => {
+    setSidebarCollapsed(collapsed);
+    localStorage.setItem("raven.sidebarCollapsed", String(collapsed));
+  }, []);
+
+  const commitSidebarSize = useCallback(
+    ({ width, collapsed }: { width: number; collapsed: boolean }) => {
+      setSidebarRail(collapsed);
+      if (collapsed) return;
+      setSidebarWidth(width);
+      writeSidebarWidth(width);
+    },
+    [setSidebarRail],
+  );
 
   useEffect(() => {
     if (updater.loading) return;
@@ -258,6 +277,7 @@ export function RavenShellV1() {
   const treeSettingsDetails = view.kind === "tree-settings" ? data.getTreeDetails(view.id) : undefined;
   const inSettings = view.kind === "settings" || Boolean(treeSettingsDetails);
   const railCollapsed = sidebarCollapsed && !inSettings;
+  const effectiveSidebarWidth = Math.min(sidebarWidth, sidebarMaxWidth);
 
   return (
     <div className="ravenv1-scope flex h-screen flex-col overflow-hidden bg-background text-foreground">
@@ -271,7 +291,11 @@ export function RavenShellV1() {
         update={updater.state}
       />
 
-      <div className={cn("grid min-h-0 flex-1 pr-2", railCollapsed ? "grid-cols-[60px_minmax(0,1fr)]" : "grid-cols-[256px_minmax(0,1fr)]")}>
+      <div
+        ref={shellGridRef}
+        className="relative grid min-h-0 flex-1 grid-cols-[var(--sidebar-w)_minmax(0,1fr)] pr-2"
+        style={{ "--sidebar-w": `${railCollapsed ? SIDEBAR_RAIL_WIDTH : effectiveSidebarWidth}px` } as CSSProperties}
+      >
         {view.kind === "settings" ? (
           <UserSettingsNav
             section={resolveUserSettingsSection(view.section)}
@@ -310,6 +334,15 @@ export function RavenShellV1() {
             onBack={navigation.leaveView}
           />
         </Island>
+        <SidebarResizeHandle
+          target={shellGridRef}
+          width={effectiveSidebarWidth}
+          maxWidth={sidebarMaxWidth}
+          collapsed={railCollapsed}
+          canCollapse={!inSettings}
+          onCollapsedChange={setSidebarRail}
+          onCommit={commitSidebarSize}
+        />
       </div>
 
       {activeEntryNotices.length > 0 ? (
@@ -349,12 +382,17 @@ function UpdateRecoveryShell({
   onShowSettings: (value: boolean) => void;
 }) {
   const [section, setSection] = useState<UserSettingsSection>("updates");
+  const [sidebarWidth] = useState(readSidebarWidth);
+  const sidebarMaxWidth = useSidebarMaxWidth();
 
   if (showSettings && data.user) {
     return (
       <div className="ravenv1-scope flex h-screen flex-col overflow-hidden bg-background text-foreground">
         <BareTopBar />
-        <div className="grid min-h-0 flex-1 grid-cols-[256px_minmax(0,1fr)] pb-2 pr-2">
+        <div
+          className="grid min-h-0 flex-1 grid-cols-[var(--sidebar-w)_minmax(0,1fr)] pb-2 pr-2"
+          style={{ "--sidebar-w": `${Math.min(sidebarWidth, sidebarMaxWidth)}px` } as CSSProperties}
+        >
           <UserSettingsNav section={section} onSelect={setSection} onBack={() => onShowSettings(false)} />
           <Island className="flex min-h-0 min-w-0 flex-col overflow-hidden">
             <UserSettingsView section={section} data={data} media={media} updater={updater} />

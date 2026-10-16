@@ -138,7 +138,11 @@ const SelectItem = React.forwardRef<
       className={cn(menuItemClassName, "pr-8", className)}
       {...props}
     >
-      <span className="min-w-0 flex-1 truncate">{children}</span>
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        {React.Children.map(children, (child) =>
+          typeof child === "string" || typeof child === "number" ? <span className="min-w-0 truncate">{child}</span> : child,
+        )}
+      </span>
       {selected ? <Check className="absolute right-2.5 h-4 w-4 text-foreground" /> : null}
     </DropdownMenuPrimitive.Item>
   );
