@@ -4,6 +4,7 @@ pub mod convert;
 pub mod directshow;
 pub mod domain;
 pub mod engine;
+pub mod pacing;
 pub mod preview;
 pub mod state;
 pub mod stream;

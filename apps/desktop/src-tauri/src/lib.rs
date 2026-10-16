@@ -50,8 +50,8 @@ use overlay::{
 use video::state::{
     new_shared_video_engine_state, video_connect_room, video_disconnect_room,
     video_get_capabilities, video_get_network_totals, video_get_quality_report, video_get_state,
-    video_get_stream_endpoint, video_list_cameras, video_list_displays, video_list_windows,
-    video_set_local_preview_enabled, video_set_presentation_profile,
+    video_get_stream_endpoint, video_get_stream_stats, video_list_cameras, video_list_displays,
+    video_list_windows, video_set_local_preview_enabled, video_set_presentation_profile,
     video_set_remote_video_receiving, video_set_self_preview_mode, video_set_source_profile,
     video_start_camera, video_start_display_share, video_start_window_share, video_stop_source,
 };
@@ -136,6 +136,7 @@ pub fn run() {
             video_get_capabilities,
             video_get_network_totals,
             video_get_quality_report,
+            video_get_stream_stats,
             video_get_stream_endpoint,
             video_set_local_preview_enabled,
             video_set_self_preview_mode,

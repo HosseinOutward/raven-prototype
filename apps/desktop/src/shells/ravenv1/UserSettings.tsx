@@ -318,21 +318,21 @@ function AudioVideoSettings({ data, media }: { data: RavenShellData; media: Rave
         <SettingsRows>
           <SettingsChoice
             title="Efficient"
-            copy="Least processor and battery use. Best for long calls and many people."
+            copy="Least processor and battery use. Screen shares up to 15 frames a second."
             selected={media.videoPresentationProfile === "efficiency"}
             disabled={media.busy}
             onSelect={() => void media.setVideoPresentationProfile("efficiency")}
           />
           <SettingsChoice
             title="Balanced"
-            copy="Smooth and clear at a moderate cost. Recommended."
+            copy="Screen shares as smooth as they are sent, up to 30 frames a second. Recommended."
             selected={media.videoPresentationProfile === "balanced"}
             disabled={media.busy}
             onSelect={() => void media.setVideoPresentationProfile("balanced")}
           />
           <SettingsChoice
             title="Best quality"
-            copy="Larger, smoother video. Uses more of the processor."
+            copy="Larger camera video and screen shares up to 60 frames a second. Uses more of the processor."
             selected={media.videoPresentationProfile === "quality"}
             disabled={media.busy}
             onSelect={() => void media.setVideoPresentationProfile("quality")}

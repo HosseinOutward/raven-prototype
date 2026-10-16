@@ -9,16 +9,16 @@
 //! `raven-video-<trackId>` so peers can recognise it; Raven may also subscribe to it
 //! when the user explicitly selects RTC-based self preview.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use livekit::options::{TrackPublishOptions, VideoEncoding};
 use livekit::prelude::{
     ConnectionQuality, LocalTrack, LocalVideoTrack, RemoteTrack, Room, RoomEvent, RoomOptions,
-    TrackKind, TrackSource,
+    TrackDimension, TrackKind, TrackSource,
 };
 use livekit::webrtc::prelude::VideoBuffer;
 use livekit::webrtc::stats::RtcStats;
@@ -33,7 +33,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::video::capture::VideoFrameSink;
+use crate::video::capture::{VideoCaptureCounters, VideoFrameSink};
 use crate::video::convert::I420Frame;
 use crate::video::domain::{
     PublishedVideoTrackId, RemoteVideoTrackState, SelfPreviewMode, VideoConnectionQuality,
@@ -41,7 +41,7 @@ use crate::video::domain::{
     VideoSourceState, VideoTrackSource,
 };
 use crate::video::state::{SharedVideoEngineState, VIDEO_STATE_CHANGED_EVENT};
-use crate::video::stream::{VideoFrameHub, VideoFramePublisher};
+use crate::video::stream::{PresentationCounters, VideoFrameHub, VideoFramePublisher};
 
 fn lk_track_source(source: VideoTrackSource) -> TrackSource {
     match source {
@@ -124,10 +124,24 @@ struct RoomConnection {
     event_loop: JoinHandle<()>,
 }
 
+/// A running remote video reader and what its presentation stream has shown.
+struct RemoteReader {
+    task: JoinHandle<()>,
+    presentation: Arc<PresentationCounters>,
+}
+
+impl RemoteReader {
+    fn abort(&self) {
+        self.task.abort();
+    }
+}
+
+type RemoteReaders = Arc<Mutex<HashMap<String, RemoteReader>>>;
+
 struct ViewerConnection {
     room: Arc<Room>,
     event_loop: JoinHandle<()>,
-    readers: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    readers: RemoteReaders,
 }
 
 /// Connection flags shared with the state snapshot, so reading "are we connected" never
@@ -170,6 +184,7 @@ pub struct VideoScreenShareTransmitQuality {
     pub outbound: Option<VideoOutboundQuality>,
     pub remote_loss_fraction: Option<f64>,
     pub round_trip_time_ms: Option<f64>,
+    pub capture: Option<VideoCaptureFrameCounts>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -180,6 +195,33 @@ pub struct VideoOutboundQuality {
     pub fps: f64,
     pub target_bitrate_bps: f64,
     pub limitation: String,
+    /// libwebrtc's name for the encoder in use, for example "libvpx".
+    pub encoder_implementation: String,
+    /// True only for a hardware encoder.
+    pub power_efficient_encoder: bool,
+    /// Frames that entered WebRTC's video source (before its own frame-rate limiter and
+    /// the encoder's frame dropping), then frames encoded and sent.
+    pub source_frames: u32,
+    pub frames_encoded: u32,
+    pub frames_sent: u32,
+    pub total_encode_time_seconds: f64,
+}
+
+/// Cumulative frame counts of a running capture.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoCaptureFrameCounts {
+    pub captured: u64,
+    pub forwarded: u64,
+}
+
+impl From<&VideoCaptureCounters> for VideoCaptureFrameCounts {
+    fn from(counters: &VideoCaptureCounters) -> Self {
+        Self {
+            captured: counters.captured.load(Ordering::Relaxed),
+            forwarded: counters.forwarded.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -187,6 +229,133 @@ pub struct VideoOutboundQuality {
 pub struct VideoScreenShareReceiveQuality {
     pub inbound: Option<VideoQualityDimensions>,
     pub loss_fraction: Option<f64>,
+    pub decoder_implementation: Option<String>,
+    pub power_efficient_decoder: Option<bool>,
+}
+
+/// Receive measurements for one subscribed remote video track. Rates are measured between
+/// calls (see [`VideoStreamStatsCache`]).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoStreamStats {
+    pub stream_id: String,
+    pub participant_id: String,
+    pub source: VideoTrackSource,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub received_fps: Option<f64>,
+    pub decoded_fps: Option<f64>,
+    pub shown_fps: Option<f64>,
+    pub bitrate_bps: Option<f64>,
+    pub packets_lost: i64,
+    pub packet_loss_fraction: Option<f64>,
+    pub jitter_ms: Option<f64>,
+    pub frames_dropped: u32,
+    pub codec: Option<String>,
+    pub decoder_implementation: Option<String>,
+    pub power_efficient_decoder: Option<bool>,
+    /// The size the sender published. LiveKit does not signal the sender's frame rate.
+    pub published_width: Option<u32>,
+    pub published_height: Option<u32>,
+    pub present_encode_ms: Option<f64>,
+}
+
+/// What the stats command needs to measure one subscribed stream, gathered under the ops
+/// lock and measured after it is released.
+pub struct RemoteStreamHandle {
+    stream_id: String,
+    participant_id: String,
+    source: VideoTrackSource,
+    track: RemoteTrack,
+    published: TrackDimension,
+    presentation: Option<Arc<PresentationCounters>>,
+}
+
+/// Cumulative counters from the previous stats call per stream, so rates can be derived.
+#[derive(Clone, Default)]
+pub struct VideoStreamStatsCache(Arc<Mutex<HashMap<String, StreamSample>>>);
+
+#[derive(Clone, Copy)]
+struct StreamSample {
+    at: Instant,
+    frames_received: u64,
+    frames_decoded: u64,
+    shown: u64,
+    bytes_received: u64,
+    packets_received: u64,
+    packets_lost: i64,
+    encoded: u64,
+    encode_micros: u64,
+    rates: StreamRates,
+}
+
+#[derive(Clone, Copy, Default)]
+struct StreamRates {
+    received_fps: Option<f64>,
+    decoded_fps: Option<f64>,
+    shown_fps: Option<f64>,
+    bitrate_bps: Option<f64>,
+    loss_fraction: Option<f64>,
+    encode_ms: Option<f64>,
+}
+
+/// Rates are only recomputed when at least this long has passed since the previous
+/// sample; a second caller polling in between reuses the last rates instead of measuring
+/// a window too short to mean anything.
+const STREAM_STATS_MIN_WINDOW: Duration = Duration::from_millis(500);
+
+impl StreamSample {
+    fn rates_since(&self, previous: &StreamSample) -> StreamRates {
+        let seconds = self.at.duration_since(previous.at).as_secs_f64().max(0.001);
+        let per_second = |now: u64, before: u64| now.saturating_sub(before) as f64 / seconds;
+        let received = self
+            .packets_received
+            .saturating_sub(previous.packets_received);
+        let lost = (self.packets_lost - previous.packets_lost).max(0) as u64;
+        let encoded = self.encoded.saturating_sub(previous.encoded);
+        StreamRates {
+            received_fps: Some(per_second(self.frames_received, previous.frames_received)),
+            decoded_fps: Some(per_second(self.frames_decoded, previous.frames_decoded)),
+            shown_fps: Some(per_second(self.shown, previous.shown)),
+            bitrate_bps: Some(per_second(self.bytes_received, previous.bytes_received) * 8.0),
+            loss_fraction: (received + lost > 0).then(|| lost as f64 / (received + lost) as f64),
+            encode_ms: (encoded > 0).then(|| {
+                self.encode_micros.saturating_sub(previous.encode_micros) as f64
+                    / encoded as f64
+                    / 1_000.0
+            }),
+        }
+    }
+}
+
+impl VideoStreamStatsCache {
+    /// Record a new sample and return the rates to report for it.
+    fn rates_for(&self, stream_id: &str, mut sample: StreamSample) -> StreamRates {
+        let Ok(mut samples) = self.0.lock() else {
+            return StreamRates::default();
+        };
+        match samples.get(stream_id) {
+            Some(previous) if sample.at.duration_since(previous.at) < STREAM_STATS_MIN_WINDOW => {
+                previous.rates
+            }
+            Some(previous) => {
+                sample.rates = sample.rates_since(previous);
+                samples.insert(stream_id.to_string(), sample);
+                sample.rates
+            }
+            None => {
+                samples.insert(stream_id.to_string(), sample);
+                StreamRates::default()
+            }
+        }
+    }
+
+    /// Forget streams that are no longer subscribed.
+    fn retain(&self, live: &HashSet<String>) {
+        if let Ok(mut samples) = self.0.lock() {
+            samples.retain(|stream_id, _| live.contains(stream_id));
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -233,13 +402,26 @@ pub async fn measure_video_network_totals(
 }
 
 pub async fn measure_video_quality_report(
-    published_screen_shares: Vec<(LocalTrack, VideoQualityProfile)>,
+    published_screen_shares: Vec<(
+        LocalTrack,
+        VideoQualityProfile,
+        Option<VideoCaptureFrameCounts>,
+    )>,
     subscribed_screen_shares: Vec<RemoteTrack>,
 ) -> Result<VideoQualityReport, String> {
     let screen_share_transmit =
-        if let Some((track, profile)) = published_screen_shares.into_iter().next() {
+        if let Some((track, profile, capture)) = published_screen_shares.into_iter().next() {
             let tuning = profile.publish_tuning(VideoTrackSource::Screenshare);
             let stats = track.get_stats().await.map_err(|error| error.to_string())?;
+            let source_frames = stats
+                .iter()
+                .find_map(|stat| match stat {
+                    RtcStats::MediaSource(value) if value.source.kind == "video" => {
+                        Some(value.video.frames)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
             let outbound = stats.iter().find_map(|stat| match stat {
                 RtcStats::OutboundRtp(value) => Some(VideoOutboundQuality {
                     width: value.outbound.frame_width,
@@ -248,6 +430,12 @@ pub async fn measure_video_quality_report(
                     target_bitrate_bps: value.outbound.target_bitrate,
                     limitation: format!("{:?}", value.outbound.quality_limitation_reason)
                         .to_lowercase(),
+                    encoder_implementation: value.outbound.encoder_implementation.clone(),
+                    power_efficient_encoder: value.outbound.power_efficient_encoder,
+                    source_frames,
+                    frames_encoded: value.outbound.frames_encoded,
+                    frames_sent: value.outbound.frames_sent,
+                    total_encode_time_seconds: value.outbound.total_encode_time,
                 }),
                 _ => None,
             });
@@ -268,12 +456,14 @@ pub async fn measure_video_quality_report(
                 outbound,
                 remote_loss_fraction: remote_feedback.map(|(loss, _)| loss),
                 round_trip_time_ms: remote_feedback.map(|(_, rtt)| rtt),
+                capture,
             })
         } else {
             None
         };
 
     let mut inbound = None;
+    let mut decoder = None;
     let mut packets_received = 0_u64;
     let mut packets_lost = 0_i64;
     for track in subscribed_screen_shares {
@@ -296,6 +486,10 @@ pub async fn measure_video_quality_report(
                     .unwrap_or(true)
                 {
                     inbound = Some(next);
+                    decoder = Some((
+                        value.inbound.decoder_implementation.clone(),
+                        value.inbound.power_efficient_decoder,
+                    ));
                 }
             }
         }
@@ -305,12 +499,97 @@ pub async fn measure_video_quality_report(
         inbound: Some(inbound),
         loss_fraction: (received_or_lost > 0)
             .then_some(packets_lost.max(0) as f64 / received_or_lost as f64),
+        decoder_implementation: decoder
+            .as_ref()
+            .map(|(name, _)| name.clone())
+            .filter(|name| !name.is_empty()),
+        power_efficient_decoder: decoder.map(|(_, efficient)| efficient),
     });
 
     Ok(VideoQualityReport {
         screen_share_transmit,
         screen_share_receive,
     })
+}
+
+/// Measure every given remote stream. Each `get_stats` call is answered by libwebrtc's own
+/// threads, so this never touches the reader tasks that move frames.
+pub async fn measure_video_stream_stats(
+    handles: Vec<RemoteStreamHandle>,
+    live_stream_ids: HashSet<String>,
+    cache: VideoStreamStatsCache,
+) -> Result<Vec<VideoStreamStats>, String> {
+    cache.retain(&live_stream_ids);
+    let mut report = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let stats = handle
+            .track
+            .get_stats()
+            .await
+            .map_err(|error| error.to_string())?;
+        let at = Instant::now();
+        let inbound = stats.iter().find_map(|stat| match stat {
+            RtcStats::InboundRtp(value) => Some(value),
+            _ => None,
+        });
+        let codec = inbound.and_then(|inbound| {
+            stats.iter().find_map(|stat| match stat {
+                RtcStats::Codec(codec) if codec.rtc.id == inbound.stream.codec_id => {
+                    Some(codec.codec.mime_type.clone())
+                }
+                _ => None,
+            })
+        });
+        let (shown, encoded, encode_micros) = handle
+            .presentation
+            .as_ref()
+            .map(|counters| {
+                (
+                    counters.shown.load(Ordering::Relaxed),
+                    counters.encoded.load(Ordering::Relaxed),
+                    counters.encode_micros.load(Ordering::Relaxed),
+                )
+            })
+            .unwrap_or_default();
+        let sample = StreamSample {
+            at,
+            frames_received: inbound.map_or(0, |value| value.inbound.frames_received),
+            frames_decoded: inbound.map_or(0, |value| u64::from(value.inbound.frames_decoded)),
+            shown,
+            bytes_received: inbound.map_or(0, |value| value.inbound.bytes_received),
+            packets_received: inbound.map_or(0, |value| value.received.packets_received),
+            packets_lost: inbound.map_or(0, |value| value.received.packets_lost),
+            encoded,
+            encode_micros,
+            rates: StreamRates::default(),
+        };
+        let rates = cache.rates_for(&handle.stream_id, sample);
+        let non_zero = |value: u32| (value > 0).then_some(value);
+        report.push(VideoStreamStats {
+            stream_id: handle.stream_id,
+            participant_id: handle.participant_id,
+            source: handle.source,
+            width: inbound.and_then(|value| non_zero(value.inbound.frame_width)),
+            height: inbound.and_then(|value| non_zero(value.inbound.frame_height)),
+            received_fps: rates.received_fps,
+            decoded_fps: rates.decoded_fps,
+            shown_fps: rates.shown_fps,
+            bitrate_bps: rates.bitrate_bps,
+            packets_lost: inbound.map_or(0, |value| value.received.packets_lost.max(0)),
+            packet_loss_fraction: rates.loss_fraction,
+            jitter_ms: inbound.map(|value| value.received.jitter * 1_000.0),
+            frames_dropped: inbound.map_or(0, |value| value.inbound.frames_dropped),
+            codec: codec.filter(|name| !name.is_empty()),
+            decoder_implementation: inbound
+                .map(|value| value.inbound.decoder_implementation.clone())
+                .filter(|name| !name.is_empty()),
+            power_efficient_decoder: inbound.map(|value| value.inbound.power_efficient_decoder),
+            published_width: non_zero(handle.published.0),
+            published_height: non_zero(handle.published.1),
+            present_encode_ms: rates.encode_ms,
+        });
+    }
+    Ok(report)
 }
 
 /// The native video media engine. Stored inside `VideoEngineState`.
@@ -322,6 +601,7 @@ pub struct VideoEngine {
     link: VideoLinkFlags,
     hub: VideoFrameHub,
     presentation: Arc<RwLock<VideoPresentationSettings>>,
+    stream_stats: VideoStreamStatsCache,
 }
 
 impl std::fmt::Debug for VideoEngine {
@@ -344,6 +624,7 @@ impl VideoEngine {
             link: VideoLinkFlags::default(),
             hub,
             presentation,
+            stream_stats: VideoStreamStatsCache::default(),
         }
     }
 
@@ -402,12 +683,61 @@ impl VideoEngine {
             .collect()
     }
 
-    pub fn published_screen_share_tracks(&self) -> Vec<(LocalTrack, VideoQualityProfile)> {
+    pub fn published_screen_share_tracks(
+        &self,
+    ) -> Vec<(VideoSourceId, LocalTrack, VideoQualityProfile)> {
         self.publications
-            .values()
-            .filter(|entry| matches!(entry.source, VideoTrackSource::Screenshare))
-            .map(|entry| (entry.track.clone(), entry.profile.clone()))
+            .iter()
+            .filter(|(_, entry)| matches!(entry.source, VideoTrackSource::Screenshare))
+            .map(|(id, entry)| (*id, entry.track.clone(), entry.profile.clone()))
             .collect()
+    }
+
+    pub fn stream_stats_cache(&self) -> VideoStreamStatsCache {
+        self.stream_stats.clone()
+    }
+
+    /// Every subscribed remote video stream (`only` narrows the handles returned, not the
+    /// set of live ids, which the stats cache is pruned against).
+    pub fn remote_stream_handles(
+        &self,
+        only: Option<&HashSet<String>>,
+    ) -> (Vec<RemoteStreamHandle>, HashSet<String>) {
+        let Some(viewer) = self.viewer.as_ref() else {
+            return (Vec::new(), HashSet::new());
+        };
+        let readers = viewer.readers.lock().ok();
+        let mut handles = Vec::new();
+        let mut live = HashSet::new();
+        for participant in viewer.room.remote_participants().values() {
+            let participant_id = base_participant_identity(&participant.identity().0).to_string();
+            for publication in participant.track_publications().into_values() {
+                let Some(source) = video_track_source(publication.source()) else {
+                    continue;
+                };
+                let Some(track @ RemoteTrack::Video(_)) = publication.track() else {
+                    continue;
+                };
+                let stream_id = remote_stream_id(&publication.sid().to_string());
+                live.insert(stream_id.clone());
+                if only.is_some_and(|wanted| !wanted.contains(&stream_id)) {
+                    continue;
+                }
+                let presentation = readers
+                    .as_ref()
+                    .and_then(|readers| readers.get(&stream_id))
+                    .map(|reader| Arc::clone(&reader.presentation));
+                handles.push(RemoteStreamHandle {
+                    stream_id,
+                    participant_id: participant_id.clone(),
+                    source,
+                    track,
+                    published: publication.dimension(),
+                    presentation,
+                });
+            }
+        }
+        (handles, live)
     }
 
     pub fn subscribed_screen_share_tracks(&self) -> Vec<RemoteTrack> {
@@ -715,7 +1045,7 @@ impl VideoEngine {
         shared: &SharedVideoEngineState,
         room: Arc<Room>,
         mut events: mpsc::UnboundedReceiver<RoomEvent>,
-        readers: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+        readers: &RemoteReaders,
         connected: &Arc<AtomicBool>,
     ) -> JoinHandle<()> {
         let app = app.clone();
@@ -769,8 +1099,9 @@ impl VideoEngine {
                             Arc::clone(&presentation),
                             source,
                         );
+                        let presentation_counters = publisher.counters();
                         let mut stream = NativeVideoStream::new(video_track.rtc_track());
-                        let reader = runtime.spawn(async move {
+                        let task = runtime.spawn(async move {
                             while let Some(frame) = stream.next().await {
                                 if !publisher.wants_frame() {
                                     continue;
@@ -780,6 +1111,10 @@ impl VideoEngine {
                                     .submit_reusing(|recycled| tight_i420_frame(&buffer, recycled));
                             }
                         });
+                        let reader = RemoteReader {
+                            task,
+                            presentation: presentation_counters,
+                        };
                         if let Some(previous) = readers.lock().unwrap().insert(stream_id, reader) {
                             previous.abort();
                         }
@@ -1136,6 +1471,51 @@ fn worse_quality(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample(at: Instant, frames: u64, bytes: u64, received: u64, lost: i64) -> StreamSample {
+        StreamSample {
+            at,
+            frames_received: frames,
+            frames_decoded: frames,
+            shown: frames / 2,
+            bytes_received: bytes,
+            packets_received: received,
+            packets_lost: lost,
+            encoded: frames / 2,
+            encode_micros: frames / 2 * 4_000,
+            rates: StreamRates::default(),
+        }
+    }
+
+    #[test]
+    fn stream_rates_come_from_deltas_and_short_windows_reuse_the_last_rates() {
+        let cache = VideoStreamStatsCache::default();
+        let start = Instant::now();
+        let first = cache.rates_for("remote-a", sample(start, 0, 0, 0, 0));
+        assert!(first.received_fps.is_none());
+
+        let one_second = start + Duration::from_secs(1);
+        let rates = cache.rates_for("remote-a", sample(one_second, 30, 250_000, 99, 1));
+        assert_eq!(rates.received_fps, Some(30.0));
+        assert_eq!(rates.shown_fps, Some(15.0));
+        assert_eq!(rates.bitrate_bps, Some(2_000_000.0));
+        assert_eq!(rates.loss_fraction, Some(0.01));
+        assert_eq!(rates.encode_ms, Some(4.0));
+
+        // A second poller 100 ms later sees the same rates, and the baseline is kept.
+        let soon = one_second + Duration::from_millis(100);
+        let repeated = cache.rates_for("remote-a", sample(soon, 33, 260_000, 105, 1));
+        assert_eq!(repeated.received_fps, Some(30.0));
+        let later = one_second + Duration::from_secs(1);
+        let next = cache.rates_for("remote-a", sample(later, 90, 500_000, 199, 1));
+        assert_eq!(next.received_fps, Some(60.0));
+
+        cache.retain(&HashSet::new());
+        assert!(cache
+            .rates_for("remote-a", sample(later, 0, 0, 0, 0))
+            .received_fps
+            .is_none());
+    }
 
     #[test]
     fn self_video_is_received_only_for_rtc_preview() {

@@ -482,13 +482,15 @@ impl VideoPresentationSettings {
         // The frame service is only the local WebView presentation bridge. A share must not
         // inherit the lower camera-preview cap selected for a compact Raven UI: it always
         // gets full 1080p at high quality so text stays readable. Only its frame rate
-        // follows the chosen presentation profile, so a share sent at 30 fps is not
-        // flattened to a slideshow for viewers who asked for smooth playback.
+        // follows the chosen presentation profile. The caps sit at or above what shares are
+        // sent at (30 fps, 60 for High motion), so by default a share is shown at the rate
+        // it arrives: a 1080p JPEG costs about 13 ms in an optimised build, so 30 fps is
+        // under half a core and 60 fps under one.
         if matches!(source, VideoTrackSource::Screenshare) {
             let frame_rate = match self.profile {
-                VideoPresentationProfile::Efficiency => 10,
-                VideoPresentationProfile::Balanced => 15,
-                VideoPresentationProfile::Quality => 30,
+                VideoPresentationProfile::Efficiency => 15,
+                VideoPresentationProfile::Balanced => 30,
+                VideoPresentationProfile::Quality => 60,
             };
             return (1920, 1080, frame_rate, 92.0);
         }

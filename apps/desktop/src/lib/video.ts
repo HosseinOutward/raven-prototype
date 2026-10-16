@@ -188,17 +188,81 @@ export interface VideoQualityDimensions {
   fps: number;
 }
 
+export interface VideoOutboundQuality extends VideoQualityDimensions {
+  targetBitrateBps: number;
+  limitation: string;
+  /** libwebrtc's name for the encoder, for example "libvpx". */
+  encoderImplementation: string;
+  /** True only for a hardware encoder. */
+  powerEfficientEncoder: boolean;
+  /**
+   * Cumulative counters; take deltas between polls for rates. `sourceFrames` entered
+   * WebRTC before its own frame-rate limiter and the encoder's frame dropping.
+   */
+  sourceFrames: number;
+  framesEncoded: number;
+  framesSent: number;
+  totalEncodeTimeSeconds: number;
+}
+
+/** Cumulative frame counts of the running share capture. */
+export interface VideoCaptureFrameCounts {
+  /** Frames the capture backend delivered. */
+  captured: number;
+  /** Frames the profile's frame-rate pacing passed on to the encoder. */
+  forwarded: number;
+}
+
 export interface VideoScreenShareTransmitQuality {
   configured: VideoQualityDimensions;
   maxBitrateBps: number;
-  outbound: (VideoQualityDimensions & { targetBitrateBps: number; limitation: string }) | null;
+  outbound: VideoOutboundQuality | null;
   remoteLossFraction: number | null;
   roundTripTimeMs: number | null;
+  capture: VideoCaptureFrameCounts | null;
 }
 
 export interface VideoScreenShareReceiveQuality {
   inbound: VideoQualityDimensions | null;
   lossFraction: number | null;
+  decoderImplementation: string | null;
+  powerEfficientDecoder: boolean | null;
+}
+
+/**
+ * Receive measurements for one subscribed remote video track, keyed like the tiles
+ * (`streamId`). Rates are measured between calls, so the first call after a stream starts
+ * returns null rates; poll every 1–2 s.
+ */
+export interface VideoStreamStats {
+  streamId: string;
+  participantId: string;
+  source: VideoTrackSource;
+  /** Decoded frame size. */
+  width: number | null;
+  height: number | null;
+  /** Frames reassembled from the network, frames decoded, and JPEGs the tile was shown. */
+  receivedFps: number | null;
+  decodedFps: number | null;
+  shownFps: number | null;
+  bitrateBps: number | null;
+  packetsLost: number;
+  /** Loss since the previous call. */
+  packetLossFraction: number | null;
+  jitterMs: number | null;
+  framesDropped: number;
+  /** For example "video/VP8". */
+  codec: string | null;
+  decoderImplementation: string | null;
+  powerEfficientDecoder: boolean | null;
+  /**
+   * The size the sender published (its capture after the quality profile). The sender's
+   * requested frame rate is not signalled to receivers, so it is not available here.
+   */
+  publishedWidth: number | null;
+  publishedHeight: number | null;
+  /** Average time to resize and JPEG-encode one shown frame, in ms. */
+  presentEncodeMs: number | null;
 }
 
 /**
@@ -220,6 +284,10 @@ export const videoCommands = {
   getNetworkTotals: () => invoke<VideoNetworkTotals>("video_get_network_totals"),
 
   getQualityReport: () => invoke<VideoQualityReport>("video_get_quality_report"),
+
+  /** Per-stream receive stats; pass stream ids to measure only those tiles. */
+  getStreamStats: (streamIds?: string[]) =>
+    invoke<VideoStreamStats[]>("video_get_stream_stats", { streamIds: streamIds ?? null }),
 
   getStreamEndpoint: () => invoke<VideoStreamEndpoint>("video_get_stream_endpoint"),
 

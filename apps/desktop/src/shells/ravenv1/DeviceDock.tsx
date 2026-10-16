@@ -1055,7 +1055,7 @@ function NetworkActivityIndicator({
 
   const summary = selectedNetworkSummary(activity);
   const summaryText = networkSummaryText(activity, summary);
-  const sendingShareQuality = screenShareQualityNotice(activity.screenShareQuality);
+  const sendingShareQuality = screenShareQualityNotice(activity.screenShareQuality, activity.screenShareCaptureFps);
   const receivingShareQuality = receivedScreenShareQualityNotice(activity.screenShareQuality);
   const measuring = !activity.active || !summary || activity.updatedAt == null;
   return (

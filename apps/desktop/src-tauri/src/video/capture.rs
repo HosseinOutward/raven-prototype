@@ -12,8 +12,9 @@
 //!   ScreenCaptureKit on macOS; xdg-desktop-portal + PipeWire on Linux.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 use thiserror::Error;
@@ -23,11 +24,19 @@ use crate::video::domain::{
     CameraDevice, DisplayTarget, VideoQualityProfile, VideoSourceId, VideoSourceKind,
     VideoSourceRuntimeState, VideoSourceRuntimeStatus, VideoSourceState, WindowTarget,
 };
+use crate::video::pacing::{FramePacer, CAPTURE_TOLERANCE};
 
 /// Destination for captured I420 frames. Implemented by the engine's publish sink. Called
 /// from a capture thread, so implementations must be cheap and non-blocking.
 pub trait VideoFrameSink: Send + Sync + std::fmt::Debug {
     fn push_frame(&self, frame: I420Frame);
+
+    /// Asked by a capture backend before it reads back and converts a frame. `false` means
+    /// the frame would be dropped anyway, so the backend can skip it for free; `true`
+    /// reserves the slot for the frame the backend is about to push.
+    fn frame_due(&self) -> bool {
+        true
+    }
 }
 
 pub trait VideoSourceRuntime: Send + Sync + std::fmt::Debug {
@@ -57,50 +66,138 @@ impl VideoCaptureSignature {
     }
 }
 
+/// Frames a running capture has produced and passed on, for measuring where frame rate is
+/// lost. Read by the quality report; written only by the capture thread.
+#[derive(Debug, Default)]
+pub struct VideoCaptureCounters {
+    /// Frames the capture backend delivered.
+    pub captured: AtomicU64,
+    /// Frames the profile's frame-rate pacing passed on to the publish sink.
+    pub forwarded: AtomicU64,
+}
+
 #[derive(Debug)]
 struct ProfiledVideoFrameSink {
     inner: Arc<dyn VideoFrameSink>,
     profile: VideoQualityProfile,
-    last_frame: Mutex<Option<Instant>>,
+    pacer: Mutex<FramePacer>,
+    /// Set when [`VideoFrameSink::frame_due`] admitted the frame now being pushed.
+    admitted: AtomicBool,
+    counters: Arc<VideoCaptureCounters>,
 }
 
 impl ProfiledVideoFrameSink {
-    fn new(inner: Arc<dyn VideoFrameSink>, profile: VideoQualityProfile) -> Self {
+    fn new(
+        inner: Arc<dyn VideoFrameSink>,
+        profile: VideoQualityProfile,
+        counters: Arc<VideoCaptureCounters>,
+    ) -> Self {
         Self {
             inner,
             profile,
-            last_frame: Mutex::new(None),
+            pacer: Mutex::new(FramePacer::new()),
+            admitted: AtomicBool::new(false),
+            counters,
         }
     }
 
-    fn frame_interval(&self) -> Duration {
-        Duration::from_secs_f64(1.0 / f64::from(self.profile.fps.max(1.0)))
-    }
-
-    fn should_forward(&self, now: Instant) -> bool {
-        let Ok(mut last_frame) = self.last_frame.lock() else {
-            return true;
+    /// Count a delivered frame and decide whether it goes on, at the profile's frame rate.
+    fn admit(&self, now: Instant) -> bool {
+        self.counters.captured.fetch_add(1, Ordering::Relaxed);
+        let admitted = match self.pacer.lock() {
+            Ok(mut pacer) => {
+                let interval = FramePacer::interval_for(f64::from(self.profile.fps));
+                pacer.admit(now, interval, CAPTURE_TOLERANCE)
+            }
+            Err(_) => true,
         };
-        let interval = self.frame_interval();
-        if last_frame
-            .map(|last| now.duration_since(last) >= interval)
-            .unwrap_or(true)
-        {
-            *last_frame = Some(now);
-            true
-        } else {
-            false
+        if admitted {
+            self.counters.forwarded.fetch_add(1, Ordering::Relaxed);
         }
+        admitted
     }
 }
 
 impl VideoFrameSink for ProfiledVideoFrameSink {
+    fn frame_due(&self) -> bool {
+        let admitted = self.admit(Instant::now());
+        self.admitted.store(admitted, Ordering::Release);
+        admitted
+    }
+
     fn push_frame(&self, frame: I420Frame) {
-        if !self.should_forward(Instant::now()) {
+        // Backends that do not ask `frame_due` first are paced here instead.
+        if !self.admitted.swap(false, Ordering::AcqRel) && !self.admit(Instant::now()) {
             return;
         }
         self.inner
             .push_frame(scale_frame_to_profile(frame, &self.profile));
+    }
+}
+
+#[cfg(test)]
+mod profiled_sink_tests {
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct CountingSink(AtomicU64);
+
+    impl VideoFrameSink for CountingSink {
+        fn push_frame(&self, _frame: I420Frame) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn frame(profile: &VideoQualityProfile) -> I420Frame {
+        let (w, h) = (profile.width as usize, profile.height as usize);
+        I420Frame {
+            width: profile.width,
+            height: profile.height,
+            y: vec![16; w * h],
+            u: vec![128; w.div_ceil(2) * h.div_ceil(2)],
+            v: vec![128; w.div_ceil(2) * h.div_ceil(2)],
+        }
+    }
+
+    fn sink() -> (
+        Arc<CountingSink>,
+        ProfiledVideoFrameSink,
+        VideoQualityProfile,
+    ) {
+        let profile = VideoQualityProfile {
+            width: 64,
+            height: 36,
+            fps: 30.0,
+            ..VideoQualityProfile::default()
+        };
+        let output = Arc::new(CountingSink::default());
+        let profiled = ProfiledVideoFrameSink::new(
+            Arc::clone(&output) as Arc<dyn VideoFrameSink>,
+            profile.clone(),
+            Arc::new(VideoCaptureCounters::default()),
+        );
+        (output, profiled, profile)
+    }
+
+    #[test]
+    fn a_frame_admitted_by_frame_due_is_forwarded_and_the_next_is_skipped() {
+        let (output, profiled, profile) = sink();
+        assert!(profiled.frame_due());
+        profiled.push_frame(frame(&profile));
+        // Immediately after, the next display frame is not due and costs nothing.
+        assert!(!profiled.frame_due());
+        assert_eq!(output.0.load(Ordering::Relaxed), 1);
+        assert_eq!(profiled.counters.captured.load(Ordering::Relaxed), 2);
+        assert_eq!(profiled.counters.forwarded.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn backends_that_only_push_are_still_paced() {
+        let (output, profiled, profile) = sink();
+        profiled.push_frame(frame(&profile));
+        profiled.push_frame(frame(&profile));
+        assert_eq!(output.0.load(Ordering::Relaxed), 1);
+        assert_eq!(profiled.counters.captured.load(Ordering::Relaxed), 2);
     }
 }
 
@@ -135,6 +232,7 @@ pub struct VideoCaptureManager {
     /// (and, on Linux, the portal session the user approved) running instead of
     /// restarting it or leaving it feeding a dead track.
     relays: HashMap<VideoSourceId, Arc<RelayVideoFrameSink>>,
+    counters: HashMap<VideoSourceId, Arc<VideoCaptureCounters>>,
 }
 
 /// A capture-side sink whose destination can be replaced while the capture runs.
@@ -209,6 +307,11 @@ fn running_runtime_state(profile: &VideoQualityProfile) -> VideoSourceRuntimeSta
 }
 
 impl VideoCaptureManager {
+    /// Frame counters of a running capture, if it is running.
+    pub fn counters(&self, source_id: VideoSourceId) -> Option<Arc<VideoCaptureCounters>> {
+        self.counters.get(&source_id).cloned()
+    }
+
     pub fn reconcile(
         &mut self,
         sources: &mut [VideoSourceState],
@@ -229,6 +332,7 @@ impl VideoCaptureManager {
                     runtime.stop();
                 }
                 self.relays.remove(&source_id);
+                self.counters.remove(&source_id);
             }
         }
 
@@ -238,6 +342,7 @@ impl VideoCaptureManager {
                     // already stopped above
                 }
                 self.relays.remove(&source.id);
+                self.counters.remove(&source.id);
                 source.runtime = inactive_runtime_state();
                 continue;
             }
@@ -266,6 +371,7 @@ impl VideoCaptureManager {
                 runtime.stop();
             }
             self.relays.remove(&source.id);
+            self.counters.remove(&source.id);
 
             source.runtime = starting_runtime_state();
             let relay = sinks
@@ -274,10 +380,12 @@ impl VideoCaptureManager {
             let sink = relay
                 .as_ref()
                 .map(|relay| Arc::clone(relay) as Arc<dyn VideoFrameSink>);
-            match start_capture(source, signature, sink) {
+            let counters = Arc::new(VideoCaptureCounters::default());
+            match start_capture(source, signature, sink, Arc::clone(&counters)) {
                 Ok(runtime) => {
                     source.runtime = runtime.runtime_state();
                     self.runtimes.insert(source.id, runtime);
+                    self.counters.insert(source.id, counters);
                     if let Some(relay) = relay {
                         self.relays.insert(source.id, relay);
                     }
@@ -297,14 +405,18 @@ fn start_capture(
     source: &VideoSourceState,
     signature: VideoCaptureSignature,
     sink: Option<Arc<dyn VideoFrameSink>>,
+    counters: Arc<VideoCaptureCounters>,
 ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
     let Some(sink) = sink else {
         return Err(VideoCaptureError::StreamFailed {
             message: "no publish sink attached".to_string(),
         });
     };
-    let sink: Arc<dyn VideoFrameSink> =
-        Arc::new(ProfiledVideoFrameSink::new(sink, source.profile.clone()));
+    let sink: Arc<dyn VideoFrameSink> = Arc::new(ProfiledVideoFrameSink::new(
+        sink,
+        source.profile.clone(),
+        counters,
+    ));
     match source.kind {
         VideoSourceKind::Camera => camera::start(source, signature, sink),
         VideoSourceKind::Display | VideoSourceKind::Window => {
@@ -724,6 +836,12 @@ mod screen {
             frame: &mut Frame,
             _control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
+            // Windows delivers at the display refresh rate. Reading a frame back from the
+            // GPU and converting it costs several ms, so skip frames the profile's frame
+            // rate would drop before paying for them.
+            if !self.sink.frame_due() {
+                return Ok(());
+            }
             let width = frame.width();
             let height = frame.height();
             let mut buffer = frame.buffer()?;

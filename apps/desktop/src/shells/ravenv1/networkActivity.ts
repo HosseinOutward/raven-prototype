@@ -21,6 +21,8 @@ export interface NetworkActivitySnapshot extends NetworkActivitySettings {
   active: boolean;
   updatedAt: number | null;
   screenShareQuality: VideoQualityReport | null;
+  /** Frames per second the share capture delivered between the last two samples. */
+  screenShareCaptureFps: number | null;
 }
 
 export type NetworkCounters = Record<MeasuredNetworkCategory, NetworkTransferRate>;
@@ -100,7 +102,10 @@ export async function collectNetworkSample(
   return { counters, screenShareQuality };
 }
 
-export function screenShareQualityNotice(report: VideoQualityReport | null): string | null {
+export function screenShareQualityNotice(
+  report: VideoQualityReport | null,
+  captureFps: number | null = null,
+): string | null {
   const transmit = report?.screenShareTransmit;
   if (!transmit) return null;
   const outbound = transmit.outbound;
@@ -109,17 +114,50 @@ export function screenShareQualityNotice(report: VideoQualityReport | null): str
   }
   const configured = `${transmit.configured.width}×${transmit.configured.height} @ ${Math.round(transmit.configured.fps)} FPS · max ${formatBitrate(transmit.maxBitrateBps)}`;
   const actual = `${outbound.width}×${outbound.height} @ ${Math.round(outbound.fps)} FPS`;
-  const limited = outbound.width < transmit.configured.width
-    || outbound.height < transmit.configured.height
-    || outbound.fps + 0.5 < transmit.configured.fps
-    || (outbound.limitation && outbound.limitation !== "none");
+  const encoderLimited = Boolean(outbound.limitation) && outbound.limitation !== "none";
+  const smaller = outbound.width < transmit.configured.width || outbound.height < transmit.configured.height;
+  const slower = outbound.fps + 0.5 < transmit.configured.fps;
   const feedback = [
     transmit.remoteLossFraction != null ? `remote loss ${(transmit.remoteLossFraction * 100).toFixed(1)}%` : null,
     transmit.roundTripTimeMs != null ? `RTT ${Math.round(transmit.roundTripTimeMs)} ms` : null,
   ].filter(Boolean).join(" · ");
-  const suffix = feedback ? ` ${feedback}.` : "";
-  if (limited) return `Sharing ${actual}; requested ${configured}. Encoder limit: ${outbound.limitation || "unknown"}.${suffix}`;
+  const suffix = [
+    feedback ? `${feedback}.` : null,
+    codecImplementationNotice("Encoder", outbound.encoderImplementation, outbound.powerEfficientEncoder),
+  ].filter(Boolean).map((part) => ` ${part}`).join("");
+  if (encoderLimited || smaller) return `Sharing ${actual}; requested ${configured}. Encoder limit: ${outbound.limitation || "unknown"}.${suffix}`;
+  if (slower && captureFps != null) {
+    // The capture sends nothing while the screen does not change, so a still screen
+    // reads as a low frame rate without anything being wrong.
+    const reason = captureFps + 0.5 < transmit.configured.fps
+      ? "Fewer frames are sent while the screen is still."
+      : "The encoder skipped some frames.";
+    return `Sharing ${actual}; requested ${configured}. ${reason}${suffix}`;
+  }
   return `Sharing ${actual}; requested ${configured}.${suffix}`;
+}
+
+/** Capture frame rate between two quality reports of the same share, if both have counts. */
+export function screenShareCaptureFps(
+  previous: VideoQualityReport | null,
+  next: VideoQualityReport | null,
+  elapsedSeconds: number,
+): number | null {
+  const before = previous?.screenShareTransmit?.capture;
+  const after = next?.screenShareTransmit?.capture;
+  if (!before || !after || after.captured < before.captured || elapsedSeconds <= 0) return null;
+  return (after.captured - before.captured) / elapsedSeconds;
+}
+
+/** "Encoder: libvpx (software)." — what libwebrtc reports it is running. */
+export function codecImplementationNotice(
+  role: "Encoder" | "Decoder",
+  implementation: string | null | undefined,
+  powerEfficient: boolean | null | undefined,
+): string | null {
+  const name = implementation?.trim();
+  if (!name || name === "unknown") return null;
+  return `${role}: ${name} (${powerEfficient ? "hardware" : "software"}).`;
 }
 
 function formatBitrate(bitsPerSecond: number) {
@@ -132,7 +170,8 @@ export function receivedScreenShareQualityNotice(report: VideoQualityReport | nu
   const inbound = receive?.inbound;
   if (!inbound || inbound.width === 0 || inbound.height === 0 || inbound.fps <= 0) return null;
   const loss = receive.lossFraction == null ? "" : ` · packet loss ${(receive.lossFraction * 100).toFixed(1)}%`;
-  return `Receiving ${inbound.width}×${inbound.height} @ ${Math.round(inbound.fps)} FPS${loss}.`;
+  const decoder = codecImplementationNotice("Decoder", receive.decoderImplementation, receive.powerEfficientDecoder);
+  return `Receiving ${inbound.width}×${inbound.height} @ ${Math.round(inbound.fps)} FPS${loss}.${decoder ? ` ${decoder}` : ""}`;
 }
 
 export function ratesFromNetworkSamples(

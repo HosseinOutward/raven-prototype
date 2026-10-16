@@ -13,7 +13,7 @@
 //! lock ([`VideoRuntime`]); the state lock only ever guards the data model and is never
 //! held across a LiveKit handshake or a capture start.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -39,8 +39,9 @@ use crate::video::domain::{
     VideoSourceId, VideoSourceKind, VideoSourceState, VideoTrackSource, WindowTarget,
 };
 use crate::video::engine::{
-    measure_video_network_totals, measure_video_quality_report, stable_video_track_id,
-    subscription_key, VideoEngine, VideoLinkFlags, VideoNetworkTotals, VideoQualityReport,
+    measure_video_network_totals, measure_video_quality_report, measure_video_stream_stats,
+    stable_video_track_id, subscription_key, VideoCaptureFrameCounts, VideoEngine, VideoLinkFlags,
+    VideoNetworkTotals, VideoQualityReport, VideoStreamStats,
 };
 use crate::video::preview::VideoPreviewController;
 use crate::video::stream::{VideoFrameHub, VideoFrameService, VideoStreamEndpoint};
@@ -238,12 +239,40 @@ pub async fn video_get_quality_report(
     let runtime = video_runtime(&state)?;
     let (published_screen_shares, subscribed_screen_shares) = {
         let ops = runtime.ops.lock().await;
-        (
-            ops.engine.published_screen_share_tracks(),
-            ops.engine.subscribed_screen_share_tracks(),
-        )
+        let published = ops
+            .engine
+            .published_screen_share_tracks()
+            .into_iter()
+            .map(|(source_id, track, profile)| {
+                let capture = ops
+                    .capture
+                    .counters(source_id)
+                    .map(|counters| VideoCaptureFrameCounts::from(&*counters));
+                (track, profile, capture)
+            })
+            .collect();
+        (published, ops.engine.subscribed_screen_share_tracks())
     };
     measure_video_quality_report(published_screen_shares, subscribed_screen_shares)
+        .await
+        .map_err(|message| VideoStateError::EngineFailed { message })
+}
+
+/// Receive stats for each subscribed remote video stream, or only the given stream ids.
+/// The ops lock is held only to collect track handles; stats are gathered after it.
+#[tauri::command]
+pub async fn video_get_stream_stats(
+    state: State<'_, SharedVideoEngineState>,
+    stream_ids: Option<Vec<String>>,
+) -> Result<Vec<VideoStreamStats>, VideoStateError> {
+    let runtime = video_runtime(&state)?;
+    let only = stream_ids.map(|ids| ids.into_iter().collect::<HashSet<_>>());
+    let (handles, live, cache) = {
+        let ops = runtime.ops.lock().await;
+        let (handles, live) = ops.engine.remote_stream_handles(only.as_ref());
+        (handles, live, ops.engine.stream_stats_cache())
+    };
+    measure_video_stream_stats(handles, live, cache)
         .await
         .map_err(|message| VideoStateError::EngineFailed { message })
 }

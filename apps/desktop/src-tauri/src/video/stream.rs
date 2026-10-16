@@ -8,18 +8,19 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mozjpeg::{ColorSpace, Compress};
+use mozjpeg::{ColorSpace, CompInfoExt, Compress};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::video::convert::{resize_i420_filtered_reusing, I420Frame};
 use crate::video::domain::{VideoPresentationSettings, VideoTrackSource};
+use crate::video::pacing::{FramePacer, DISPLAY_TOLERANCE};
 
 const BOUNDARY: &str = "ravenframe";
 type EncodedFrame = Arc<Vec<u8>>;
@@ -81,23 +82,31 @@ impl VideoFrameHub {
             .unwrap_or(false)
     }
 
-    pub fn publish(&self, stream_id: &str, jpeg: Vec<u8>) {
+    /// Offer a frame to every viewer of a stream. Returns how many took it; a viewer that
+    /// still has the previous frame pending skips this one.
+    pub fn publish(&self, stream_id: &str, jpeg: Vec<u8>) -> usize {
         let frame = Arc::new(jpeg);
         let Ok(mut streams) = self.subscribers.lock() else {
-            return;
+            return 0;
         };
         let Some(subscribers) = streams.get_mut(stream_id) else {
-            return;
+            return 0;
         };
+        let mut delivered = 0;
         subscribers.retain(
             |_, subscriber| match subscriber.try_send(Arc::clone(&frame)) {
-                Ok(()) | Err(TrySendError::Full(_)) => true,
+                Ok(()) => {
+                    delivered += 1;
+                    true
+                }
+                Err(TrySendError::Full(_)) => true,
                 Err(TrySendError::Disconnected(_)) => false,
             },
         );
         if subscribers.is_empty() {
             streams.remove(stream_id);
         }
+        delivered
     }
 
     pub fn remove_stream(&self, stream_id: &str) {
@@ -237,9 +246,21 @@ pub struct VideoFramePublisher {
     hub: VideoFrameHub,
     settings: Arc<RwLock<VideoPresentationSettings>>,
     sender: SyncSender<I420Frame>,
-    last_submitted: Mutex<Option<Instant>>,
+    pacer: Mutex<FramePacer>,
     encoder_busy: Arc<AtomicBool>,
     recycled_frame: Arc<Mutex<Option<I420Frame>>>,
+    counters: Arc<PresentationCounters>,
+}
+
+/// What a presentation stream has done, for measuring the shown frame rate and what the
+/// JPEG step costs. Written by the stream's encode worker, read by stats commands.
+#[derive(Debug, Default)]
+pub struct PresentationCounters {
+    /// JPEGs a viewer actually took (the shown frame rate).
+    pub shown: AtomicU64,
+    /// Frames encoded, and the time spent resizing and encoding them.
+    pub encoded: AtomicU64,
+    pub encode_micros: AtomicU64,
 }
 
 impl std::fmt::Debug for VideoFramePublisher {
@@ -267,20 +288,28 @@ impl VideoFramePublisher {
         let worker_busy = Arc::clone(&encoder_busy);
         let recycled_frame = Arc::new(Mutex::new(None));
         let worker_recycled = Arc::clone(&recycled_frame);
+        let counters = Arc::new(PresentationCounters::default());
+        let worker_counters = Arc::clone(&counters);
         let _ = thread::Builder::new()
             .name(format!("raven-video-present-{worker_id}"))
             .spawn(move || {
                 let mut resized = empty_i420_frame();
-                let mut rgb = Vec::new();
+                let mut planes = JpegPlanes::default();
                 while let Ok(frame) = receiver.recv() {
                     let settings = worker_settings
                         .read()
                         .map(|value| value.clone())
                         .unwrap_or_default();
-                    if let Some(jpeg) =
-                        encode_frame(&frame, &settings, source, &mut resized, &mut rgb)
-                    {
-                        worker_hub.publish(&worker_id, jpeg);
+                    let started = Instant::now();
+                    let jpeg = encode_frame(&frame, &settings, source, &mut resized, &mut planes);
+                    worker_counters.encoded.fetch_add(1, Ordering::Relaxed);
+                    worker_counters
+                        .encode_micros
+                        .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    if let Some(jpeg) = jpeg {
+                        if worker_hub.publish(&worker_id, jpeg) > 0 {
+                            worker_counters.shown.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                     if let Ok(mut recycled) = worker_recycled.lock() {
                         *recycled = Some(frame);
@@ -295,14 +324,19 @@ impl VideoFramePublisher {
             hub,
             settings,
             sender,
-            last_submitted: Mutex::new(None),
+            pacer: Mutex::new(FramePacer::new()),
             encoder_busy,
             recycled_frame,
+            counters,
         }
     }
 
     pub fn stream_id(&self) -> &str {
         &self.stream_id
+    }
+
+    pub fn counters(&self) -> Arc<PresentationCounters> {
+        Arc::clone(&self.counters)
     }
 
     pub fn wants_frame(&self) -> bool {
@@ -313,15 +347,13 @@ impl VideoFramePublisher {
             .settings
             .read()
             .map(|settings| settings.limits_for(self.source).2)
-            .unwrap_or(15)
-            .max(1);
+            .unwrap_or(15);
+        let interval = FramePacer::interval_for(f64::from(fps));
         let now = Instant::now();
-        let Ok(mut last) = self.last_submitted.lock() else {
+        let Ok(mut pacer) = self.pacer.lock() else {
             return false;
         };
-        if last.is_some_and(|previous| {
-            now.duration_since(previous) < Duration::from_secs_f64(1.0 / fps as f64)
-        }) {
+        if !pacer.is_due(now, interval, DISPLAY_TOLERANCE) {
             return false;
         }
         if self
@@ -331,7 +363,7 @@ impl VideoFramePublisher {
         {
             return false;
         }
-        *last = Some(now);
+        pacer.accept(now, interval);
         true
     }
 
@@ -382,7 +414,7 @@ fn encode_frame(
     settings: &VideoPresentationSettings,
     source: VideoTrackSource,
     resized: &mut I420Frame,
-    rgb: &mut Vec<u8>,
+    planes: &mut JpegPlanes,
 ) -> Option<Vec<u8>> {
     let (max_width, max_height, _, quality) = settings.limits_for(source);
     let (width, height) = fit_dimensions(frame.width, frame.height, max_width, max_height);
@@ -392,13 +424,127 @@ fn encode_frame(
         resize_i420_filtered_reusing(frame, width, height, resized);
         resized
     };
-    i420_to_rgb_reusing(prepared, rgb);
-    let mut compressor = Compress::new(ColorSpace::JCS_RGB);
-    compressor.set_size(width as usize, height as usize);
-    compressor.set_quality(quality);
-    let mut compressor = compressor.start_compress(Vec::new()).ok()?;
-    compressor.write_scanlines(rgb).ok()?;
-    compressor.finish().ok()
+    encode_i420_jpeg(prepared, quality, planes)
+}
+
+/// Block-aligned planes reused across [`encode_i420_jpeg`] calls.
+#[derive(Default)]
+struct JpegPlanes {
+    y: Vec<u8>,
+    cb: Vec<u8>,
+    cr: Vec<u8>,
+}
+
+/// Encode an I420 frame as a baseline 4:2:0 JPEG without converting it to RGB.
+///
+/// JPEG stores YCbCr 4:2:0 itself, so the decoded planes go in as libjpeg "raw data",
+/// only expanded from video range (Y 16–235, chroma 16–240) to the full range JFIF
+/// expects. mozjpeg's default profile (trellis quantisation, optimised progressive scans)
+/// makes small files slowly; this is a loopback path where bytes are free and time is not,
+/// so it uses the fastest (libjpeg-turbo compatible) settings.
+fn encode_i420_jpeg(frame: &I420Frame, quality: f32, planes: &mut JpegPlanes) -> Option<Vec<u8>> {
+    // mozjpeg reports libjpeg errors by unwinding.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut compressor = Compress::new(ColorSpace::JCS_YCbCr);
+        compressor.set_fastest_defaults();
+        compressor.set_size(frame.width as usize, frame.height as usize);
+        compressor.set_quality(quality);
+        compressor.set_raw_data_in(true);
+        compressor.set_chroma_sampling_pixel_sizes((2, 2), (2, 2));
+        let mut compressor = compressor.start_compress(Vec::new()).ok()?;
+        let layout: Vec<(usize, usize)> = compressor
+            .components()
+            .iter()
+            .map(|component| (component.row_stride(), component.col_stride()))
+            .collect();
+        let [(y_stride, y_rows), (cb_stride, cb_rows), (cr_stride, cr_rows)] = layout[..] else {
+            return None;
+        };
+        let (width, height) = (frame.width as usize, frame.height as usize);
+        let (chroma_width, chroma_height) = (
+            frame.chroma_width() as usize,
+            frame.chroma_height() as usize,
+        );
+        pad_plane(
+            &frame.y,
+            (width, height),
+            &LUMA_RANGE,
+            &mut planes.y,
+            (y_stride, y_rows),
+        );
+        pad_plane(
+            &frame.u,
+            (chroma_width, chroma_height),
+            &CHROMA_RANGE,
+            &mut planes.cb,
+            (cb_stride, cb_rows),
+        );
+        pad_plane(
+            &frame.v,
+            (chroma_width, chroma_height),
+            &CHROMA_RANGE,
+            &mut planes.cr,
+            (cr_stride, cr_rows),
+        );
+        if !compressor.write_raw_data(&[&planes.y, &planes.cb, &planes.cr]) {
+            return None;
+        }
+        compressor.finish().ok()
+    }))
+    .ok()
+    .flatten()
+}
+
+/// Copy a tight plane into a block-aligned buffer through a range lookup table, repeating
+/// the last column and row into the padding so edge blocks do not ring.
+fn pad_plane(
+    source: &[u8],
+    (width, height): (usize, usize),
+    range: &[u8; 256],
+    target: &mut Vec<u8>,
+    (stride, rows): (usize, usize),
+) {
+    target.resize(stride * rows, 0);
+    if width == 0 || height == 0 || stride < width || source.len() < width * height {
+        return;
+    }
+    for row in 0..rows {
+        let source_row = &source[row.min(height - 1) * width..][..width];
+        let target_row = &mut target[row * stride..][..stride];
+        for (output, input) in target_row.iter_mut().zip(source_row) {
+            *output = range[usize::from(*input)];
+        }
+        let edge = range[usize::from(source_row[width - 1])];
+        target_row[width..].fill(edge);
+    }
+}
+
+/// Video-range to full-range lookup tables (BT.601 levels).
+const LUMA_RANGE: [u8; 256] = range_table(16, 219, 0);
+const CHROMA_RANGE: [u8; 256] = range_table(128, 224, 128);
+
+const fn range_table(center: i32, span: i32, offset: i32) -> [u8; 256] {
+    let mut table = [0_u8; 256];
+    let mut index = 0;
+    while index < 256 {
+        // Rounded (index - center) × 255 / span, shifted by offset and clamped.
+        let delta = (index as i32 - center) * 255;
+        let rounded = if delta >= 0 {
+            (2 * delta + span) / (2 * span)
+        } else {
+            -((-2 * delta + span) / (2 * span))
+        };
+        let value = rounded + offset;
+        table[index] = if value < 0 {
+            0
+        } else if value > 255 {
+            255
+        } else {
+            value as u8
+        };
+        index += 1;
+    }
+    table
 }
 
 fn empty_i420_frame() -> I420Frame {
@@ -408,28 +554,6 @@ fn empty_i420_frame() -> I420Frame {
         y: Vec::new(),
         u: Vec::new(),
         v: Vec::new(),
-    }
-}
-
-fn i420_to_rgb_reusing(frame: &I420Frame, rgb: &mut Vec<u8>) {
-    let width = frame.width as usize;
-    let height = frame.height as usize;
-    let chroma_width = frame.chroma_width() as usize;
-    rgb.resize(width * height * 3, 0);
-    for row in 0..height {
-        for column in 0..width {
-            let y = frame.y[row * width + column] as i32;
-            let chroma_index = (row / 2) * chroma_width + (column / 2);
-            let u = frame.u[chroma_index] as i32;
-            let v = frame.v[chroma_index] as i32;
-            let c = (y - 16).max(0);
-            let d = u - 128;
-            let e = v - 128;
-            let offset = (row * width + column) * 3;
-            rgb[offset] = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            rgb[offset + 1] = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            rgb[offset + 2] = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-        }
     }
 }
 
@@ -467,16 +591,16 @@ mod tests {
         );
         assert_eq!(
             settings.limits_for(VideoTrackSource::Screenshare),
-            (1920, 1080, 15, 92.0)
+            (1920, 1080, 30, 92.0)
         );
     }
 
     #[test]
     fn screenshare_frame_rate_follows_the_presentation_profile_but_resolution_does_not() {
         for (profile, frame_rate) in [
-            (VideoPresentationProfile::Efficiency, 10),
-            (VideoPresentationProfile::Balanced, 15),
-            (VideoPresentationProfile::Quality, 30),
+            (VideoPresentationProfile::Efficiency, 15),
+            (VideoPresentationProfile::Balanced, 30),
+            (VideoPresentationProfile::Quality, 60),
         ] {
             let settings = VideoPresentationSettings { profile };
             assert_eq!(
@@ -484,6 +608,264 @@ mod tests {
                 (1920, 1080, frame_rate, 92.0)
             );
         }
+    }
+
+    /// A screen-like 1080p frame: white page, dark "text" runs, a gradient band and a
+    /// noisy photo-like block, in video range like a decoded frame.
+    fn screen_like_frame(width: u32, height: u32, photo: bool) -> I420Frame {
+        let (w, h) = (width as usize, height as usize);
+        let mut seed = 0x1234_5678_u32;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        // Which 7×24 "glyph cells" hold a letter: a fixed pseudo-random pattern with spaces.
+        let letter = |cell_column: usize, cell_row: usize| {
+            (cell_column.wrapping_mul(2_654_435_761) ^ cell_row.wrapping_mul(40_503)) % 7 > 1
+        };
+        let mut y = vec![235_u8; w * h];
+        for row in 0..h {
+            for column in 0..w {
+                let index = row * w + column;
+                let (glyph_x, glyph_y) = (column % 7, row % 24);
+                let stroke = (4..16).contains(&glyph_y)
+                    && (glyph_x == 1 || glyph_x == 4 || glyph_y == 4 || glyph_y == 10);
+                if stroke && letter(column / 7, row / 24) {
+                    y[index] = 30;
+                }
+                if photo && row > h * 2 / 3 && column < w / 2 {
+                    y[index] = 16 + ((column * 219) / (w / 2)) as u8;
+                }
+                if photo && row > h * 2 / 3 && column >= w / 2 {
+                    y[index] = 40 + (noise() % 160) as u8;
+                }
+            }
+        }
+        let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+        let u = (0..cw * ch).map(|index| 110 + (index % 37) as u8).collect();
+        let v = (0..cw * ch).map(|index| 120 + (index % 23) as u8).collect();
+        I420Frame {
+            width,
+            height,
+            y,
+            u,
+            v,
+        }
+    }
+
+    /// The encoder used up to v0.1.3: I420 → RGB in Rust, then mozjpeg's default profile.
+    fn legacy_rgb_jpeg(
+        frame: &I420Frame,
+        quality: f32,
+        rgb: &mut Vec<u8>,
+        fastest: bool,
+    ) -> Vec<u8> {
+        i420_to_rgb_reusing(frame, rgb);
+        let mut compressor = Compress::new(ColorSpace::JCS_RGB);
+        if fastest {
+            compressor.set_fastest_defaults();
+        }
+        compressor.set_size(frame.width as usize, frame.height as usize);
+        compressor.set_quality(quality);
+        let mut compressor = compressor.start_compress(Vec::new()).unwrap();
+        compressor.write_scanlines(rgb).unwrap();
+        compressor.finish().unwrap()
+    }
+
+    fn i420_to_rgb_reusing(frame: &I420Frame, rgb: &mut Vec<u8>) {
+        let width = frame.width as usize;
+        let height = frame.height as usize;
+        let chroma_width = frame.chroma_width() as usize;
+        rgb.resize(width * height * 3, 0);
+        for row in 0..height {
+            for column in 0..width {
+                let y = frame.y[row * width + column] as i32;
+                let chroma_index = (row / 2) * chroma_width + (column / 2);
+                let u = frame.u[chroma_index] as i32;
+                let v = frame.v[chroma_index] as i32;
+                let c = (y - 16).max(0);
+                let d = u - 128;
+                let e = v - 128;
+                let offset = (row * width + column) * 3;
+                rgb[offset] = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+                rgb[offset + 1] = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+                rgb[offset + 2] = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            }
+        }
+    }
+
+    fn time_ms(runs: u32, mut work: impl FnMut()) -> f64 {
+        work();
+        let started = Instant::now();
+        for _ in 0..runs {
+            work();
+        }
+        started.elapsed().as_secs_f64() * 1_000.0 / f64::from(runs)
+    }
+
+    /// Per-frame cost of the presentation path. Run optimised, as testers do:
+    /// `cargo.ps1 test --release --lib presentation_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn presentation_cost() {
+        use crate::video::convert::{packed_to_i420, resize_i420_filtered, PackedFormat};
+
+        let mut rgb = Vec::new();
+        let mut planes = JpegPlanes::default();
+        let mut resized = empty_i420_frame();
+        let runs = 10;
+        for (label, photo) in [("text", false), ("text + photo", true)] {
+            let full = screen_like_frame(1920, 1080, photo);
+            println!("-- 1080p {label}");
+            let rows = [
+                (
+                    "old: RGB + mozjpeg default q92",
+                    time_ms(runs, || {
+                        legacy_rgb_jpeg(&full, 92.0, &mut rgb, false);
+                    }),
+                ),
+                (
+                    "RGB + fastest q92",
+                    time_ms(runs, || {
+                        legacy_rgb_jpeg(&full, 92.0, &mut rgb, true);
+                    }),
+                ),
+                (
+                    "new: raw 4:2:0 + fastest q92",
+                    time_ms(runs, || {
+                        encode_i420_jpeg(&full, 92.0, &mut planes).unwrap();
+                    }),
+                ),
+            ];
+            for (name, ms) in rows {
+                println!("{name:<34} {ms:7.2} ms");
+            }
+            println!(
+                "{:<34} {} KB -> {} KB",
+                "JPEG size old -> new",
+                legacy_rgb_jpeg(&full, 92.0, &mut rgb, false).len() / 1024,
+                encode_i420_jpeg(&full, 92.0, &mut planes).unwrap().len() / 1024
+            );
+        }
+
+        println!("-- conversions");
+        let full = screen_like_frame(1920, 1080, true);
+        let wide = screen_like_frame(2560, 1440, true);
+        let bgra_1080 = vec![200_u8; 1920 * 1080 * 4];
+        let bgra_1440 = vec![200_u8; 2560 * 1440 * 4];
+        let rows = [
+            (
+                "I420->RGB 1080p (old encoder input)",
+                time_ms(runs, || i420_to_rgb_reusing(&full, &mut rgb)),
+            ),
+            (
+                "BGRA->I420 1080p (capture)",
+                time_ms(runs, || {
+                    packed_to_i420(&bgra_1080, 1920, 1080, 1920 * 4, PackedFormat::Bgra).unwrap();
+                }),
+            ),
+            (
+                "BGRA->I420 1440p (capture)",
+                time_ms(runs, || {
+                    packed_to_i420(&bgra_1440, 2560, 1440, 2560 * 4, PackedFormat::Bgra).unwrap();
+                }),
+            ),
+            (
+                "resize 1440p->1080p (capture/present)",
+                time_ms(runs, || {
+                    resize_i420_filtered_reusing(&wide, 1920, 1080, &mut resized)
+                }),
+            ),
+            (
+                "resize 1440p->720p (capture)",
+                time_ms(runs, || {
+                    resize_i420_filtered(&wide, 1280, 720);
+                }),
+            ),
+        ];
+        for (name, ms) in rows {
+            println!("{name:<38} {ms:7.2} ms");
+        }
+    }
+
+    fn decode_rgb(jpeg: &[u8]) -> (usize, usize, Vec<u8>) {
+        let mut image = mozjpeg::Decompress::new_mem(jpeg).unwrap().rgb().unwrap();
+        let (width, height) = (image.width(), image.height());
+        let pixels: Vec<[u8; 3]> = image.read_scanlines().unwrap();
+        image.finish().unwrap();
+        (width, height, pixels.concat())
+    }
+
+    #[test]
+    fn raw_jpeg_keeps_size_and_colours_of_the_rgb_conversion() {
+        // Odd block alignment on both axes exercises the edge padding.
+        for (width, height) in [(642, 362), (1920, 1080), (34, 18)] {
+            let (w, h) = (width as usize, height as usize);
+            let (cw, ch) = ((w + 1) / 2, (h + 1) / 2);
+            // Four flat quadrants: black, white, a saturated red and a mid blue-grey.
+            let quadrant = |column: usize, row: usize| match (column * 2 >= w, row * 2 >= h) {
+                (false, false) => (16, 128, 128),
+                (true, false) => (235, 128, 128),
+                (false, true) => (81, 90, 240),
+                (true, true) => (120, 150, 120),
+            };
+            let frame = I420Frame {
+                width,
+                height,
+                y: (0..w * h)
+                    .map(|index| quadrant(index % w, index / w).0)
+                    .collect(),
+                u: (0..cw * ch)
+                    .map(|index| quadrant(index % cw * 2, index / cw * 2).1)
+                    .collect(),
+                v: (0..cw * ch)
+                    .map(|index| quadrant(index % cw * 2, index / cw * 2).2)
+                    .collect(),
+            };
+            let jpeg = encode_i420_jpeg(&frame, 92.0, &mut JpegPlanes::default()).unwrap();
+            let (decoded_width, decoded_height, decoded) = decode_rgb(&jpeg);
+            assert_eq!((decoded_width, decoded_height), (w, h));
+            let mut expected = Vec::new();
+            i420_to_rgb_reusing(&frame, &mut expected);
+            // Sample the middle of each quadrant, away from edges JPEG blurs.
+            for (column, row) in [
+                (w / 4, h / 4),
+                (w * 3 / 4, h / 4),
+                (w / 4, h * 3 / 4),
+                (w * 3 / 4, h * 3 / 4),
+            ] {
+                let offset = (row * w + column) * 3;
+                for channel in 0..3 {
+                    let difference = i32::from(decoded[offset + channel])
+                        - i32::from(expected[offset + channel]);
+                    assert!(
+                        difference.abs() <= 6,
+                        "{width}×{height} at ({column}, {row}) channel {channel}: {} vs {}",
+                        decoded[offset + channel],
+                        expected[offset + channel]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn range_tables_map_video_levels_to_full_range() {
+        assert_eq!(
+            (
+                LUMA_RANGE[16],
+                LUMA_RANGE[235],
+                LUMA_RANGE[0],
+                LUMA_RANGE[255]
+            ),
+            (0, 255, 0, 255)
+        );
+        assert_eq!(
+            (CHROMA_RANGE[16], CHROMA_RANGE[128], CHROMA_RANGE[240]),
+            (0, 128, 255)
+        );
     }
 
     #[test]

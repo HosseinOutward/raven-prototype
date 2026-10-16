@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import type { VideoOutboundQuality, VideoQualityReport } from "@/lib/video";
 import {
+  codecImplementationNotice,
   createNetworkSamplingPlan,
   createZeroNetworkCounters,
   ratesFromNetworkSamples,
   receivedScreenShareQualityNotice,
+  screenShareCaptureFps,
   screenShareQualityNotice,
   type NetworkActivitySettings,
   type NetworkSample,
@@ -13,6 +16,18 @@ const settings = (
   categories: NetworkActivitySettings["categories"],
   directions: NetworkActivitySettings["directions"] = ["incoming", "outgoing"],
 ): NetworkActivitySettings => ({ enabled: true, categories, directions });
+
+const outbound = (
+  fields: Pick<VideoOutboundQuality, "width" | "height" | "fps" | "targetBitrateBps" | "limitation">,
+): VideoOutboundQuality => ({
+  encoderImplementation: "libvpx",
+  powerEfficientEncoder: false,
+  sourceFrames: 0,
+  framesEncoded: 0,
+  framesSent: 0,
+  totalEncodeTimeSeconds: 0,
+  ...fields,
+});
 
 const sample = (): NetworkSample => ({
   counters: createZeroNetworkCounters(),
@@ -67,12 +82,53 @@ describe("network activity sampling", () => {
       screenShareTransmit: {
         configured: { width: 1920, height: 1080, fps: 10 },
         maxBitrateBps: 4_000_000,
-        outbound: { width: 1280, height: 720, fps: 8, targetBitrateBps: 1_200_000, limitation: "bandwidth" },
+        outbound: outbound({ width: 1280, height: 720, fps: 8, targetBitrateBps: 1_200_000, limitation: "bandwidth" }),
         remoteLossFraction: 0.02,
         roundTripTimeMs: 95,
+        capture: null,
       },
       screenShareReceive: null,
-    })).toBe("Sharing 1280×720 @ 8 FPS; requested 1920×1080 @ 10 FPS · max 4.0 Mbps. Encoder limit: bandwidth. remote loss 2.0% · RTT 95 ms.");
+    })).toBe("Sharing 1280×720 @ 8 FPS; requested 1920×1080 @ 10 FPS · max 4.0 Mbps. Encoder limit: bandwidth. remote loss 2.0% · RTT 95 ms. Encoder: libvpx (software).");
+  });
+
+  test("blames a still screen only when the capture itself delivered fewer frames", () => {
+    const report = (fps: number): VideoQualityReport => ({
+      screenShareTransmit: {
+        configured: { width: 1920, height: 1080, fps: 30 },
+        maxBitrateBps: 6_000_000,
+        outbound: outbound({ width: 1920, height: 1080, fps, targetBitrateBps: 6_000_000, limitation: "none" }),
+        remoteLossFraction: null,
+        roundTripTimeMs: null,
+        capture: null,
+      },
+      screenShareReceive: null,
+    });
+    expect(screenShareQualityNotice(report(4), 4)).toBe("Sharing 1920×1080 @ 4 FPS; requested 1920×1080 @ 30 FPS · max 6.0 Mbps. Fewer frames are sent while the screen is still. Encoder: libvpx (software).");
+    expect(screenShareQualityNotice(report(27), 58)).toBe("Sharing 1920×1080 @ 27 FPS; requested 1920×1080 @ 30 FPS · max 6.0 Mbps. The encoder skipped some frames. Encoder: libvpx (software).");
+    expect(screenShareQualityNotice(report(27), null)).toBe("Sharing 1920×1080 @ 27 FPS; requested 1920×1080 @ 30 FPS · max 6.0 Mbps. Encoder: libvpx (software).");
+  });
+
+  test("measures the capture rate between two reports and ignores a restarted capture", () => {
+    const report = (captured: number): VideoQualityReport => ({
+      screenShareTransmit: {
+        configured: { width: 1920, height: 1080, fps: 30 },
+        maxBitrateBps: 6_000_000,
+        outbound: null,
+        remoteLossFraction: null,
+        roundTripTimeMs: null,
+        capture: { captured, forwarded: 0 },
+      },
+      screenShareReceive: null,
+    });
+    expect(screenShareCaptureFps(report(100), report(220), 2)).toBe(60);
+    expect(screenShareCaptureFps(report(220), report(10), 2)).toBeNull();
+    expect(screenShareCaptureFps(null, report(10), 2)).toBeNull();
+  });
+
+  test("names a hardware encoder and leaves out an unreported one", () => {
+    expect(codecImplementationNotice("Encoder", "NVENC", true)).toBe("Encoder: NVENC (hardware).");
+    expect(codecImplementationNotice("Encoder", "", false)).toBeNull();
+    expect(codecImplementationNotice("Decoder", "unknown", false)).toBeNull();
   });
 
   test("reports the local decode dimensions for received screen shares", () => {
@@ -81,7 +137,9 @@ describe("network activity sampling", () => {
       screenShareReceive: {
         inbound: { width: 1920, height: 1080, fps: 10 },
         lossFraction: 0.005,
+        decoderImplementation: "libvpx",
+        powerEfficientDecoder: false,
       },
-    })).toBe("Receiving 1920×1080 @ 10 FPS · packet loss 0.5%.");
+    })).toBe("Receiving 1920×1080 @ 10 FPS · packet loss 0.5%. Decoder: libvpx (software).");
   });
 });
