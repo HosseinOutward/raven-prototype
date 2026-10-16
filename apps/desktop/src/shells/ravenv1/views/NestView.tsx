@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { AlertCircle, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
+import { groupAudioSatellites, type SatelliteActions } from "@/components/media/audioSatellites";
 import { LiveMediaStage } from "@/components/media/LiveMediaStage";
 import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,25 @@ export function NestView({
 }) {
   const mediaHere = media.activeNestId === nest.id;
   const inside = mediaHere && (media.phase === "connected" || media.phase === "leaving");
+  const linkedAudioIds = useMemo(
+    () => new Set((media.videoState?.localSources ?? []).flatMap((source) => source.linkedAudioSourceId ? [source.linkedAudioSourceId] : [])),
+    [media.videoState?.localSources],
+  );
+  const satellites = useMemo(
+    () => groupAudioSatellites(inside ? media.audioState : null, media.sourceActivity, linkedAudioIds),
+    [inside, linkedAudioIds, media.audioState, media.sourceActivity],
+  );
+  const { setRemoteTrackVolume, setRemoteTrackMuted, stopScreenShare } = media;
+  const satelliteActions = useMemo<SatelliteActions>(() => ({
+    setVolume: async (satellite, gainDb) => {
+      if (satellite.remote) await setRemoteTrackVolume(satellite.remote.participantId, satellite.remote.trackId, gainDb);
+    },
+    setMutedForMe: async (satellite, muted) => {
+      if (satellite.remote) await setRemoteTrackMuted(satellite.remote.participantId, satellite.remote.trackId, muted);
+    },
+    openMixer: () => onNavigate({ kind: "mixer" }),
+    stopShare: () => void stopScreenShare().catch(() => undefined),
+  }), [onNavigate, setRemoteTrackMuted, setRemoteTrackVolume, stopScreenShare]);
 
   if (inside) {
     return (
@@ -50,6 +70,8 @@ export function NestView({
         onWatchNewSharesChange={(watchNewShares) => void data.updatePreferences({ watchNewShares }).catch(() => undefined)}
         onStopScreenShare={() => void media.stopScreenShare().catch(() => undefined)}
         onRetryAudio={() => void media.retryIncomingAudio()}
+        satellites={satellites}
+        satelliteActions={satelliteActions}
         roomLabel={data.labels.nestSingular}
       />
     );

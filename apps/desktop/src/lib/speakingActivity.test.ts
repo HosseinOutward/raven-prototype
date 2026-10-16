@@ -170,6 +170,37 @@ describe("participant voice activity", () => {
   });
 });
 
+describe("source activity", () => {
+  test("an app playing lights its own source, never its owner", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const voice = remoteMicrophone("track-1");
+    const music = remoteMicrophone("track-music");
+    music.track.sourceType = "appAudio";
+    const state = mixerState([], [voice, music]);
+
+    const people = tracker.processMeter(state, remoteMeter("track-music", -20), 0);
+    expect(people["remote-person"]).toBeUndefined();
+    expect(tracker.sources()["remote:remote-person#audio:track-music"]).toEqual({ active: true, intensity: 0.94 });
+
+    const afterVoice = tracker.processMeter(state, remoteMeter("track-1", -60), 10);
+    expect(afterVoice["remote-person"]?.speaking).toBe(false);
+    expect(tracker.sources()["remote:remote-person#audio:track-music"]?.active).toBe(true);
+  });
+
+  test("tracks your own extra source while it is sent and forgets it when muted", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const system: AudioSourceState = { ...localMicrophone(), id: "system-1", sourceType: "systemAudio" };
+    const meter = { ...localMeter(-25), sourceId: "system-1" };
+
+    expect(tracker.processMeter(mixerState([localMicrophone(), system]), meter, 0, "person")["person"]).toBeUndefined();
+    expect(tracker.sources()["local:system-1"]?.active).toBe(true);
+
+    const muted = { ...system, channelStrip: { ...system.channelStrip, mute: { muted: true, mutedByUser: true } } };
+    tracker.reconcile(mixerState([localMicrophone(), muted]), "person");
+    expect(tracker.sources()["local:system-1"]).toBeUndefined();
+  });
+});
+
 function mixerState(
   localSources: AudioSourceState[] = [],
   remoteTracks: RemoteAudioTrackState[] = [],

@@ -23,8 +23,18 @@ export interface ParticipantVoiceActivity {
 
 export type ParticipantVoiceActivityMap = Readonly<Record<string, ParticipantVoiceActivity>>;
 
-type TrackedMicrophone = {
+/** Activity of one published audio track, keyed by `localSourceActivityKey` or `remoteTrackActivityKey`. */
+export interface SourceActivity {
+  active: boolean;
+  intensity: number;
+}
+
+export type SourceActivityMap = Readonly<Record<string, SourceActivity>>;
+
+type TrackedTrack = {
   participantId: string;
+  /** Only microphones make a person speak; other sources light their own satellite. */
+  microphone: boolean;
   active: boolean;
   intensity: number;
   belowSinceMs: number | null;
@@ -33,7 +43,16 @@ type TrackedMicrophone = {
 type MeterTarget = {
   key: string;
   participantId: string;
+  microphone: boolean;
 };
+
+export function localSourceActivityKey(sourceId: string) {
+  return `local:${sourceId}`;
+}
+
+export function remoteTrackActivityKey(participantId: string, trackId: string) {
+  return `remote:${participantId}:${trackId}`;
+}
 
 /**
  * Convert the voice-activation range to a stable 0..1 visual value. RMS is
@@ -76,12 +95,15 @@ export function resolveParticipantVoicePresentation(
 }
 
 /**
- * Stateful threshold/hysteresis reducer. It stores activity per microphone so
- * participants with more than one mic publication remain active while any one
- * of their eligible tracks is speaking.
+ * Stateful threshold/hysteresis reducer over every published audio track.
+ *
+ * People speak only through their microphones: a participant stays active while
+ * any one of their microphones is. Every track, microphone or not, also has its
+ * own activity in `sources()`, so a satellite can show that Sara's music is
+ * playing without lighting Sara.
  */
 export class ParticipantVoiceActivityTracker {
-  private readonly microphones = new Map<string, TrackedMicrophone>();
+  private readonly tracks = new Map<string, TrackedTrack>();
   private readonly observedParticipants = new Set<string>();
 
   processMeter(
@@ -93,11 +115,11 @@ export class ParticipantVoiceActivityTracker {
     const target = state ? meterTargetForUpdate(state, update, localUserId) : null;
     if (!target) return this.reconcile(state, localUserId);
 
-    this.observedParticipants.add(target.participantId);
-    const current = this.microphones.get(target.key);
+    if (target.microphone) this.observedParticipants.add(target.participantId);
+    const current = this.tracks.get(target.key);
     // Remote tracks report the level as received. The strip meter is post-fader, so
     // using it would hide someone you turned down, muted locally, or deafened. A local
-    // source's input meter is its level while muted, which nobody hears: never speaking.
+    // source's input meter is its level while muted, which nobody hears: never active.
     const rmsDb = (update.sourceId ? update.meter : update.inputMeter ?? update.meter).rmsDb;
     let active = current?.active ?? false;
     let belowSinceMs = current?.belowSinceMs ?? null;
@@ -118,8 +140,9 @@ export class ParticipantVoiceActivityTracker {
       belowSinceMs = null;
     }
 
-    this.microphones.set(target.key, {
+    this.tracks.set(target.key, {
       participantId: target.participantId,
+      microphone: target.microphone,
       active,
       intensity: rmsDbToSpeakingIntensity(rmsDb),
       belowSinceMs,
@@ -129,15 +152,15 @@ export class ParticipantVoiceActivityTracker {
 
   reconcile(state: AudioMixerState | null, localUserId?: string): ParticipantVoiceActivityMap {
     if (!state) {
-      this.microphones.clear();
+      this.tracks.clear();
       this.observedParticipants.clear();
       return {};
     }
 
-    const eligible = eligibleMicrophones(state);
+    const eligible = eligibleTracks(state);
     const knownParticipants = knownMicrophoneParticipants(state, localUserId);
-    for (const key of this.microphones.keys()) {
-      if (!eligible.has(key)) this.microphones.delete(key);
+    for (const key of this.tracks.keys()) {
+      if (!eligible.has(key)) this.tracks.delete(key);
     }
     for (const participantId of this.observedParticipants) {
       if (!knownParticipants.has(participantId)) this.observedParticipants.delete(participantId);
@@ -147,24 +170,37 @@ export class ParticipantVoiceActivityTracker {
     for (const participantId of this.observedParticipants) {
       activity[participantId] = { speaking: false, intensity: 0, meterObserved: true };
     }
-    for (const microphone of this.microphones.values()) {
-      const participant = activity[microphone.participantId];
-      if (!participant || !microphone.active) continue;
+    for (const track of this.tracks.values()) {
+      if (!track.microphone) continue;
+      const participant = activity[track.participantId];
+      if (!participant || !track.active) continue;
       participant.speaking = true;
-      participant.intensity = Math.max(participant.intensity, microphone.intensity);
+      participant.intensity = Math.max(participant.intensity, track.intensity);
     }
     return activity;
   }
+
+  /** Activity per eligible track, as of the last `processMeter` or `reconcile`. */
+  sources(): SourceActivityMap {
+    const sources: Record<string, SourceActivity> = {};
+    for (const [key, track] of this.tracks) {
+      sources[key] = { active: track.active, intensity: track.active ? track.intensity : 0 };
+    }
+    return sources;
+  }
 }
 
-export function useParticipantVoiceActivity(audioState: AudioMixerState | null, localUserId?: string) {
+/** Speaking per person (microphones only) and activity per published track. */
+export function useVoiceActivity(audioState: AudioMixerState | null, localUserId?: string) {
   const trackerRef = useRef(new ParticipantVoiceActivityTracker());
   const audioStateRef = useRef(audioState);
-  const [activity, setActivity] = useState<ParticipantVoiceActivityMap>({});
+  const [participants, setParticipants] = useState<ParticipantVoiceActivityMap>({});
+  const [sources, setSources] = useState<SourceActivityMap>({});
   audioStateRef.current = audioState;
 
   useEffect(() => {
-    setActivityIfChanged(setActivity, trackerRef.current.reconcile(audioState, localUserId));
+    setActivityIfChanged(setParticipants, trackerRef.current.reconcile(audioState, localUserId));
+    setSourcesIfChanged(setSources, trackerRef.current.sources());
   }, [audioState, localUserId]);
 
   useEffect(() => {
@@ -178,7 +214,8 @@ export function useParticipantVoiceActivity(audioState: AudioMixerState | null, 
         Date.now(),
         localUserId,
       );
-      setActivityIfChanged(setActivity, next);
+      setActivityIfChanged(setParticipants, next);
+      setSourcesIfChanged(setSources, trackerRef.current.sources());
     })
       .then((unlisten) => {
         if (!mounted) unlisten();
@@ -191,7 +228,7 @@ export function useParticipantVoiceActivity(audioState: AudioMixerState | null, 
     };
   }, [localUserId]);
 
-  return activity;
+  return { participants, sources };
 }
 
 function meterTargetForUpdate(
@@ -201,10 +238,11 @@ function meterTargetForUpdate(
 ): MeterTarget | null {
   if (update.sourceId) {
     const source = state.localSources.find((candidate) => candidate.id === update.sourceId);
-    if (!source || !localMicrophoneEligible(source)) return null;
+    if (!source || !localSourceEligible(source)) return null;
     return {
-      key: localMicrophoneKey(source.id),
-      participantId: localMicrophoneParticipantId(state, source, localUserId),
+      key: localSourceActivityKey(source.id),
+      participantId: localParticipantId(state, source, localUserId),
+      microphone: source.sourceType === "microphone",
     };
   }
 
@@ -213,20 +251,21 @@ function meterTargetForUpdate(
     (candidate) => candidate.track.participantId === update.participantId
       && candidate.track.trackId === update.trackId,
   );
-  if (!track || !remoteMicrophoneEligible(track)) return null;
+  if (!track || !remoteTrackEligible(track)) return null;
   return {
-    key: remoteMicrophoneKey(track),
+    key: remoteTrackActivityKey(track.track.participantId, track.track.trackId),
     participantId: stripSidecarIdentity(track.track.participantId),
+    microphone: track.track.sourceType === "microphone",
   };
 }
 
-function eligibleMicrophones(state: AudioMixerState) {
+function eligibleTracks(state: AudioMixerState) {
   const eligible = new Set<string>();
   for (const source of state.localSources) {
-    if (localMicrophoneEligible(source)) eligible.add(localMicrophoneKey(source.id));
+    if (localSourceEligible(source)) eligible.add(localSourceActivityKey(source.id));
   }
   for (const track of state.remoteTracks) {
-    if (remoteMicrophoneEligible(track)) eligible.add(remoteMicrophoneKey(track));
+    if (remoteTrackEligible(track)) eligible.add(remoteTrackActivityKey(track.track.participantId, track.track.trackId));
   }
   return eligible;
 }
@@ -235,7 +274,7 @@ function knownMicrophoneParticipants(state: AudioMixerState, localUserId?: strin
   const participants = new Set<string>();
   for (const source of state.localSources) {
     if (source.sourceType !== "microphone") continue;
-    participants.add(localMicrophoneParticipantId(state, source, localUserId));
+    participants.add(localParticipantId(state, source, localUserId));
   }
   for (const track of state.remoteTracks) {
     if (track.track.sourceType !== "microphone") continue;
@@ -244,7 +283,7 @@ function knownMicrophoneParticipants(state: AudioMixerState, localUserId?: strin
   return participants;
 }
 
-function localMicrophoneParticipantId(
+function localParticipantId(
   state: AudioMixerState,
   source: AudioSourceState,
   localUserId?: string,
@@ -252,29 +291,18 @@ function localMicrophoneParticipantId(
   return stripSidecarIdentity(localUserId || source.ownerId || state.localParticipantId || "local");
 }
 
-function localMicrophoneEligible(source: AudioSourceState) {
-  return source.sourceType === "microphone"
-    && source.enabled
+function localSourceEligible(source: AudioSourceState) {
+  return source.enabled
     && source.publishing
     && source.publishedTrack != null
     && !source.publishedTrack.muted
     && !source.channelStrip.mute.muted;
 }
 
-function remoteMicrophoneEligible(track: RemoteAudioTrackState) {
-  // Whether *this* listener muted the track is deliberately not considered: speaking is
+function remoteTrackEligible(track: RemoteAudioTrackState) {
+  // Whether *this* listener muted the track is deliberately not considered: activity is
   // a fact about the other person, not about what you chose to hear.
-  return track.track.sourceType === "microphone"
-    && track.subscribed
-    && !track.track.muted;
-}
-
-function localMicrophoneKey(sourceId: string) {
-  return `local:${sourceId}`;
-}
-
-function remoteMicrophoneKey(track: RemoteAudioTrackState) {
-  return `remote:${track.track.participantId}:${track.track.trackId}`;
+  return track.subscribed && !track.track.muted;
 }
 
 function roundIntensity(value: number) {
@@ -299,5 +327,17 @@ function activityMapsEqual(left: ParticipantVoiceActivityMap, right: Participant
       && a.speaking === b.speaking
       && a.intensity === b.intensity
       && a.meterObserved === b.meterObserved;
+  });
+}
+
+function setSourcesIfChanged(
+  setSources: React.Dispatch<React.SetStateAction<SourceActivityMap>>,
+  next: SourceActivityMap,
+) {
+  setSources((current) => {
+    const currentKeys = Object.keys(current);
+    if (currentKeys.length !== Object.keys(next).length) return next;
+    const same = currentKeys.every((key) => next[key]?.active === current[key].active && next[key]?.intensity === current[key].intensity);
+    return same ? current : next;
   });
 }

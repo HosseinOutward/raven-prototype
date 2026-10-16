@@ -357,6 +357,14 @@ textarea {
   }
 }
 
+/* A person or tile leaving: fades and shrinks, then the layout closes the gap. */
+@keyframes raven-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,

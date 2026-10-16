@@ -29,7 +29,8 @@ import {
 } from "@/lib/video";
 import {
   type ParticipantVoiceActivityMap,
-  useParticipantVoiceActivity,
+  type SourceActivityMap,
+  useVoiceActivity,
 } from "@/lib/speakingActivity";
 import type { NetworkActivityCategory, NetworkActivityDirection, NetworkActivitySettings } from "./networkActivity";
 import {
@@ -100,6 +101,8 @@ export interface RavenMediaAdapterState {
   audioState: AudioMixerState | null;
   videoState: VideoMixerState | null;
   speakingActivity: ParticipantVoiceActivityMap;
+  /** Activity per published audio track, for the satellites of extra sources on the stage. */
+  sourceActivity: SourceActivityMap;
   audioCapabilities: NativeAudioCapabilityReport | null;
   videoCapabilities: NativeVideoCapabilityReport | null;
   selfMediaPreviewMode: SelfMediaPreviewMode;
@@ -177,6 +180,9 @@ export interface RavenMediaAdapterState {
   setVideoPresentationProfile: (profile: VideoPresentationProfile) => Promise<void>;
   setLocalPreviewSurfaceVisible: (visible: boolean) => Promise<void>;
   retryIncomingAudio: () => Promise<void>;
+  /** This listener's own volume for one incoming track. Nobody else hears the change. */
+  setRemoteTrackVolume: (participantId: string, trackId: string, gainDb: number) => Promise<void>;
+  setRemoteTrackMuted: (participantId: string, trackId: string, muted: boolean) => Promise<void>;
   clearError: () => void;
 }
 
@@ -198,7 +204,7 @@ export function useRavenMediaAdapter(
   const [error, setError] = useState("");
   const [audioState, setAudioState] = useState<AudioMixerState | null>(null);
   const [videoState, setVideoState] = useState<VideoMixerState | null>(null);
-  const speakingActivity = useParticipantVoiceActivity(audioState, options.localUserId);
+  const { participants: speakingActivity, sources: sourceActivity } = useVoiceActivity(audioState, options.localUserId);
   const [audioCapabilities, setAudioCapabilities] = useState<NativeAudioCapabilityReport | null>(null);
   const [videoCapabilities, setVideoCapabilities] = useState<NativeVideoCapabilityReport | null>(null);
   const [inputDevices, setInputDevices] = useState<AudioInputDevice[]>([]);
@@ -1095,6 +1101,16 @@ export function useRavenMediaAdapter(
     }
   }, [deafenMode, deafened, setNonFatalError]);
 
+  // A listener's own fader and mute for one track. They reject on failure so the
+  // caller can say so where the change was made; nothing about the call is at risk.
+  const setRemoteTrackVolume = useCallback(async (participantId: string, trackId: string, gainDb: number) => {
+    setAudioState(await audioCommands.setRemoteTrackGain(participantId, trackId, gainDb));
+  }, []);
+
+  const setRemoteTrackMuted = useCallback(async (participantId: string, trackId: string, muted: boolean) => {
+    setAudioState(await audioCommands.setRemoteTrackMute(participantId, trackId, muted));
+  }, []);
+
   const audioSession = audioState?.session;
   const audioNotice = audioSession?.error
     ?? (audioSession?.connectionStatus === "reconnecting"
@@ -1134,6 +1150,7 @@ export function useRavenMediaAdapter(
     audioState,
     videoState,
     speakingActivity,
+    sourceActivity,
     audioCapabilities,
     videoCapabilities,
     selfMediaPreviewMode,
@@ -1206,6 +1223,8 @@ export function useRavenMediaAdapter(
     setVideoPresentationProfile,
     setLocalPreviewSurfaceVisible,
     retryIncomingAudio,
+    setRemoteTrackVolume,
+    setRemoteTrackMuted,
     clearError,
   };
 }

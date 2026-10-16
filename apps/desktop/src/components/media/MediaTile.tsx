@@ -45,6 +45,9 @@ export function MediaTile({
   onTogglePin,
   onFitChange,
   onReceivingChange,
+  corner,
+  leaving = false,
+  className,
 }: {
   tile: NativeMediaTile;
   prominent?: boolean;
@@ -58,6 +61,11 @@ export function MediaTile({
   onFitChange: (fit: MediaFit) => void;
   /** Absent for video that cannot be turned off here (your own camera). */
   onReceivingChange?: (receiving: boolean) => void;
+  /** Drawn in the top-left corner: the person's extra audio sources. */
+  corner?: React.ReactNode;
+  /** The person or share has gone; the tile is only playing its exit. */
+  leaving?: boolean;
+  className?: string;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [playbackWaiting, setPlaybackWaiting] = useState(false);
@@ -108,12 +116,13 @@ export function MediaTile({
     <div
       ref={rootRef}
       role="button"
-      tabIndex={0}
+      tabIndex={leaving ? -1 : 0}
       aria-label={`${pinned ? "Unpin" : "Focus on"} ${label}`}
       aria-pressed={pinned}
-      onClick={onTogglePin}
+      aria-hidden={leaving || undefined}
+      onClick={leaving ? undefined : onTogglePin}
       onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return;
+        if (leaving || event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onTogglePin();
@@ -124,6 +133,7 @@ export function MediaTile({
         "raven-media-tile group relative h-full min-h-0 w-full overflow-hidden rounded-card bg-background text-left",
         tile.speaking && !isShare && "raven-speaking-tile",
         fullscreen && "rounded-none",
+        className,
       )}
     >
       {tile.streamUrl && receiving ? (
@@ -237,6 +247,8 @@ export function MediaTile({
           ) : null}
         </PopoverContent>
       </Popover>
+
+      {corner ? <div className="absolute left-2 top-2">{corner}</div> : null}
 
       <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-chip bg-black/65 px-2 py-1 text-caption font-medium text-white backdrop-blur-md">
         {isShare ? <MonitorUp className="h-3.5 w-3.5 shrink-0" /> : null}

@@ -7,8 +7,12 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { SelfPreviewMode, VideoMixerState, VideoStreamEndpoint } from "@/lib/video";
+import { stripSidecarIdentity } from "@/lib/mediaIdentity";
 import { speakingGlowStyle, type ParticipantVoiceActivityMap } from "@/lib/speakingActivity";
+import { EMPTY_SATELLITES, type AudioSatellites, type SatelliteActions } from "./audioSatellites";
+import { SatelliteCluster } from "./SatelliteCluster";
 import { MediaTile, type MediaFit } from "./MediaTile";
+import { motionClass, useMotionArmed, useStageMotion, type MotionEntry } from "./stageMotion";
 import { bestGridColumns, newestScreenShareKey, newShareKeys, partitionStageTiles, resolveStageFocusKeys } from "./stageState";
 import { useNativeMediaTiles, type NativeMediaTile } from "./useNativeMediaTiles";
 import { effectiveReceiving, receivingKey, useVideoReceiving } from "./useVideoReceiving";
@@ -17,9 +21,14 @@ type StageView = "grid" | "focus";
 type StagePhase = "idle" | "joining" | "connected" | "leaving" | "error";
 type StageTile = NativeMediaTile & { watching: boolean };
 type StageNotice = { text: string; watch?: StageTile };
+type SatelliteProps = { satellites: AudioSatellites; actions: SatelliteActions; armed: boolean };
 
-/** Shares that show up this soon after the viewer (re)connects were already running: absorb them quietly. */
+/**
+ * Shares that show up this soon after the viewer (re)connects were already running: absorb
+ * them quietly. The same window keeps people who were already here from popping in.
+ */
 const SETTLE_MS = 2500;
+const NO_SATELLITE_ACTIONS: SatelliteActions = { setVolume: async () => undefined, setMutedForMe: async () => undefined };
 const FILMSTRIP_WIDTH = 176;
 const FILMSTRIP_HEIGHT = 112;
 
@@ -45,6 +54,8 @@ export function LiveMediaStage({
   onWatchNewSharesChange,
   onStopScreenShare,
   onRetryAudio,
+  satellites = EMPTY_SATELLITES,
+  satelliteActions = NO_SATELLITE_ACTIONS,
   roomLabel = "Nest",
   className,
 }: {
@@ -62,6 +73,9 @@ export function LiveMediaStage({
   onWatchNewSharesChange?: (watch: boolean) => void;
   onStopScreenShare?: () => void;
   onRetryAudio?: () => void;
+  /** Extra audio sources per person (system audio, an app, a second input). */
+  satellites?: AudioSatellites;
+  satelliteActions?: SatelliteActions;
   roomLabel?: string;
   className?: string;
 }) {
@@ -108,6 +122,11 @@ export function LiveMediaStage({
   }), [nativeTiles, ownPreview, pendingFor]);
 
   const { visual, cards, voice } = useMemo(() => partitionStageTiles(tiles), [tiles]);
+  // Arrivals and departures move only once the room has settled: nobody pops in when you
+  // join or when the connection comes back, and leaving yourself is not everyone leaving.
+  const motionArmed = useMotionArmed(viewerConnected && phase === "connected", SETTLE_MS);
+  const motion = useStageMotion({ voice, visual }, tileKey, motionArmed, VISUAL_MOVE_IN);
+  const satelliteProps: SatelliteProps = { satellites, actions: satelliteActions, armed: motionArmed };
   const sharers = useMemo(() => {
     const byPerson = new Map<string, StageTile>();
     for (const tile of tiles) if (tile.source === "screenshare") byPerson.set(tile.participantId, tile);
@@ -119,14 +138,16 @@ export function LiveMediaStage({
   );
   const focusKeys = resolveStageFocusKeys({ tiles: focusCandidates, manualPinKey, focusMode: view === "focus" });
   const focusTiles = focusKeys.flatMap((key) => visual.filter((tile) => tile.key === key));
-  const sideTiles = focusTiles.length ? visual.filter((tile) => !focusKeys.includes(tile.key)) : [];
+  const sideEntries = focusTiles.length ? motion.visual.filter((entry) => !focusKeys.includes(entry.key)) : [];
+  const sideTiles = sideEntries.filter((entry) => entry.phase !== "leave");
+  const visualPhase = new Map(motion.visual.map((entry) => [entry.key, entry.phase]));
   const reconnecting = connected && !videoState?.viewerConnected;
   const participantCount = new Set(tiles.map((tile) => tile.participantId)).size;
   const narrowFocus = size.width > 0 && size.width < 720;
   const filmstripShown = sideTiles.length > 0 && !filmstripCollapsed;
   const mainWidth = (size.width || 900) - (filmstripShown && !narrowFocus ? FILMSTRIP_WIDTH + 8 : 0);
   const mainHeight = (size.height || 460) - (filmstripShown && narrowFocus ? FILMSTRIP_HEIGHT + 8 : 0);
-  const gridColumns = bestGridColumns(visual.length, size.width || 900, size.height || 460);
+  const gridColumns = bestGridColumns(motion.visual.length, size.width || 900, size.height || 460);
   const focusColumns = bestGridColumns(focusTiles.length, mainWidth, mainHeight);
   const canFullscreen = typeof document !== "undefined" && document.fullscreenEnabled;
   const ownShareActive = tiles.some((tile) => tile.isLocal && tile.source === "screenshare");
@@ -218,9 +239,20 @@ export function LiveMediaStage({
     return tile.source === "screenshare" ? setOwnPreview : undefined;
   };
 
-  const renderTile = (tile: StageTile, prominent = false) => (
+  const renderTile = (tile: StageTile, prominent = false, entryPhase = visualPhase.get(tile.key) ?? "idle") => (
     <MediaTile
       key={tile.key}
+      className={motionClass(entryPhase, "animate-fade-in")}
+      leaving={entryPhase === "leave"}
+      corner={tile.source === "camera" ? (
+        <SatelliteCluster
+          satellites={satellitesFor(satellites, tile)}
+          ownerName={tile.isLocal ? "You" : tile.displayName}
+          variant="tile"
+          armed={motionArmed}
+          actions={satelliteActions}
+        />
+      ) : null}
       tile={tile}
       prominent={prominent}
       pinned={manualPinKey === tile.key}
@@ -305,7 +337,7 @@ export function LiveMediaStage({
                 {phase === "leaving" ? "Leaving…" : "Getting the room ready…"}
               </div>
             ) : !visual.length ? (
-              <VoiceRoom people={voice} sharers={sharers} onWatch={watchShare} />
+              <VoiceRoom people={motion.voice} sharers={sharers} onWatch={watchShare} satellites={satelliteProps} />
             ) : focusTiles.length ? (
               <div className={cn("relative flex h-full min-h-0 gap-2", narrowFocus && "flex-col")}>
                 <div
@@ -325,7 +357,7 @@ export function LiveMediaStage({
                       {narrowFocus ? <ChevronDown className="h-3.5 w-3.5" /> : <><ChevronRight className="h-3.5 w-3.5" />Hide</>}
                     </button>
                     <div className={cn("grid min-h-0 flex-1 auto-rows-[100px] grid-cols-1 gap-2 overflow-y-auto", narrowFocus && "auto-cols-[154px] auto-rows-fr grid-flow-col grid-cols-none overflow-x-auto overflow-y-hidden")}>
-                      {sideTiles.map((tile) => renderTile(tile))}
+                      {sideEntries.map((entry) => renderTile(entry.item, false, entry.phase))}
                     </div>
                   </aside>
                 ) : sideTiles.length ? (
@@ -341,9 +373,9 @@ export function LiveMediaStage({
             ) : (
               <div
                 className="grid h-full min-h-0 gap-2"
-                style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${Math.ceil(visual.length / gridColumns)}, minmax(0, 1fr))` }}
+                style={{ gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${Math.ceil(motion.visual.length / gridColumns)}, minmax(0, 1fr))` }}
               >
-                {visual.map((tile) => renderTile(tile, visual.length <= 4))}
+                {motion.visual.map((entry) => renderTile(entry.item, visual.length <= 4, entry.phase))}
               </div>
             )}
           </div>
@@ -357,7 +389,7 @@ export function LiveMediaStage({
             ))}
           </div>
         ) : null}
-        {visual.length && voice.length ? <VoiceStrip people={voice} sharers={sharers} onWatch={watchShare} /> : null}
+        {visual.length && motion.voice.length ? <VoiceStrip people={motion.voice} sharers={sharers} onWatch={watchShare} satellites={satelliteProps} /> : null}
       </div>
 
       {notice ? (
@@ -478,14 +510,18 @@ function SharingMark({ person, share, onWatch, className }: { person: NativeMedi
 }
 
 /** Everyone is here by voice: show people, give them room, ring whoever speaks. */
-function VoiceRoom({ people, sharers, onWatch }: { people: NativeMediaTile[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void }) {
+function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEntry<StageTile>[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void; satellites: SatelliteProps }) {
   const size = people.length <= 4 ? "h-24 w-24 text-display" : people.length <= 9 ? "h-20 w-20 text-title" : "h-16 w-16 text-body";
   return (
     <div className="flex h-full flex-wrap content-center items-start justify-center gap-x-8 gap-y-8 overflow-y-auto p-6">
-      {people.map((person) => {
-        const share = sharers.get(person.participantId);
+      {people.map(({ item: person, phase }) => {
+        const share = phase === "leave" ? undefined : sharers.get(person.participantId);
         return (
-          <div key={person.key} className="flex w-32 flex-col items-center text-center">
+          <div
+            key={person.key}
+            className={cn("flex w-32 flex-col items-center text-center", motionClass(phase, "animate-pop-in"))}
+            aria-hidden={phase === "leave" || undefined}
+          >
             <span className="relative">
               <span
                 className={cn("block rounded-full", person.speaking && "raven-speaking-avatar")}
@@ -499,6 +535,14 @@ function VoiceRoom({ people, sharers, onWatch }: { people: NativeMediaTile[]; sh
                   <MicOff className="h-3.5 w-3.5" />
                 </span>
               ) : null}
+              <SatelliteCluster
+                satellites={satellitesFor(satellites.satellites, person)}
+                ownerName={person.isLocal ? "You" : person.displayName}
+                variant="room"
+                armed={satellites.armed}
+                actions={satellites.actions}
+                className="absolute left-full top-1/2 ml-1.5 -translate-y-1/2"
+              />
             </span>
             <span className="mt-3 max-w-full truncate text-small font-medium">{person.isLocal ? "You" : person.displayName}</span>
             <ConnectionCaption person={person} />
@@ -510,13 +554,17 @@ function VoiceRoom({ people, sharers, onWatch }: { people: NativeMediaTile[]; sh
 }
 
 /** Voice-only people while video is on the stage. */
-function VoiceStrip({ people, sharers, onWatch }: { people: NativeMediaTile[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void }) {
+function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEntry<StageTile>[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void; satellites: SatelliteProps }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-1.5 overflow-x-auto" aria-label="Here by voice">
-      {people.map((person) => {
-        const share = sharers.get(person.participantId);
+      {people.map(({ item: person, phase }) => {
+        const share = phase === "leave" ? undefined : sharers.get(person.participantId);
         return (
-          <span key={person.key} className="flex h-9 shrink-0 items-center gap-2 rounded-full bg-secondary pl-1 pr-3">
+          <span
+            key={person.key}
+            className={cn("flex h-9 shrink-0 items-center gap-2 rounded-full bg-secondary pl-1 pr-3", motionClass(phase, "animate-pop-in"))}
+            aria-hidden={phase === "leave" || undefined}
+          >
             <span
               className={cn("block rounded-full", person.speaking && "raven-speaking-ring")}
               style={speakingGlowStyle(person.speakingIntensity, "avatar")}
@@ -526,11 +574,31 @@ function VoiceStrip({ people, sharers, onWatch }: { people: NativeMediaTile[]; s
             <span className="max-w-[140px] truncate text-small">{person.isLocal ? "You" : person.displayName}</span>
             {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="-mr-1.5 h-6 w-6 shrink-0 rounded-full" /> : null}
             {person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
+            <SatelliteCluster
+              satellites={satellitesFor(satellites.satellites, person)}
+              ownerName={person.isLocal ? "You" : person.displayName}
+              variant="strip"
+              armed={satellites.armed}
+              actions={satellites.actions}
+              className="-mr-1.5"
+            />
           </span>
         );
       })}
     </div>
   );
+}
+
+const VISUAL_MOVE_IN: readonly ("voice" | "visual")[] = ["visual"];
+const NO_SATELLITES: AudioSatellites["local"] = [];
+
+function tileKey(tile: StageTile) {
+  return tile.key;
+}
+
+function satellitesFor(satellites: AudioSatellites, person: NativeMediaTile) {
+  if (person.isLocal) return satellites.local;
+  return satellites.remote.get(stripSidecarIdentity(person.participantId)) ?? NO_SATELLITES;
 }
 
 function ConnectionCaption({ person }: { person: NativeMediaTile }) {

@@ -11,7 +11,7 @@ const twMerge = extendTailwindMerge({
       "font-size": [{ text: ["caption", "small", "body", "title-sm", "title", "display"] }],
       rounded: [{ rounded: ["chip", "control", "card", "panel"] }],
       shadow: [{ shadow: ["raised"] }],
-      animate: [{ animate: ["fade-in", "pop-in", "sheet-in"] }],
+      animate: [{ animate: ["fade-in", "pop-in", "sheet-in", "pop-out"] }],
     },
   },
 });

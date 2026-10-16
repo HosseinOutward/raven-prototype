@@ -76,6 +76,7 @@ export default {
         "fade-in": "raven-fade-in 160ms ease-out",
         "pop-in": "raven-pop-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1)",
         "sheet-in": "raven-sheet-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1)",
+        "pop-out": "raven-pop-out 160ms cubic-bezier(0.4, 0, 1, 1) forwards",
       },
     },
   },
