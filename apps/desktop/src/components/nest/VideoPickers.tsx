@@ -352,9 +352,6 @@ export function ScreenSharePickerDialog({
           </Button>
         </div>
       </div>
-      {selectedSource && "minimized" in selectedSource && selectedSource.minimized ? (
-        <p className="mt-2 text-right text-caption text-subtle">It will be restored when you share it.</p>
-      ) : null}
     </ModalShell>
   );
 }
