@@ -383,7 +383,7 @@ export function LiveMediaStage({
         {cards.length ? (
           <div className="flex shrink-0 flex-wrap justify-center gap-2" aria-label="Screen shares">
             {cards.map((tile) => tile.isLocal ? (
-              <OwnShareCard key={tile.key} onPreview={() => setOwnPreview(true)} onStop={onStopScreenShare} />
+              <OwnShareCard key={tile.key} tile={tile} onPreview={() => setOwnPreview(true)} onStop={onStopScreenShare} />
             ) : (
               <ShareCard key={tile.key} tile={tile} onWatch={() => watchShare(tile)} />
             ))}
@@ -461,7 +461,14 @@ function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) 
       >
         <Avatar name={tile.displayName} src={api.userAvatarUrl(tile.participantId)} className="h-8 w-8" />
       </span>
-      <span className="min-w-0 flex-1 truncate text-small">{tile.displayName} is sharing their screen</span>
+      {tile.sharePaused ? (
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-small">{tile.displayName}’s share is paused</span>
+          <span className="block truncate text-caption text-muted-foreground">They minimized the app.</span>
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-small">{tile.displayName} is sharing their screen</span>
+      )}
       <Button variant="secondary" size="xs" aria-label={`Watch ${tile.displayName}’s screen`} onClick={onWatch}>
         <Eye />
         Watch
@@ -471,13 +478,20 @@ function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) 
 }
 
 /** Your share, kept small: a large tile of your own screen is rarely what you want to look at. */
-function OwnShareCard({ onPreview, onStop }: { onPreview: () => void; onStop?: () => void }) {
+function OwnShareCard({ tile, onPreview, onStop }: { tile: StageTile; onPreview: () => void; onStop?: () => void }) {
   return (
     <div className={SHARE_CARD_CLASS}>
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-foreground">
         <MonitorUp className="h-4 w-4" />
       </span>
-      <span className="min-w-0 flex-1 truncate text-small">You’re sharing your screen</span>
+      {tile.sharePaused ? (
+        <span className="min-w-0 flex-1" title="People see the last picture until you restore it.">
+          <span className="block truncate text-small">Sharing is paused</span>
+          <span className="block truncate text-caption text-muted-foreground">{tile.shareAppName || "The app"} is minimized.</span>
+        </span>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-small">You’re sharing your screen</span>
+      )}
       <Button variant="ghost" size="xs" aria-label="Preview your screen" onClick={onPreview}>Preview</Button>
       {onStop ? <Button variant="secondary" size="xs" aria-label="Stop sharing your screen" onClick={onStop}>Stop</Button> : null}
     </div>

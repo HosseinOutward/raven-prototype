@@ -3,6 +3,7 @@ import {
   type SelfPreviewMode,
   type VideoConnectionQuality,
   type VideoMixerState,
+  type VideoPauseReason,
   type VideoStreamEndpoint,
   type VideoTrackSource,
   videoStreamUrl,
@@ -39,6 +40,10 @@ export type NativeMediaTile = {
   receiving: boolean;
   shareStartedAt?: number;
   loading?: boolean;
+  /** A share whose app is minimized: its last picture stays, and it resumes by itself. */
+  sharePaused?: VideoPauseReason | null;
+  /** Your own window share's app, to say which app is minimized. */
+  shareAppName?: string;
 };
 
 export function useNativeMediaTiles(
@@ -151,6 +156,10 @@ export function useNativeMediaTiles(
           receiving: participant.isLocal || Boolean(screenTrack?.desired),
           loading: !screenStreamUrl,
           shareStartedAt: shareStartOrderRef.current.get(key),
+          sharePaused: participant.isLocal
+            ? localScreen?.runtime.status === "paused" ? localScreen.runtime.pausedReason ?? "minimized" : null
+            : screenTrack?.pausedReason ?? null,
+          shareAppName: participant.isLocal && localScreen?.kind === "window" ? localScreen.displayName : undefined,
         });
       }
     }

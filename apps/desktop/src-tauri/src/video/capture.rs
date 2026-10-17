@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -84,6 +84,8 @@ struct ProfiledVideoFrameSink {
     /// Set when [`VideoFrameSink::frame_due`] admitted the frame now being pushed.
     admitted: AtomicBool,
     counters: Arc<VideoCaptureCounters>,
+    /// A recent sent frame, kept for window shares so a pause can go on showing it.
+    held: Option<Arc<HeldFrame>>,
 }
 
 impl ProfiledVideoFrameSink {
@@ -98,7 +100,13 @@ impl ProfiledVideoFrameSink {
             pacer: Mutex::new(FramePacer::new()),
             admitted: AtomicBool::new(false),
             counters,
+            held: None,
         }
+    }
+
+    fn holding(mut self, held: Arc<HeldFrame>) -> Self {
+        self.held = Some(held);
+        self
     }
 
     /// Count a delivered frame and decide whether it goes on, at the profile's frame rate.
@@ -130,8 +138,193 @@ impl VideoFrameSink for ProfiledVideoFrameSink {
         if !self.admitted.swap(false, Ordering::AcqRel) && !self.admit(Instant::now()) {
             return;
         }
-        self.inner
-            .push_frame(scale_frame_to_profile(frame, &self.profile));
+        let frame = scale_frame_to_profile(frame, &self.profile);
+        if let Some(held) = &self.held {
+            held.offer(&frame, Instant::now());
+        }
+        self.inner.push_frame(frame);
+    }
+}
+
+/// How often a running window share copies a sent frame aside (a 1080p I420 copy is about
+/// 3 MB, so not every frame), and how often a paused share sends that copy again.
+const HELD_FRAME_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const PAUSED_FRAME_INTERVAL: Duration = Duration::from_millis(500);
+
+/// The last picture of a window share. While the window is minimized nothing new arrives,
+/// so the share keeps sending this one at a low rate: viewers keep a picture, and someone
+/// who starts watching during the pause still gets a keyframe.
+#[derive(Default)]
+struct HeldFrame {
+    slot: Mutex<Option<(Instant, I420Frame)>>,
+}
+
+impl std::fmt::Debug for HeldFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldFrame").finish_non_exhaustive()
+    }
+}
+
+impl HeldFrame {
+    /// Keep a copy of `frame` unless one was kept less than [`HELD_FRAME_INTERVAL`] ago.
+    fn offer(&self, frame: &I420Frame, now: Instant) {
+        let Ok(mut slot) = self.slot.try_lock() else {
+            return;
+        };
+        let due = slot
+            .as_ref()
+            .is_none_or(|(kept_at, _)| now.duration_since(*kept_at) >= HELD_FRAME_INTERVAL);
+        if due {
+            *slot = Some((now, frame.clone()));
+        }
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn latest(&self) -> Option<I420Frame> {
+        self.slot
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|(_, frame)| frame.clone()))
+    }
+}
+
+/// What a watched window share is doing, from one look at the window.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+enum WindowShareActivity {
+    #[default]
+    Live,
+    /// Minimized: Windows draws nothing, so the share holds its last picture.
+    Paused,
+    /// The window is gone. Final: the share ends.
+    Closed,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+impl WindowShareActivity {
+    fn next(self, window_exists: bool, minimized: bool) -> Self {
+        match (self, window_exists, minimized) {
+            (Self::Closed, _, _) | (_, false, _) => Self::Closed,
+            (_, true, true) => Self::Paused,
+            (_, true, false) => Self::Live,
+        }
+    }
+}
+
+/// Something a running capture noticed by itself, between reconciles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureEvent {
+    /// The runtime's state changed (a share paused or resumed). Reconcile to pick it up.
+    StateChanged,
+    /// The captured window or screen is gone. The source should be stopped.
+    TargetClosed,
+}
+
+/// Where a capture reports a [`CaptureEvent`]. Called from capture threads, so the handler
+/// must not block.
+#[derive(Clone)]
+pub struct CaptureEvents(Arc<dyn Fn(VideoSourceId, CaptureEvent) + Send + Sync>);
+
+impl CaptureEvents {
+    pub fn new(handler: impl Fn(VideoSourceId, CaptureEvent) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(handler))
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn notify(&self, source_id: VideoSourceId, event: CaptureEvent) {
+        (self.0)(source_id, event);
+    }
+}
+
+impl std::fmt::Debug for CaptureEvents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CaptureEvents")
+    }
+}
+
+/// The size a window has when it is shown. For a minimized window `GetWindowRect` gives the
+/// small title-bar box Windows parks off screen, so the size comes from its placement: the
+/// normal (restored) rectangle, or the monitor's work area when it is restored maximized.
+/// Rectangles are `(left, top, right, bottom)`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn restored_window_size(
+    normal: (i32, i32, i32, i32),
+    restores_maximized: bool,
+    work_area: Option<(i32, i32, i32, i32)>,
+) -> Option<(u32, u32)> {
+    let rect = match (restores_maximized, work_area) {
+        (true, Some(work_area)) => work_area,
+        _ => normal,
+    };
+    let width = rect.2.checked_sub(rect.0)?;
+    let height = rect.3.checked_sub(rect.1)?;
+    (width > 0 && height > 0).then_some((width as u32, height as u32))
+}
+
+#[cfg(test)]
+mod window_share_tests {
+    use super::*;
+
+    #[test]
+    fn a_minimized_window_reports_its_restored_size() {
+        // Workspace coordinates: a 1280×760 window at (100, 80).
+        let normal = (100, 80, 1380, 840);
+        assert_eq!(restored_window_size(normal, false, None), Some((1280, 760)));
+        // Not maximized: the work area does not matter.
+        let work_area = (0, 0, 2560, 1392);
+        assert_eq!(
+            restored_window_size(normal, false, Some(work_area)),
+            Some((1280, 760))
+        );
+    }
+
+    #[test]
+    fn a_window_minimized_from_maximized_reports_the_work_area() {
+        let normal = (100, 80, 1380, 840);
+        let work_area = (0, 0, 2560, 1392);
+        assert_eq!(
+            restored_window_size(normal, true, Some(work_area)),
+            Some((2560, 1392))
+        );
+        // Without a monitor, the normal rectangle is the best there is.
+        assert_eq!(restored_window_size(normal, true, None), Some((1280, 760)));
+    }
+
+    #[test]
+    fn an_empty_placement_has_no_size() {
+        assert_eq!(restored_window_size((0, 0, 0, 0), false, None), None);
+        assert_eq!(restored_window_size((10, 10, 5, 40), false, None), None);
+    }
+
+    #[test]
+    fn minimizing_pauses_restoring_resumes_and_closing_is_final() {
+        use WindowShareActivity::*;
+        assert_eq!(Live.next(true, false), Live);
+        assert_eq!(Live.next(true, true), Paused);
+        assert_eq!(Paused.next(true, true), Paused);
+        assert_eq!(Paused.next(true, false), Live);
+        assert_eq!(Paused.next(false, true), Closed);
+        assert_eq!(Live.next(false, false), Closed);
+        assert_eq!(Closed.next(true, false), Closed);
+    }
+
+    #[test]
+    fn a_held_frame_is_copied_at_most_every_interval() {
+        let held = HeldFrame::default();
+        let frame = |luma| I420Frame {
+            width: 2,
+            height: 2,
+            y: vec![luma; 4],
+            u: vec![128],
+            v: vec![128],
+        };
+        let start = Instant::now();
+        held.offer(&frame(10), start);
+        held.offer(&frame(20), start + Duration::from_millis(100));
+        assert_eq!(held.latest().map(|f| f.y[0]), Some(10));
+        held.offer(&frame(30), start + HELD_FRAME_INTERVAL);
+        assert_eq!(held.latest().map(|f| f.y[0]), Some(30));
     }
 }
 
@@ -233,6 +426,8 @@ pub struct VideoCaptureManager {
     /// restarting it or leaving it feeding a dead track.
     relays: HashMap<VideoSourceId, Arc<RelayVideoFrameSink>>,
     counters: HashMap<VideoSourceId, Arc<VideoCaptureCounters>>,
+    /// Where running captures report pauses and closed targets.
+    events: Option<CaptureEvents>,
 }
 
 /// A capture-side sink whose destination can be replaced while the capture runs.
@@ -312,6 +507,15 @@ impl VideoCaptureManager {
         self.counters.get(&source_id).cloned()
     }
 
+    pub fn has_event_handler(&self) -> bool {
+        self.events.is_some()
+    }
+
+    /// Set once; captures started afterwards report to it.
+    pub fn set_event_handler(&mut self, events: CaptureEvents) {
+        self.events = Some(events);
+    }
+
     pub fn reconcile(
         &mut self,
         sources: &mut [VideoSourceState],
@@ -381,7 +585,13 @@ impl VideoCaptureManager {
                 .as_ref()
                 .map(|relay| Arc::clone(relay) as Arc<dyn VideoFrameSink>);
             let counters = Arc::new(VideoCaptureCounters::default());
-            match start_capture(source, signature, sink, Arc::clone(&counters)) {
+            match start_capture(
+                source,
+                signature,
+                sink,
+                Arc::clone(&counters),
+                self.events.clone(),
+            ) {
                 Ok(runtime) => {
                     source.runtime = runtime.runtime_state();
                     self.runtimes.insert(source.id, runtime);
@@ -406,22 +616,61 @@ fn start_capture(
     signature: VideoCaptureSignature,
     sink: Option<Arc<dyn VideoFrameSink>>,
     counters: Arc<VideoCaptureCounters>,
+    events: Option<CaptureEvents>,
 ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
     let Some(sink) = sink else {
         return Err(VideoCaptureError::StreamFailed {
             message: "no publish sink attached".to_string(),
         });
     };
-    let sink: Arc<dyn VideoFrameSink> = Arc::new(ProfiledVideoFrameSink::new(
-        sink,
-        source.profile.clone(),
-        counters,
-    ));
+    let profiled = ProfiledVideoFrameSink::new(Arc::clone(&sink), source.profile.clone(), counters);
     match source.kind {
-        VideoSourceKind::Camera => camera::start(source, signature, sink),
-        VideoSourceKind::Display | VideoSourceKind::Window => {
-            screen::start(source, signature, sink)
+        VideoSourceKind::Camera => camera::start(source, signature, Arc::new(profiled)),
+        VideoSourceKind::Display => screen::start(
+            source,
+            signature,
+            Arc::new(profiled),
+            ScreenExtras { events, held: None },
+        ),
+        VideoSourceKind::Window => {
+            // A window can be minimized mid-share; keep a recent frame to go on sending.
+            let held = Arc::new(HeldFrame::default());
+            let profiled = profiled.holding(Arc::clone(&held));
+            screen::start(
+                source,
+                signature,
+                Arc::new(profiled),
+                ScreenExtras {
+                    events,
+                    held: Some((held, sink)),
+                },
+            )
         }
+    }
+}
+
+/// What a screen or window capture gets besides its sink.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+struct ScreenExtras {
+    events: Option<CaptureEvents>,
+    /// For a window share: its held frame, and the sink (after the profile) to send it to
+    /// while the window is minimized.
+    held: Option<(Arc<HeldFrame>, Arc<dyn VideoFrameSink>)>,
+}
+
+/// The size a window share should be resolved from: the window's own size, or the size it
+/// is restored to when it is minimized. `None` when it cannot be read (or on platforms
+/// whose picker gives no window handle).
+pub fn window_share_size(target_id: &str) -> Option<(u32, u32)> {
+    #[cfg(target_os = "windows")]
+    {
+        let hwnd: isize = target_id.parse().ok()?;
+        screen::imaging::window_size(hwnd as *mut std::ffi::c_void).map(|(size, _)| size)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = target_id;
+        None
     }
 }
 
@@ -789,7 +1038,10 @@ mod camera {
 
 #[cfg(target_os = "windows")]
 mod screen {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration, Instant};
 
     use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
     use windows_capture::frame::Frame;
@@ -803,22 +1055,34 @@ mod screen {
 
     use crate::video::convert::{packed_to_i420, PackedFormat};
     use crate::video::domain::{
-        DisplayTarget, VideoSourceKind, VideoSourceRuntimeState, VideoSourceState, WindowTarget,
+        DisplayTarget, VideoPauseReason, VideoSourceKind, VideoSourceRuntimeState,
+        VideoSourceRuntimeStatus, VideoSourceState, WindowTarget,
     };
 
     use super::{
-        VideoCaptureError, VideoCaptureSignature, VideoFrameSink, VideoSourceId, VideoSourceRuntime,
+        CaptureEvent, CaptureEvents, HeldFrame, ScreenExtras, VideoCaptureError,
+        VideoCaptureSignature, VideoFrameSink, VideoSourceId, VideoSourceRuntime,
+        WindowShareActivity, PAUSED_FRAME_INTERVAL,
     };
 
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+    /// How often a window share looks at whether its window is minimized or gone.
+    const WINDOW_WATCH_INTERVAL: Duration = Duration::from_millis(250);
+
     /// Flags handed to the capture handler at construction.
     struct CaptureFlags {
         sink: Arc<dyn VideoFrameSink>,
+        source_id: VideoSourceId,
+        events: Option<CaptureEvents>,
+        paused: Arc<AtomicBool>,
     }
 
     struct ScreenCapture {
         sink: Arc<dyn VideoFrameSink>,
+        source_id: VideoSourceId,
+        events: Option<CaptureEvents>,
+        paused: Arc<AtomicBool>,
     }
 
     impl GraphicsCaptureApiHandler for ScreenCapture {
@@ -828,6 +1092,9 @@ mod screen {
         fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
             Ok(Self {
                 sink: ctx.flags.sink,
+                source_id: ctx.flags.source_id,
+                events: ctx.flags.events,
+                paused: ctx.flags.paused,
             })
         }
 
@@ -836,6 +1103,10 @@ mod screen {
             frame: &mut Frame,
             _control: InternalCaptureControl,
         ) -> Result<(), Self::Error> {
+            // A minimized window has nothing real to show; the watcher sends the held frame.
+            if self.paused.load(Ordering::Acquire) {
+                return Ok(());
+            }
             // Windows delivers at the display refresh rate. Reading a frame back from the
             // GPU and converting it costs several ms, so skip frames the profile's frame
             // rate would drop before paying for them.
@@ -855,7 +1126,12 @@ mod screen {
             Ok(())
         }
 
+        /// The captured window or monitor is gone (a window closed, a monitor unplugged).
+        /// Not called when Raven stops the capture itself.
         fn on_closed(&mut self) -> Result<(), Self::Error> {
+            if let Some(events) = &self.events {
+                events.notify(self.source_id, CaptureEvent::TargetClosed);
+            }
             Ok(())
         }
     }
@@ -869,6 +1145,9 @@ mod screen {
         signature: VideoCaptureSignature,
         runtime_state: VideoSourceRuntimeState,
         control: Option<Control>,
+        /// Set while the shared window is minimized.
+        paused: Arc<AtomicBool>,
+        watch: Option<WindowWatch>,
     }
 
     impl std::fmt::Debug for ScreenRuntime {
@@ -876,6 +1155,7 @@ mod screen {
             f.debug_struct("ScreenRuntime")
                 .field("source_id", &self.source_id)
                 .field("running", &self.control.is_some())
+                .field("paused", &self.paused.load(Ordering::Relaxed))
                 .finish()
         }
     }
@@ -885,11 +1165,21 @@ mod screen {
             self.source_id
         }
         fn stop(&mut self) {
+            if let Some(mut watch) = self.watch.take() {
+                watch.stop();
+            }
             if let Some(control) = self.control.take() {
                 let _ = control.stop();
             }
         }
         fn runtime_state(&self) -> VideoSourceRuntimeState {
+            if self.paused.load(Ordering::Acquire) {
+                return VideoSourceRuntimeState {
+                    status: VideoSourceRuntimeStatus::Paused,
+                    paused_reason: Some(VideoPauseReason::Minimized),
+                    ..self.runtime_state.clone()
+                };
+            }
             self.runtime_state.clone()
         }
         fn signature(&self) -> &VideoCaptureSignature {
@@ -903,16 +1193,107 @@ mod screen {
         }
     }
 
+    /// Watches a shared window from its own thread: flags the share paused while the window
+    /// is minimized and sends the held frame meanwhile, and reports when it is restored or
+    /// closed. Never touches the frame callback's thread.
+    struct WindowWatch {
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl WindowWatch {
+        fn spawn(
+            source_id: VideoSourceId,
+            hwnd: isize,
+            paused: Arc<AtomicBool>,
+            held: Arc<HeldFrame>,
+            output: Arc<dyn VideoFrameSink>,
+            events: Option<CaptureEvents>,
+        ) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = Arc::clone(&stop);
+            let thread = thread::Builder::new()
+                .name("raven-window-watch".to_string())
+                .spawn(move || {
+                    let mut activity = WindowShareActivity::Live;
+                    let mut last_sent: Option<Instant> = None;
+                    loop {
+                        // First look one interval in: the window was only just restored.
+                        thread::park_timeout(WINDOW_WATCH_INTERVAL);
+                        if thread_stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let (exists, minimized) = window_condition(hwnd);
+                        let next = activity.next(exists, minimized);
+                        if next != activity {
+                            activity = next;
+                            paused.store(next == WindowShareActivity::Paused, Ordering::Release);
+                            last_sent = None;
+                            if let Some(events) = &events {
+                                events.notify(
+                                    source_id,
+                                    if next == WindowShareActivity::Closed {
+                                        CaptureEvent::TargetClosed
+                                    } else {
+                                        CaptureEvent::StateChanged
+                                    },
+                                );
+                            }
+                            if next == WindowShareActivity::Closed {
+                                break;
+                            }
+                        }
+                        if activity == WindowShareActivity::Paused
+                            && last_sent.is_none_or(|sent| sent.elapsed() >= PAUSED_FRAME_INTERVAL)
+                        {
+                            if let Some(frame) = held.latest() {
+                                output.push_frame(frame);
+                            }
+                            last_sent = Some(Instant::now());
+                        }
+                    }
+                })
+                .ok();
+            Self { stop, thread }
+        }
+
+        fn stop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                thread.thread().unpark();
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Whether the window still exists, and whether it is minimized.
+    fn window_condition(hwnd: isize) -> (bool, bool) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
+        let hwnd = HWND(hwnd as *mut std::ffi::c_void);
+        unsafe {
+            let exists = IsWindow(hwnd).as_bool();
+            (exists, exists && IsIconic(hwnd).as_bool())
+        }
+    }
+
     pub(super) fn start(
         source: &VideoSourceState,
         signature: VideoCaptureSignature,
         sink: Arc<dyn VideoFrameSink>,
+        extras: ScreenExtras,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
-        let flags = CaptureFlags { sink };
+        let paused = Arc::new(AtomicBool::new(false));
+        let flags = CaptureFlags {
+            sink,
+            source_id: source.id,
+            events: extras.events.clone(),
+            paused: Arc::clone(&paused),
+        };
         let runtime_state = super::running_runtime_state(&source.profile);
         // NOTE: the exact `Settings::new` argument list is sensitive to the resolved
         // `windows-capture` version; adjust here if the build flags a signature mismatch.
-        let control = match source.kind {
+        let (control, watch) = match source.kind {
             VideoSourceKind::Display => {
                 let monitor = monitor_from_target(&source.target_id)?;
                 let settings = Settings::new(
@@ -925,11 +1306,12 @@ mod screen {
                     ColorFormat::Bgra8,
                     flags,
                 );
-                ScreenCapture::start_free_threaded(settings).map_err(|error| {
+                let control = ScreenCapture::start_free_threaded(settings).map_err(|error| {
                     VideoCaptureError::StreamFailed {
                         message: error.to_string(),
                     }
-                })?
+                })?;
+                (control, None)
             }
             VideoSourceKind::Window => {
                 let window = window_from_target(&source.target_id)?;
@@ -947,11 +1329,23 @@ mod screen {
                     ColorFormat::Bgra8,
                     flags,
                 );
-                ScreenCapture::start_free_threaded(settings).map_err(|error| {
+                let control = ScreenCapture::start_free_threaded(settings).map_err(|error| {
                     VideoCaptureError::StreamFailed {
                         message: error.to_string(),
                     }
-                })?
+                })?;
+                let watch = match (extras.held, source.target_id.parse::<isize>()) {
+                    (Some((held, output)), Ok(hwnd)) => Some(WindowWatch::spawn(
+                        source.id,
+                        hwnd,
+                        Arc::clone(&paused),
+                        held,
+                        output,
+                        extras.events,
+                    )),
+                    _ => None,
+                };
+                (control, watch)
             }
             VideoSourceKind::Camera => unreachable!("camera handled by camera backend"),
         };
@@ -961,6 +1355,8 @@ mod screen {
             signature,
             runtime_state,
             control: Some(control),
+            paused,
+            watch,
         }))
     }
 
@@ -1054,13 +1450,19 @@ mod screen {
             let process_id = window.process_id().unwrap_or(0);
             let raw_hwnd = window.as_raw_hwnd();
             let id = raw_hwnd as isize;
-            let (width, height) = imaging::window_size(raw_hwnd).unwrap_or((0, 0));
+            let ((width, height), minimized) =
+                imaging::window_size(raw_hwnd).unwrap_or(((0, 0), false));
             let icon_data_url = if process_id != 0 {
                 imaging::window_icon(process_id)
             } else {
                 None
             };
-            let thumbnail_data_url = imaging::window_thumbnail(raw_hwnd);
+            // A minimized window is not drawn: `PrintWindow` would give a stub or black.
+            let thumbnail_data_url = if minimized {
+                None
+            } else {
+                imaging::window_thumbnail(raw_hwnd)
+            };
             out.push(WindowTarget {
                 id: id.to_string(),
                 title,
@@ -1068,6 +1470,7 @@ mod screen {
                 process_id,
                 width,
                 height,
+                minimized,
                 icon_data_url,
                 thumbnail_data_url,
             });
@@ -1095,9 +1498,9 @@ mod screen {
         use windows::Win32::Foundation::{CloseHandle, HWND, RECT};
         use windows::Win32::Graphics::Gdi::{
             CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
-            GetDC, GetMonitorInfoW, ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt,
-            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HDC, HMONITOR,
-            MONITORINFO, SRCCOPY,
+            GetDC, GetMonitorInfoW, MonitorFromWindow, ReleaseDC, SelectObject, SetStretchBltMode,
+            StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HDC,
+            HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
         };
         use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
         use windows::Win32::System::Threading::{
@@ -1105,14 +1508,48 @@ mod screen {
         };
         use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
         use windows::Win32::UI::WindowsAndMessaging::{
-            DestroyIcon, DrawIconEx, GetWindowRect, DI_NORMAL, HICON, PW_RENDERFULLCONTENT,
+            DestroyIcon, DrawIconEx, GetWindowPlacement, GetWindowRect, IsIconic, DI_NORMAL, HICON,
+            PW_RENDERFULLCONTENT, WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED,
         };
 
         const MAX_THUMB_WIDTH: i32 = 320;
 
-        pub(super) fn window_size(raw_hwnd: *mut std::ffi::c_void) -> Option<(u32, u32)> {
+        /// The window's size, and whether it is minimized. A minimized window reports the
+        /// size it is restored to (see [`super::super::restored_window_size`]). Sizes are in
+        /// physical pixels: Raven is per-monitor DPI aware, so both `GetWindowRect` and
+        /// `GetWindowPlacement` answer unscaled.
+        pub(in crate::video::capture) fn window_size(
+            raw_hwnd: *mut std::ffi::c_void,
+        ) -> Option<((u32, u32), bool)> {
             unsafe {
                 let hwnd = HWND(raw_hwnd);
+                if IsIconic(hwnd).as_bool() {
+                    let mut placement = WINDOWPLACEMENT {
+                        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                        ..Default::default()
+                    };
+                    GetWindowPlacement(hwnd, &mut placement).ok()?;
+                    let restores_maximized = placement.flags.0 & WPF_RESTORETOMAXIMIZED.0 != 0;
+                    let work_area = if restores_maximized {
+                        let mut info = MONITORINFO {
+                            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                            ..Default::default()
+                        };
+                        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        GetMonitorInfoW(monitor, &mut info)
+                            .as_bool()
+                            .then_some(info.rcWork)
+                    } else {
+                        None
+                    };
+                    let rect = |r: RECT| (r.left, r.top, r.right, r.bottom);
+                    let size = super::super::restored_window_size(
+                        rect(placement.rcNormalPosition),
+                        restores_maximized,
+                        work_area.map(rect),
+                    )?;
+                    return Some((size, true));
+                }
                 let mut rect = RECT::default();
                 GetWindowRect(hwnd, &mut rect).ok()?;
                 let width = rect.right - rect.left;
@@ -1120,7 +1557,7 @@ mod screen {
                 if width <= 0 || height <= 0 {
                     return None;
                 }
-                Some((width as u32, height as u32))
+                Some(((width as u32, height as u32), false))
             }
         }
 
@@ -1482,6 +1919,7 @@ mod screen {
         source: &VideoSourceState,
         signature: VideoCaptureSignature,
         sink: Arc<dyn VideoFrameSink>,
+        _extras: super::ScreenExtras,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
         let profile = source.profile.clone();
         let selection = open_portal_selection(source.kind)?;
@@ -1527,6 +1965,7 @@ mod screen {
             process_id: 0,
             width: 1280,
             height: 720,
+            minimized: false,
             icon_data_url: None,
             thumbnail_data_url: None,
         }])
@@ -1800,6 +2239,7 @@ mod screen {
         source: &VideoSourceState,
         signature: VideoCaptureSignature,
         sink: Arc<dyn VideoFrameSink>,
+        _extras: super::ScreenExtras,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
         let profile = source.profile.clone();
         let filter = content_filter_for_source(source)?;
@@ -1951,6 +2391,7 @@ mod screen {
             process_id,
             width: positive_size_to_u32(frame.size.width),
             height: positive_size_to_u32(frame.size.height),
+            minimized: false,
             icon_data_url: None,
             thumbnail_data_url: None,
         })
@@ -2010,6 +2451,7 @@ mod screen {
         _source: &VideoSourceState,
         _signature: VideoCaptureSignature,
         _sink: Arc<dyn VideoFrameSink>,
+        _extras: super::ScreenExtras,
     ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
         Err(VideoCaptureError::NotImplemented)
     }

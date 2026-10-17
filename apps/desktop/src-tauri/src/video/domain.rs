@@ -84,6 +84,9 @@ pub enum VideoSourceRuntimeStatus {
     Inactive,
     Starting,
     Running,
+    /// Capture has nothing to show for now (a shared window is minimized). The share stays
+    /// published and keeps sending its last picture until capture resumes by itself.
+    Paused,
     Error,
 }
 
@@ -93,6 +96,34 @@ impl Default for VideoSourceRuntimeStatus {
     }
 }
 
+/// Why a share is paused, for the sharer (runtime state) and viewers (participant attribute).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoPauseReason {
+    /// The shared window is minimized; Windows does not draw it, so nothing can capture it.
+    Minimized,
+}
+
+impl VideoPauseReason {
+    /// Value of [`SHARE_PAUSED_ATTRIBUTE`] on the publisher participant.
+    pub fn attribute_value(self) -> &'static str {
+        match self {
+            Self::Minimized => "minimized",
+        }
+    }
+
+    pub fn from_attribute_value(value: &str) -> Option<Self> {
+        match value {
+            "minimized" => Some(Self::Minimized),
+            _ => None,
+        }
+    }
+}
+
+/// Participant attribute on `<userId>#video` telling viewers that its screen share is
+/// paused, and why. An empty value (LiveKit's way of deleting an attribute) means live.
+pub const SHARE_PAUSED_ATTRIBUTE: &str = "raven.share.paused";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct VideoSourceRuntimeState {
@@ -100,6 +131,8 @@ pub struct VideoSourceRuntimeState {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<f32>,
+    /// Set while `status` is `Paused`.
+    pub paused_reason: Option<VideoPauseReason>,
     pub error: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -111,6 +144,7 @@ impl Default for VideoSourceRuntimeState {
             width: None,
             height: None,
             fps: None,
+            paused_reason: None,
             error: None,
             updated_at: None,
         }
@@ -535,6 +569,9 @@ pub struct RemoteVideoTrackState {
     pub subscribed: bool,
     pub desired: bool,
     pub is_self: bool,
+    /// The sender's share is paused (their shared window is minimized). The track stays
+    /// unmuted and keeps its last picture.
+    pub paused_reason: Option<VideoPauseReason>,
 }
 
 impl Default for RemoteVideoTrackState {
@@ -548,6 +585,7 @@ impl Default for RemoteVideoTrackState {
             subscribed: false,
             desired: false,
             is_self: false,
+            paused_reason: None,
         }
     }
 }
@@ -583,8 +621,11 @@ pub struct WindowTarget {
     pub title: String,
     pub app_name: String,
     pub process_id: u32,
+    /// The window's own size; for a minimized window, the size it is restored to.
     pub width: u32,
     pub height: u32,
+    /// Minimized windows are not drawn, so they have no thumbnail. Sharing one restores it.
+    pub minimized: bool,
     pub icon_data_url: Option<String>,
     pub thumbnail_data_url: Option<String>,
 }

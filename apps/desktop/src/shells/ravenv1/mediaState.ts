@@ -19,7 +19,15 @@ export function isConfirmedVideoSourceActive(source: VideoSourceState | null) {
     && source.enabled
     && source.publishing
     && source.publishedTrack != null
-    && source.runtime.status === "running";
+    // Paused (a shared window is minimized) is still sent: people keep the last picture.
+    && (source.runtime.status === "running" || source.runtime.status === "paused");
+}
+
+/** Why the user's own share is paused, if it is. A paused share still counts as live. */
+export function localSharePause(source: VideoSourceState | null) {
+  return source != null && source.runtime.status === "paused"
+    ? source.runtime.pausedReason ?? "minimized"
+    : null;
 }
 
 /**
@@ -30,6 +38,7 @@ export function isConfirmedVideoSourceActive(source: VideoSourceState | null) {
  *   outside a call: the engine only opens the device once there is a call to send to.
  * - `starting`: the device is opening, or it is open and not confirmed as sent yet.
  * - `live`: confirmed capturing and published. Only this means other people see it.
+ *   It includes a paused share (minimized window), which goes on sending its last picture.
  * - `error`: chosen, but capture failed. Shown as off, with the reason elsewhere.
  */
 export type LocalVideoStatus = "off" | "ready" | "starting" | "live" | "error";

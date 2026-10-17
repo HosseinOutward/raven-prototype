@@ -11,6 +11,7 @@ const rtcTrack: RemoteVideoTrackState = {
   subscribed: true,
   desired: true,
   isSelf: true,
+  pausedReason: null,
 };
 
 describe("native media presentation", () => {

@@ -31,8 +31,9 @@ import { api } from "@/lib/api";
 import { useAvatarVersions } from "@/lib/avatarVersions";
 import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
 import { ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
@@ -591,6 +592,10 @@ function DockDeviceControls({
   );
   const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const micShortcut = hotkeyLabel(hotkeys?.mic);
+  const sharePausedLine = media.screenSharePause === "minimized"
+    ? `Sharing is paused while ${media.sharedAppName ?? "the app"} is minimized.`
+    : null;
+  useSharePausedToast(sharePausedLine);
   const controls: Record<DockControlId, ReactNode> = {
     mic: (
       <DockControl
@@ -664,7 +669,9 @@ function DockDeviceControls({
       <DockControl
         label={!media.screenShareSupported ? "Screen sharing is not available" : media.screenSharing ? "Stop sharing" : "Share your screen"}
         description={videoDescription(media.screenShareStatus, inCall, {
-          live: media.windowSharing ? "People here can see the window you picked." : "People here can see your screen.",
+          live: sharePausedLine
+            ? `${sharePausedLine} People see the last picture until you restore it.`
+            : media.windowSharing ? "People here can see the window you picked." : "People here can see your screen.",
           starting: "Starting. People cannot see it yet.",
           ready: `Ready. Sharing starts when you join a ${nest}.`,
           error: "Sharing could not start. Click to pick again.",
@@ -675,7 +682,7 @@ function DockDeviceControls({
         disabled={!media.screenShareSupported || media.busy}
         onClick={() => void (media.screenSharing ? media.stopScreenShare().catch(() => undefined) : onScreenPicker())}
       >
-        <MonitorUp />
+        {sharePausedLine ? <MonitorPause /> : <MonitorUp />}
         {inCall && media.screenSharing && media.screenShareStatus !== "live" ? <Loader2 className="animate-spin" /> : null}
       </DockControl>
     ),
@@ -830,6 +837,17 @@ function SortableDockItem({ id, label, children }: { id: DockControlId; label: s
 }
 
 /** Only a confirmed source gets the fill. A chosen one that is not sent is an outline. */
+/** One toast when a share pauses, so the sharer knows why people see a still picture. */
+function useSharePausedToast(line: string | null) {
+  const shownRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (line && shownRef.current !== line) {
+      toast({ title: line, description: "People see the last picture. It resumes when you restore the app." });
+    }
+    shownRef.current = line;
+  }, [line]);
+}
+
 function videoTone(status: LocalVideoStatus): "off" | "ready" | "on" {
   if (status === "live") return "on";
   return status === "ready" || status === "starting" ? "ready" : "off";

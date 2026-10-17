@@ -7,7 +7,9 @@ export type VideoSourceId = string;
 export type PublishedVideoTrackId = string;
 
 export type VideoSourceKind = "camera" | "display" | "window";
-export type VideoSourceRuntimeStatus = "inactive" | "starting" | "running" | "error";
+/** `paused`: a shared window is minimized; the share keeps sending its last picture. */
+export type VideoSourceRuntimeStatus = "inactive" | "starting" | "running" | "paused" | "error";
+export type VideoPauseReason = "minimized";
 export type VideoTrackSource = "camera" | "screenshare";
 export type SelfPreviewMode = "local" | "rtc";
 export type VideoPresentationProfile = "efficiency" | "balanced" | "quality";
@@ -73,6 +75,8 @@ export interface VideoSourceRuntimeState {
   width: number | null;
   height: number | null;
   fps: number | null;
+  /** Set while `status` is `paused`. */
+  pausedReason: VideoPauseReason | null;
   error: string | null;
   updatedAt: string | null;
 }
@@ -133,6 +137,8 @@ export interface RemoteVideoTrackState {
   subscribed: boolean;
   desired: boolean;
   isSelf: boolean;
+  /** The sender's share is paused (their shared window is minimized); the last picture stays. */
+  pausedReason: VideoPauseReason | null;
 }
 
 export interface VideoStreamEndpoint {
@@ -158,8 +164,11 @@ export interface WindowTarget {
   title: string;
   appName: string;
   processId: number;
+  /** For a minimized window, the size it is restored to. */
   width: number;
   height: number;
+  /** Minimized windows have no thumbnail; sharing one restores it. */
+  minimized: boolean;
   iconDataUrl: string | null;
   thumbnailDataUrl: string | null;
 }

@@ -37,8 +37,9 @@ use crate::video::capture::{VideoCaptureCounters, VideoFrameSink};
 use crate::video::convert::I420Frame;
 use crate::video::domain::{
     PublishedVideoTrackId, RemoteVideoTrackState, SelfPreviewMode, VideoConnectionQuality,
-    VideoParticipantState, VideoPresentationSettings, VideoQualityProfile, VideoSourceId,
-    VideoSourceState, VideoTrackSource,
+    VideoParticipantState, VideoPauseReason, VideoPresentationSettings, VideoQualityProfile,
+    VideoSourceId, VideoSourceRuntimeStatus, VideoSourceState, VideoTrackSource,
+    SHARE_PAUSED_ATTRIBUTE,
 };
 use crate::video::state::{SharedVideoEngineState, VIDEO_STATE_CHANGED_EVENT};
 use crate::video::stream::{PresentationCounters, VideoFrameHub, VideoFramePublisher};
@@ -602,6 +603,9 @@ pub struct VideoEngine {
     hub: VideoFrameHub,
     presentation: Arc<RwLock<VideoPresentationSettings>>,
     stream_stats: VideoStreamStatsCache,
+    /// The [`SHARE_PAUSED_ATTRIBUTE`] value the publisher last set ("" when live). A new
+    /// connection starts without attributes.
+    share_paused_attribute: String,
 }
 
 impl std::fmt::Debug for VideoEngine {
@@ -625,6 +629,7 @@ impl VideoEngine {
             hub,
             presentation,
             stream_stats: VideoStreamStatsCache::default(),
+            share_paused_attribute: String::new(),
         }
     }
 
@@ -778,6 +783,7 @@ impl VideoEngine {
         let event_loop = self.spawn_event_loop(app, shared, events);
 
         self.connection = Some(RoomConnection { room, event_loop });
+        self.share_paused_attribute.clear();
         self.link.connected.store(true, Ordering::Release);
 
         let mut viewer_options = RoomOptions::default();
@@ -818,6 +824,7 @@ impl VideoEngine {
 
     pub async fn disconnect(&mut self) {
         self.publications.clear();
+        self.share_paused_attribute.clear();
         self.link.connected.store(false, Ordering::Release);
         self.link.viewer_connected.store(false, Ordering::Release);
         let handle = self.handle();
@@ -970,6 +977,31 @@ impl VideoEngine {
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Make the publisher's [`SHARE_PAUSED_ATTRIBUTE`] say whether a published screen share
+    /// is paused. Sends only on a change; LiveKit merges attributes, and an empty value
+    /// deletes one.
+    pub async fn reconcile_share_attributes(
+        &mut self,
+        sources: &[VideoSourceState],
+    ) -> Result<(), String> {
+        let Some(connection) = self.connection.as_ref() else {
+            return Ok(());
+        };
+        let desired = share_paused_attribute(sources);
+        if desired == self.share_paused_attribute {
+            return Ok(());
+        }
+        let room = Arc::clone(&connection.room);
+        let attributes = HashMap::from([(SHARE_PAUSED_ATTRIBUTE.to_string(), desired.clone())]);
+        self.handle()
+            .spawn(async move { room.local_participant().set_attributes(attributes).await })
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        self.share_paused_attribute = desired;
+        Ok(())
     }
 
     async fn publish_source(
@@ -1213,6 +1245,21 @@ impl VideoEngine {
     }
 }
 
+/// The attribute value for the user's shares: the pause reason of a published, paused
+/// screen share, or "" when none is paused.
+fn share_paused_attribute(sources: &[VideoSourceState]) -> String {
+    sources
+        .iter()
+        .filter(|source| {
+            source.publishing
+                && VideoTrackSource::from_kind(source.kind) == VideoTrackSource::Screenshare
+                && source.runtime.status == VideoSourceRuntimeStatus::Paused
+        })
+        .find_map(|source| source.runtime.paused_reason)
+        .map(|reason| reason.attribute_value().to_string())
+        .unwrap_or_default()
+}
+
 /// Record that a video role lost the room for good, so the app can rejoin.
 fn mark_session_lost(app: &AppHandle, shared: &SharedVideoEngineState) {
     let snapshot = {
@@ -1324,6 +1371,10 @@ fn reflect_viewer_state(app: &AppHandle, shared: &SharedVideoEngineState, room: 
             entry.display_name = display_name.clone();
         }
         entry.speaking |= participant.is_speaking();
+        let share_paused = participant
+            .attributes()
+            .get(SHARE_PAUSED_ATTRIBUTE)
+            .and_then(|value| VideoPauseReason::from_attribute_value(value));
         entry.connection_quality = worse_quality(
             entry.connection_quality,
             connection_quality(participant.connection_quality()),
@@ -1351,6 +1402,11 @@ fn reflect_viewer_state(app: &AppHandle, shared: &SharedVideoEngineState, room: 
                 subscribed: publication.is_subscribed(),
                 desired: publication.is_desired(),
                 is_self,
+                paused_reason: if source == VideoTrackSource::Screenshare {
+                    share_paused
+                } else {
+                    None
+                },
             });
         }
     }
@@ -1473,6 +1529,40 @@ fn worse_quality(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::video::domain::{VideoSourceKind, VideoSourceRuntimeState};
+
+    fn share(kind: VideoSourceKind, status: VideoSourceRuntimeStatus) -> VideoSourceState {
+        let mut source = VideoSourceState::new(kind, "Notepad", "1234");
+        source.publishing = true;
+        source.runtime = VideoSourceRuntimeState {
+            status,
+            paused_reason: (status == VideoSourceRuntimeStatus::Paused)
+                .then_some(VideoPauseReason::Minimized),
+            ..VideoSourceRuntimeState::default()
+        };
+        source
+    }
+
+    #[test]
+    fn the_paused_attribute_follows_a_published_share_through_pause_and_resume() {
+        use VideoSourceRuntimeStatus::*;
+        let camera = share(VideoSourceKind::Camera, Running);
+        let live = [camera.clone(), share(VideoSourceKind::Window, Running)];
+        assert_eq!(share_paused_attribute(&live), "");
+        let paused = [camera.clone(), share(VideoSourceKind::Window, Paused)];
+        assert_eq!(share_paused_attribute(&paused), "minimized");
+        // Stopping the share clears it.
+        assert_eq!(share_paused_attribute(&[camera]), "");
+        // A share that is no longer published says nothing.
+        let mut unpublished = share(VideoSourceKind::Window, Paused);
+        unpublished.publishing = false;
+        assert_eq!(share_paused_attribute(&[unpublished]), "");
+        assert_eq!(
+            VideoPauseReason::from_attribute_value("minimized"),
+            Some(VideoPauseReason::Minimized)
+        );
+        assert_eq!(VideoPauseReason::from_attribute_value(""), None);
+    }
 
     fn sample(at: Instant, frames: u64, bytes: u64, received: u64, lost: i64) -> StreamSample {
         StreamSample {

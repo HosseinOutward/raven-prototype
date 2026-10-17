@@ -10,6 +10,7 @@ import {
   MicOff,
   MoreHorizontal,
   Minimize2,
+  MonitorPause,
   MonitorUp,
   Pin,
   PinOff,
@@ -112,6 +113,7 @@ export function MediaTile({
   const canShowInfo = Boolean(tile.streamId) && receiving && !tile.isLocal;
   // A filmstrip tile is too small for avatar, words and button: "Watch again" says it all.
   const hiddenCompact = !receiving && !prominent && Boolean(receiveAction);
+  const paused = isShare && tile.sharePaused ? sharePausedText(tile) : null;
   const weak = tile.connectionQuality === "poor";
   const lost = tile.connectionQuality === "lost";
 
@@ -146,7 +148,11 @@ export function MediaTile({
           draggable={false}
           onLoad={() => setPlaybackWaiting(false)}
           onError={() => setPlaybackWaiting(true)}
-          className={cn("absolute inset-0 h-full w-full", fit === "fill" ? "object-cover" : "object-contain")}
+          className={cn(
+            "absolute inset-0 h-full w-full transition-[filter] duration-200",
+            fit === "fill" ? "object-cover" : "object-contain",
+            paused && "brightness-[0.6]",
+          )}
         />
       ) : (
         <div className={cn("absolute inset-0 flex items-center justify-center px-5 text-center", hiddenCompact && "pb-7")}>
@@ -180,6 +186,14 @@ export function MediaTile({
         <div className="absolute inset-0 flex items-center justify-center bg-black/40">
           <span className="inline-flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-caption text-white">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Video paused
+          </span>
+        </div>
+      ) : null}
+      {paused && !playbackWaiting && tile.streamUrl && receiving ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-4">
+          <span role="status" className="inline-flex max-w-full animate-fade-in items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-caption text-white">
+            <MonitorPause className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0">{paused}</span>
           </span>
         </div>
       ) : null}
@@ -281,6 +295,13 @@ export function MediaTile({
       </div>
     </div>
   );
+}
+
+/** The pause, said to the person it concerns: the sharer is told which app to restore. */
+function sharePausedText(tile: NativeMediaTile) {
+  return tile.isLocal
+    ? `Sharing is paused while ${tile.shareAppName || "the app"} is minimized.`
+    : `${tile.displayName} minimized the app. Sharing is paused.`;
 }
 
 const TILE_ACTION_CLASS =

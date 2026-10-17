@@ -5,6 +5,7 @@ import {
   isConfirmedMicrophoneActive,
   isConfirmedVideoSourceActive,
   isLocalVideoChosen,
+  localSharePause,
   localVideoStatus,
   microphonesToMuteBeforeJoin,
 } from "./mediaState";
@@ -64,6 +65,15 @@ describe("what the user chose versus what is being sent", () => {
     expect(localVideoStatus(camera)).toBe("live");
     expect(localVideoStatus(withRuntime("starting"))).toBe("starting");
     expect(localVideoStatus({ ...camera, publishedTrack: null })).toBe("starting");
+  });
+
+  test("a share paused because its window is minimized stays live, with the reason", () => {
+    const paused = { ...withRuntime("paused"), runtime: { status: "paused", pausedReason: "minimized" } } as VideoSourceState;
+    expect(isConfirmedVideoSourceActive(paused)).toBe(true);
+    expect(localVideoStatus(paused)).toBe("live");
+    expect(localSharePause(paused)).toBe("minimized");
+    expect(localSharePause(camera)).toBeNull();
+    expect(localSharePause(null)).toBeNull();
   });
 
   test("a failed or missing source reads as not chosen, so the next click starts it again", () => {

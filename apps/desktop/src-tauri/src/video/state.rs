@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex as AsyncMutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use thiserror::Error;
 
 use crate::audio::capture::system_audio_runtime_readiness;
@@ -30,8 +30,8 @@ use crate::audio::state::{
     resolve_app_identity, AudioStateError, SharedAudioEngineState,
 };
 use crate::video::capture::{
-    list_cameras, list_displays, list_windows, screen_capture_runtime_readiness, VideoCaptureError,
-    VideoCaptureManager,
+    list_cameras, list_displays, list_windows, screen_capture_runtime_readiness, window_share_size,
+    CaptureEvent, CaptureEvents, VideoCaptureError, VideoCaptureManager,
 };
 use crate::video::domain::{
     CameraDevice, DisplayTarget, PublishedVideoTrack, PublishedVideoTrackId, SelfPreviewMode,
@@ -587,6 +587,10 @@ pub async fn video_start_window_share(
         None
     };
 
+    // The size the picker listed is only a hint: read the window as it is now. A minimized
+    // window answers with the size it is restored to (capture restores it when it starts).
+    let (source_width, source_height) =
+        window_share_size(&window_id).unwrap_or((source_width, source_height));
     let result = mutate_video_state(&app, &state, |engine| {
         engine.add_publishing_source(
             VideoSourceKind::Window,
@@ -636,6 +640,15 @@ pub async fn video_stop_source(
     audio_state: State<'_, SharedAudioEngineState>,
     source_id: VideoSourceId,
 ) -> Result<VideoMixerState, VideoStateError> {
+    stop_video_source(&app, state.inner(), audio_state.inner(), source_id).await
+}
+
+async fn stop_video_source(
+    app: &AppHandle,
+    state: &SharedVideoEngineState,
+    audio_state: &SharedAudioEngineState,
+    source_id: VideoSourceId,
+) -> Result<VideoMixerState, VideoStateError> {
     let removed = {
         let mut guard = state.write().map_err(|_| VideoStateError::StatePoisoned)?;
         guard.remove_source(source_id)
@@ -644,9 +657,33 @@ pub async fn video_stop_source(
         return Err(VideoStateError::SourceNotFound { source_id });
     };
     if let Some(audio_id) = removed.linked_audio_source_id {
-        let _ = remove_shared_audio_source(&app, audio_state.inner(), audio_id).await;
+        let _ = remove_shared_audio_source(app, audio_state, audio_id).await;
     }
-    mutate_video_state(&app, &state, |_engine| Ok(())).await
+    mutate_video_state(app, state, |_engine| Ok(())).await
+}
+
+/// Where running captures report what they notice by themselves. A pause or resume runs
+/// the ordinary reconcile, which reads the runtime's new state and updates the share's
+/// participant attribute; a closed window or screen ends its share like Stop sharing.
+fn capture_events(app: &AppHandle, state: &SharedVideoEngineState) -> CaptureEvents {
+    let app = app.clone();
+    let state = Arc::downgrade(state);
+    CaptureEvents::new(move |source_id, event| {
+        let app = app.clone();
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        tauri::async_runtime::spawn(async move {
+            match event {
+                CaptureEvent::StateChanged => resync_video(&app, &state).await,
+                CaptureEvent::TargetClosed => {
+                    let audio_state = app.state::<SharedAudioEngineState>();
+                    // Already stopped (the watcher and Windows can both report a close).
+                    let _ = stop_video_source(&app, &state, audio_state.inner(), source_id).await;
+                }
+            }
+        });
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -707,8 +744,16 @@ async fn finish_video_mutation(
         .map(|source| (source.id, VideoTrackSource::from_kind(source.kind)))
         .collect();
     let sinks = preview.wrap_publish_sinks(ops.engine.sink_map(), &source_types);
+    if !ops.capture.has_event_handler() {
+        ops.capture.set_event_handler(capture_events(app, state));
+    }
     let capture = &mut ops.capture;
     let capture_error = tokio::task::block_in_place(|| capture.reconcile(&mut sources, &sinks));
+    // Viewers learn that a share is paused from the publisher's attributes. Best effort: a
+    // failure leaves them with the held picture and no explanation, nothing worse.
+    if let Err(error) = ops.engine.reconcile_share_attributes(&sources).await {
+        eprintln!("[video-engine] could not update the share's paused attribute: {error}");
+    }
 
     let updated = {
         let mut guard = state.write().map_err(|_| VideoStateError::StatePoisoned)?;

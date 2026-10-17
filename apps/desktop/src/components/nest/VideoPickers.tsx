@@ -276,9 +276,14 @@ export function ScreenSharePickerDialog({
                   key={window.id}
                   selected={selected?.kind === "apps" && selected.id === window.id}
                   onClick={() => setSelected({ kind: "apps", id: window.id })}
-                  thumbnail={window.thumbnailDataUrl}
+                  thumbnail={window.minimized ? null : window.thumbnailDataUrl}
                   icon={window.iconDataUrl}
-                  fallback={<AppWindow className="h-6 w-6" />}
+                  fallback={window.minimized ? (
+                    <span className="flex flex-col items-center gap-1.5">
+                      {window.iconDataUrl ? <img src={window.iconDataUrl} alt="" className="h-8 w-8" /> : <AppWindow className="h-6 w-6" />}
+                      <span className="text-caption text-muted-foreground">Minimized</span>
+                    </span>
+                  ) : <AppWindow className="h-6 w-6" />}
                   title={window.title || window.appName || "Window"}
                   subtitle={
                     window.width && window.height
@@ -347,6 +352,9 @@ export function ScreenSharePickerDialog({
           </Button>
         </div>
       </div>
+      {selectedSource && "minimized" in selectedSource && selectedSource.minimized ? (
+        <p className="mt-2 text-right text-caption text-subtle">It will be restored when you share it.</p>
+      ) : null}
     </ModalShell>
   );
 }

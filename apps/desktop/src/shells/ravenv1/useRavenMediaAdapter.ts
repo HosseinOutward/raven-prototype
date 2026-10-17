@@ -20,6 +20,7 @@ import {
   type SelfPreviewMode,
   subscribeVideoStateChanged,
   videoCommands,
+  type VideoPauseReason,
   type VideoPresentationProfile,
   type VideoStreamEndpoint,
   VideoMixerState,
@@ -36,6 +37,7 @@ import type { NetworkActivityCategory, NetworkActivityDirection, NetworkActivity
 import {
   isConfirmedMicrophoneActive,
   isLocalVideoChosen,
+  localSharePause,
   localVideoStatus,
   type LocalVideoStatus,
   microphonesToMuteBeforeJoin,
@@ -121,6 +123,13 @@ export interface RavenMediaAdapterState {
   screenSharing: boolean;
   /** `live` is the only status in which other people can see the share. */
   screenShareStatus: LocalVideoStatus;
+  /**
+   * Why the share is paused (the shared app is minimized), or null. A paused share is still
+   * `live`: people see its last picture, and it resumes by itself.
+   */
+  screenSharePause: VideoPauseReason | null;
+  /** The app being shared, for a window share. Never the window's title. */
+  sharedAppName: string | null;
   windowSharing: boolean;
   appAudioCapturing: boolean;
   selectedMic: string | null;
@@ -412,6 +421,8 @@ export function useRavenMediaAdapter(
   const localCameraEnabled = isLocalVideoChosen(cameraStatus);
   const screenSharing = isLocalVideoChosen(screenShareStatus);
   const windowSharing = screenSource?.kind === "window";
+  const screenSharePause = localSharePause(screenSource);
+  const sharedAppName = windowSharing ? screenSource?.displayName || null : null;
   const appAudioCapturing = (audioState?.localSources ?? []).some(
     (source) => source.sourceType === "appAudio" && source.enabled && source.runtime.status !== "error",
   );
@@ -1047,7 +1058,9 @@ export function useRavenMediaAdapter(
       setVideoState(await videoCommands.startWindowShare(
         windowTarget.id,
         windowTarget.processId,
-        windowTarget.title || windowTarget.appName || "Window",
+        // The app's name, not the window title: it is shown on the share, and a title can
+        // reveal what someone is doing.
+        windowTarget.appName || "the app",
         withAudio && Boolean(videoCapabilities.supportsWindowAudio),
         profile,
         windowTarget.width,
@@ -1165,6 +1178,8 @@ export function useRavenMediaAdapter(
     outputMuteSupported: false,
     screenSharing,
     screenShareStatus,
+    screenSharePause,
+    sharedAppName,
     windowSharing,
     appAudioCapturing,
     selectedMic: selectedDeviceIdForSource(micSources[0]?.captureDeviceId, selectedMicPreference),
