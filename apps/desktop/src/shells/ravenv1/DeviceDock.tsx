@@ -28,6 +28,7 @@ import {
 } from "@/lib/thumbnailToolbar";
 import { buildTraySnapshot, subscribeTrayActions, trayCommands } from "@/lib/tray";
 import { api } from "@/lib/api";
+import { useAvatarVersions } from "@/lib/avatarVersions";
 import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { type VideoQualityProfileId } from "@/lib/video";
@@ -303,6 +304,8 @@ export function DeviceDock({
     };
   }, [mixerOpen, media.setLocalPreviewSurfaceVisible, screenPickerOpen]);
 
+  // The overlay's avatar URLs carry each picture's version; a change re-sends the snapshot.
+  const avatarRevision = useAvatarVersions();
   useEffect(() => {
     if (!data.user || !activeDetails) {
       const serialized = JSON.stringify(EMPTY_VOICE_OVERLAY_SNAPSHOT);
@@ -332,6 +335,7 @@ export function DeviceDock({
   }, [
     activeDetails,
     activeSession,
+    avatarRevision,
     data.user,
     data.labels.nestSingular,
     media.audioState,

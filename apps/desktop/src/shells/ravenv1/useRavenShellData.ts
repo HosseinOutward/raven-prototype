@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
+import { clearAvatarVersions, noteAvatarVersion } from "@/lib/avatarVersions";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
 import { loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
@@ -405,6 +406,11 @@ export function useRavenShellData(): RavenShellData {
         setEntryNotices((current) => applyEntryUpdate(current, update, Date.now()));
         return;
       }
+      if (update.type === "profile.avatar") {
+        // Only the picture changed. Its new version swaps it wherever it is shown.
+        if (update.actorId && update.at) noteAvatarVersion(update.actorId, update.at);
+        return;
+      }
       if (update.nestId) nestUpdates.set(update.nestId, update);
       else if (update.type === "presence.changed") presenceRefreshQueued = true;
       else broadRefreshQueued = true;
@@ -447,6 +453,7 @@ export function useRavenShellData(): RavenShellData {
     api.clearSession();
     setPasswordChangeRequired(false);
     forgetUnsentMessages(localStorage);
+    clearAvatarVersions();
     seenKnocksRef.current = null;
     setServerUnreachable(false);
     setHome(null);

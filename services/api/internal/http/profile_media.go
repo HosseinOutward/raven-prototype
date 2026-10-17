@@ -1,8 +1,11 @@
 package http
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"log"
 	stdhttp "net/http"
 	"os"
 	"path"
@@ -34,8 +37,23 @@ func (s *Server) sendStoredAvatar(c *fiber.Ctx, query string, args ...any) error
 	if err := s.db.QueryRow(query, args...).Scan(&key); err != nil || strings.TrimSpace(key) == "" {
 		return fiber.NewError(fiber.StatusNotFound, "profile image not found")
 	}
+	// Every upload stores a new object key, so the key names the picture. A URL with
+	// ?v= is tied to one picture and never changes; one without must be checked each
+	// time, which costs a 304 while the picture is the same.
+	etag := avatarETag(key)
+	if c.Query("v") != "" {
+		c.Set(fiber.HeaderCacheControl, "public, max-age=31536000, immutable")
+	} else {
+		c.Set(fiber.HeaderCacheControl, "no-cache")
+	}
+	c.Set(fiber.HeaderETag, etag)
+	if etagMatches(c.Get(fiber.HeaderIfNoneMatch), etag) {
+		return c.SendStatus(fiber.StatusNotModified)
+	}
 	object, err := s.profileMedia.Get(c.UserContext(), key)
 	if err != nil {
+		c.Set(fiber.HeaderCacheControl, "no-store")
+		c.Response().Header.Del(fiber.HeaderETag)
 		return fiber.NewError(fiber.StatusServiceUnavailable, err.Error())
 	}
 	contentType := strings.TrimSpace(object.ContentType)
@@ -43,8 +61,23 @@ func (s *Server) sendStoredAvatar(c *fiber.Ctx, query string, args ...any) error
 		contentType = stdhttp.DetectContentType(object.Bytes)
 	}
 	c.Set(fiber.HeaderContentType, contentType)
-	c.Set(fiber.HeaderCacheControl, "public, max-age=300")
 	return c.Send(object.Bytes)
+}
+
+func avatarETag(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return `"` + hex.EncodeToString(sum[:12]) + `"`
+}
+
+// etagMatches reads an If-None-Match header, which may list several tags or be "*".
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
+		if candidate == etag || candidate == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) uploadUserAvatar(c *fiber.Ctx) error {
@@ -53,7 +86,11 @@ func (s *Server) uploadUserAvatar(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return s.replaceAvatarKey(c, key, `SELECT avatar_object_key FROM users WHERE id = ?`, `UPDATE users SET avatar_object_key = ?, updated_at = ? WHERE id = ?`, user.ID)
+	if err := s.replaceAvatarKey(c, key, `SELECT avatar_object_key FROM users WHERE id = ?`, `UPDATE users SET avatar_object_key = ?, updated_at = ? WHERE id = ?`, user.ID); err != nil {
+		return err
+	}
+	s.publishAvatarChange(user.ID)
+	return nil
 }
 
 func (s *Server) uploadTreeAvatar(c *fiber.Ctx) error {
@@ -173,3 +210,46 @@ func serverAvatarRoute(version string) string {
 }
 
 var _ profilemedia.Store = profilemedia.UnavailableStore{}
+
+// publishAvatarChange tells everyone who can already see a person that their picture
+// changed: the people in trees they share, their friends, and their own other devices.
+// At doubles as the picture's version for clients building avatar URLs.
+func (s *Server) publishAvatarChange(userID string) {
+	audience, err := s.avatarAudience(userID)
+	if err != nil {
+		log.Printf("event stream: audience for profile.avatar: %v", err)
+		return
+	}
+	// The same updated_at the upload's own route carries, so the uploader's device
+	// recognises the version it already has.
+	version := database.Now()
+	_ = s.db.QueryRow(`SELECT updated_at FROM users WHERE id = ?`, userID).Scan(&version)
+	s.events.publishTo(LiveUpdate{Type: "profile.avatar", ActorID: userID, At: version}, audience)
+}
+
+func (s *Server) avatarAudience(userID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT other.user_id FROM tree_members mine
+		 JOIN tree_members other ON other.tree_id = mine.tree_id AND other.state = 'joined'
+		 JOIN trees t ON t.id = mine.tree_id AND t.status = 'active'
+		 WHERE mine.user_id = ? AND mine.state = 'joined'
+		 UNION
+		 SELECT friend_user_id FROM friendships WHERE user_id = ?`,
+		userID, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	audience := []string{userID}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		if id != userID {
+			audience = append(audience, id)
+		}
+	}
+	return audience, rows.Err()
+}

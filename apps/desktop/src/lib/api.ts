@@ -1,3 +1,5 @@
+import { avatarVersion, noteAvatarRoute } from "@/lib/avatarVersions";
+
 const DEFAULT_API_BASE_URL = normalizeApiServerUrl(import.meta.env.VITE_RAVEN_API_URL ?? "http://127.0.0.1:6977");
 const API_SERVER_URL_KEY = "raven.apiServerUrl";
 const API_SERVER_HISTORY_KEY = "raven.apiServerHistory";
@@ -491,6 +493,7 @@ export class ApiClient {
   }
 
   userAvatarUrl(userId: string, version = "") {
+    version = avatarVersion(userId) || version;
     return this.url(`/v1/media/users/${encodeURIComponent(userId)}/avatar${version ? `?v=${encodeURIComponent(version)}` : ""}`);
   }
 
@@ -729,7 +732,10 @@ export class ApiClient {
   }
 
   uploadProfileAvatar(file: File) {
-    return this.uploadAvatar("/v1/profile/avatar", file);
+    return this.uploadAvatar("/v1/profile/avatar", file).then((result) => {
+      noteAvatarRoute(result.avatar);
+      return result;
+    });
   }
 
   dashboard() {

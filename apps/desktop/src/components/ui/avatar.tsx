@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
+import { freshAvatarSrc, useAvatarVersions } from "@/lib/avatarVersions";
 import { cn } from "@/lib/utils";
 
-export function Avatar({ name, src, className }: { name: string; src?: string; className?: string }) {
+export function Avatar({ name, src: givenSrc, className }: { name: string; src?: string; className?: string }) {
+  // A person who changes their picture bumps its version; this swaps a mounted one.
+  useAvatarVersions();
+  const src = givenSrc ? freshAvatarSrc(givenSrc) : givenSrc;
   const [imageFailed, setImageFailed] = useState(false);
   useEffect(() => setImageFailed(false), [src]);
   const initials = name
