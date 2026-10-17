@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, Loader2, Monitor, AppWindow, RefreshCw } from "lucide-react";
 import {
   CameraDevice,
@@ -10,6 +10,20 @@ import {
   WindowTarget,
   videoCommands,
 } from "@/lib/video";
+import {
+  aspectOf,
+  customDraftFromProfile,
+  followDraft,
+  inheritedDraft,
+  outputForBudget,
+  profileFromSelection,
+  reseededDraft,
+  settleDraft,
+  shapeFor,
+  type CustomField,
+  type CustomVideoDraft,
+  type SourceShape,
+} from "./customQuality";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { fieldClassName } from "@/components/ui/input";
@@ -122,7 +136,10 @@ export function CameraPickerDialog({
         className="mt-4"
         profileId={profileId}
         customDraft={customDraft}
-        onProfileIdChange={setProfileId}
+        onProfileIdChange={(id, seeded) => {
+          setProfileId(id);
+          if (seeded) setCustomDraft(seeded);
+        }}
         onCustomDraftChange={setCustomDraft}
         summary={`Up to ${profile.width}×${profile.height} at ${Math.round(profile.fps)} fps`}
       />
@@ -304,8 +321,12 @@ export function ScreenSharePickerDialog({
         className="mt-4"
         profileId={profileId}
         customDraft={customDraft}
-        onProfileIdChange={setProfileId}
+        onProfileIdChange={(id, seeded) => {
+          setProfileId(id);
+          if (seeded) setCustomDraft(seeded);
+        }}
         onCustomDraftChange={setCustomDraft}
+        source={selectedSource}
         summary={
           output
             ? `Sent at ${output.width}×${output.height}, ${Math.round(profile.fps)} fps`
@@ -330,12 +351,6 @@ export function ScreenSharePickerDialog({
   );
 }
 
-export type CustomVideoDraft = {
-  width: string;
-  height: string;
-  fps: string;
-};
-
 function videoProfileLabel(profileId: VideoQualityProfileId) {
   switch (profileId) {
     case "presentation":
@@ -358,6 +373,8 @@ export function VideoProfileFields({
   profileId,
   customDraft,
   summary,
+  source,
+  fallback = DEFAULT_VIDEO_PROFILE,
   onProfileIdChange,
   onCustomDraftChange,
 }: {
@@ -365,17 +382,56 @@ export function VideoProfileFields({
   profileId: VideoQualityProfileId;
   customDraft: CustomVideoDraft;
   summary: string;
-  onProfileIdChange: (profileId: VideoQualityProfileId) => void;
+  /** The screen or app being shared. Custom sizes keep its shape; a camera has none. */
+  source?: SourceShape | null;
+  /** Used for a field that cannot be read. */
+  fallback?: VideoQualityProfile;
+  /** `seededDraft` comes with a switch to Custom: the fields start from the preset just left. */
+  onProfileIdChange: (profileId: VideoQualityProfileId, seededDraft?: CustomVideoDraft) => void;
   onCustomDraftChange: (draft: CustomVideoDraft) => void;
 }) {
+  // A camera has no native size to take a shape from, so Custom keeps the shape of the
+  // preset it was entered from.
+  const [presetShape, setPresetShape] = useState(() =>
+    profileId === "custom"
+      ? aspectOf(Number(customDraft.width), Number(customDraft.height)) ?? shapeFor(fallback)
+      : shapeFor(VIDEO_PROFILE_PRESETS[profileId]),
+  );
+  const shape = (source ? aspectOf(source.width, source.height) : null) ?? presetShape;
+
+  // A different screen or app while Custom is on: take its shape, keep the pixel count.
+  const sourceKey = source ? `${source.width}x${source.height}` : "";
+  const seenSource = useRef(sourceKey);
+  useEffect(() => {
+    if (seenSource.current === sourceKey) return;
+    seenSource.current = sourceKey;
+    if (profileId === "custom" && source) onCustomDraftChange(reseededDraft(customDraft, source, fallback));
+  }, [sourceKey, profileId, source, customDraft, fallback, onCustomDraftChange]);
+
+  const choose = (next: VideoQualityProfileId) => {
+    if (next === "custom" && profileId !== "custom") {
+      const preset = VIDEO_PROFILE_PRESETS[profileId];
+      setPresetShape(shapeFor(preset));
+      onProfileIdChange("custom", inheritedDraft(preset, source));
+      return;
+    }
+    onProfileIdChange(next);
+  };
+
+  const edit = (field: CustomField, value: string) => {
+    const next = { ...customDraft, [field]: value };
+    onCustomDraftChange(field === "fps" ? next : followDraft(next, field, shape));
+  };
+  const commit = (field: CustomField) => {
+    const next = settleDraft(customDraft, field, shape, fallback);
+    if (next.width !== customDraft.width || next.height !== customDraft.height || next.fps !== customDraft.fps) onCustomDraftChange(next);
+  };
+
   return (
     <div className={className}>
       <div className="space-y-1.5 text-small text-muted-foreground">
         Quality
-        <Select
-          value={profileId}
-          onValueChange={(value) => onProfileIdChange(value as VideoQualityProfileId)}
-        >
+        <Select value={profileId} onValueChange={(value) => choose(value as VideoQualityProfileId)}>
           <SelectTrigger size="sm">
             <SelectValue>{videoProfileLabel(profileId)}</SelectValue>
           </SelectTrigger>
@@ -393,30 +449,9 @@ export function VideoProfileFields({
       </div>
       {profileId === "custom" ? (
         <div className="mt-2 grid grid-cols-3 gap-2">
-          <NumberField
-            label="Width"
-            value={customDraft.width}
-            min={2}
-            max={7680}
-            step={2}
-            onChange={(width) => onCustomDraftChange({ ...customDraft, width })}
-          />
-          <NumberField
-            label="Height"
-            value={customDraft.height}
-            min={2}
-            max={4320}
-            step={2}
-            onChange={(height) => onCustomDraftChange({ ...customDraft, height })}
-          />
-          <NumberField
-            label="FPS"
-            value={customDraft.fps}
-            min={1}
-            max={120}
-            step={1}
-            onChange={(fps) => onCustomDraftChange({ ...customDraft, fps })}
-          />
+          <NumberField label="Width" value={customDraft.width} min={2} max={7680} step={2} onChange={(value) => edit("width", value)} onCommit={() => commit("width")} />
+          <NumberField label="Height" value={customDraft.height} min={2} max={4320} step={2} onChange={(value) => edit("height", value)} onCommit={() => commit("height")} />
+          <NumberField label="FPS" value={customDraft.fps} min={1} max={120} step={1} onChange={(value) => edit("fps", value)} onCommit={() => commit("fps")} />
         </div>
       ) : null}
       <p className="mt-1.5 text-caption text-muted-foreground">{summary}</p>
@@ -431,6 +466,7 @@ function NumberField({
   max,
   step,
   onChange,
+  onCommit,
 }: {
   label: string;
   value: string;
@@ -438,6 +474,8 @@ function NumberField({
   max: number;
   step: number;
   onChange: (value: string) => void;
+  /** The field is done: on blur or Enter. */
+  onCommit: () => void;
 }) {
   return (
     <label className="block space-y-1.5 text-caption text-muted-foreground">
@@ -450,59 +488,13 @@ function NumberField({
         max={max}
         step={step}
         onChange={(event) => onChange(event.target.value)}
+        onBlur={onCommit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onCommit();
+        }}
       />
     </label>
   );
-}
-
-export function customDraftFromProfile(profile: VideoQualityProfile): CustomVideoDraft {
-  return {
-    width: String(profile.width),
-    height: String(profile.height),
-    fps: String(Math.round(profile.fps)),
-  };
-}
-
-export function profileFromSelection(
-  profileId: VideoQualityProfileId,
-  customDraft: CustomVideoDraft,
-  fallback: VideoQualityProfile,
-): VideoQualityProfile {
-  if (profileId !== "custom") return VIDEO_PROFILE_PRESETS[profileId];
-  const width = evenNumber(clampNumber(customDraft.width, fallback.width, 2, 7680));
-  const height = evenNumber(clampNumber(customDraft.height, fallback.height, 2, 4320));
-  const fps = clampNumber(customDraft.fps, fallback.fps, 1, 120);
-  return {
-    profileId: "custom",
-    maxPixels: Math.max(4, width * height),
-    width,
-    height,
-    fps,
-  };
-}
-
-function outputForBudget(sourceWidth: number, sourceHeight: number, maxPixels: number) {
-  if (sourceWidth <= 0 || sourceHeight <= 0) return null;
-  const pixels = Math.max(1, sourceWidth * sourceHeight);
-  const scale = Math.min(1, Math.sqrt(Math.max(4, maxPixels) / pixels));
-  let width = evenNumber(Math.round(sourceWidth * scale));
-  let height = evenNumber(Math.round(sourceHeight * scale));
-  while (width * height > Math.max(4, maxPixels)) {
-    if (width >= height && width > 2) width -= 2;
-    else if (height > 2) height -= 2;
-    else break;
-  }
-  return { width, height };
-}
-
-function clampNumber(value: string, fallback: number, min: number, max: number) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(parsed)));
-}
-
-function evenNumber(value: number) {
-  return Math.max(2, value - (value % 2));
 }
 
 function TabButton({

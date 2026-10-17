@@ -30,19 +30,18 @@ const ICONS: Record<DockControlId, ReactNode> = {
 };
 
 /**
- * The bottom bar's own settings: the order of the device buttons (the same arrangement
- * as right-clicking them in the bar) and whether Leave asks first. Both apply at once.
+ * The order of the bottom bar's device buttons: the same arrangement as right-clicking
+ * them in the bar. It applies at once and is kept on this device.
  */
-export function DockSettingsSection() {
+export function DockOrderSection() {
   const order = useDockOrder();
-  const confirmLeave = useConfirmLeave();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   return (
-    <SettingsSection title="Calls" description="The bar at the bottom of the window. These choices are kept on this device.">
+    <SettingsSection title="Bottom bar" description="The order of the device buttons at the bottom of the window. It is kept on this device.">
       <SettingsRows>
         <div className="px-4 pb-4 pt-2.5">
           <div className="flex min-h-9 items-center justify-between gap-4">
@@ -81,6 +80,17 @@ export function DockSettingsSection() {
             </SortableContext>
           </DndContext>
         </div>
+      </SettingsRows>
+    </SettingsSection>
+  );
+}
+
+/** Whether Leave in the bar asks first. It applies at once and is kept on this device. */
+export function ConfirmLeaveSection() {
+  const confirmLeave = useConfirmLeave();
+  return (
+    <SettingsSection title="Calls">
+      <SettingsRows>
         <SettingsToggleRow
           label="Ask before leaving a call"
           description="Leave in the bar asks first, so a stray click does not end your call."

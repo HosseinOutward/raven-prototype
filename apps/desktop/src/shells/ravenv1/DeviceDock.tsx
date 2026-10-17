@@ -14,9 +14,8 @@ import { Tooltip } from "@/components/ui/tooltip";
 import {
   ScreenSharePickerDialog,
   VideoProfileFields,
-  customDraftFromProfile,
-  profileFromSelection,
 } from "@/components/nest/VideoPickers";
+import { customDraftFromProfile, profileFromSelection } from "@/components/nest/customQuality";
 import { buildVoiceOverlaySnapshot, EMPTY_VOICE_OVERLAY_SNAPSHOT, voiceOverlayCommands } from "@/lib/voiceOverlay";
 import { mediaHotkeyCommands, subscribeMediaHotkeys, type MediaHotkeySettings } from "@/lib/mediaHotkeys";
 import { useTalkingWhileMuted } from "@/lib/mutedSpeech";
@@ -29,6 +28,7 @@ import {
 } from "@/lib/thumbnailToolbar";
 import { buildTraySnapshot, subscribeTrayActions, trayCommands } from "@/lib/tray";
 import { api } from "@/lib/api";
+import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { type VideoQualityProfileId } from "@/lib/video";
 import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
@@ -1082,9 +1082,12 @@ function CameraMenu({ media }: { media: RavenMediaAdapterState }) {
         profileId={cameraQuality}
         customDraft={customVideoDraft}
         summary={`Up to ${selectedProfile.width}×${selectedProfile.height} at ${Math.round(selectedProfile.fps)} fps`}
-        onProfileIdChange={(profileId) => {
+        fallback={currentCameraProfile}
+        onProfileIdChange={(profileId, seededDraft) => {
+          const draft = seededDraft ?? customVideoDraft;
           setCameraQuality(profileId);
-          void media.setCameraProfile(profileFromSelection(profileId, customVideoDraft, currentCameraProfile)).catch(() => undefined);
+          if (seededDraft) setCustomVideoDraft(seededDraft);
+          void media.setCameraProfile(profileFromSelection(profileId, draft, currentCameraProfile)).catch(() => undefined);
         }}
         onCustomDraftChange={(draft) => {
           setCustomVideoDraft(draft);
@@ -1296,7 +1299,7 @@ function NetworkActivityIndicator({
           </button>
         </PopoverTrigger>
       </Tooltip>
-      <PopoverContent side="top" align="end" className="w-[340px] p-3.5">
+      <PopoverContent side="top" align="end" className="w-[340px] p-3.5" onOpenAutoFocus={focusPanelOnOpen}>
         <div className="flex items-center gap-1.5">
           <div className="text-small font-medium">Network activity</div>
           <InfoTooltip label="About network activity" align="end">

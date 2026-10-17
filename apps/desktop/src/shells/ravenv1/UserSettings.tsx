@@ -29,7 +29,7 @@ import {
   type SettingsCategoryGroup,
 } from "./SettingsScaffold";
 import { InfoTooltip } from "./atoms";
-import { DockSettingsSection } from "./DockSettings";
+import { ConfirmLeaveSection, DockOrderSection } from "./DockSettings";
 import type { RavenShellData } from "./state";
 import type {
   NetworkActivityCategory,
@@ -280,6 +280,7 @@ function AppearanceSettings({ data }: { data: RavenShellData }) {
           />
         </SettingsRows>
       </SettingsSection>
+      <DockOrderSection />
       <SettingsSection title="Theme">
         <SettingsReadOnlyRow label="Colour" value="Raven dark" />
         <SettingsHint>Raven has one theme for now.</SettingsHint>
@@ -304,7 +305,7 @@ function AudioVideoSettings({ data, media }: { data: RavenShellData; media: Rave
         </SettingsRows>
       </SettingsSection>
 
-      <DockSettingsSection />
+      <ConfirmLeaveSection />
 
       <SettingsSection title="Seeing yourself" description="How Raven shows your own camera or screen back to you. Other people are not affected.">
         <SettingsRows>

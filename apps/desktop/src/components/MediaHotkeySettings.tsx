@@ -9,14 +9,13 @@ import {
   type MediaHotkeySettings,
   type MediaHotkeySettingsPatch,
 } from "@/lib/mediaHotkeys";
+import { hotkeyDraftDirty, type HotkeyDraft } from "@/lib/hotkeyDraft";
 import {
   DEFAULT_VOICE_OVERLAY_HOTKEY,
   formatHotkeyEvent,
   type VoiceOverlaySettings,
   voiceOverlayCommands,
 } from "@/lib/voiceOverlay";
-
-type HotkeyDraft = MediaHotkeySettingsPatch & { voiceOverlay: string };
 
 const DEFAULT_HOTKEY_DRAFT: HotkeyDraft = {
   ...DEFAULT_MEDIA_HOTKEYS,
@@ -34,9 +33,17 @@ const FIELDS: { id: keyof HotkeyDraft; label: string; hint: string }[] = [
 export function MediaHotkeySettingsPanel() {
   const [settings, setSettings] = useState<MediaHotkeySettings | null>(null);
   const [overlaySettings, setOverlaySettings] = useState<VoiceOverlaySettings | null>(null);
-  const [draft, setDraft] = useState<HotkeyDraft>(DEFAULT_HOTKEY_DRAFT);
+  const [draft, setDraftState] = useState<HotkeyDraft>(DEFAULT_HOTKEY_DRAFT);
+  const [saved, setSaved] = useState<HotkeyDraft>(DEFAULT_HOTKEY_DRAFT);
+  const [justSaved, setJustSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  // Any edit takes the "Saved." note away: the form no longer says what was saved.
+  const setDraft = (update: HotkeyDraft | ((current: HotkeyDraft) => HotkeyDraft)) => {
+    setJustSaved(false);
+    setDraftState(update);
+  };
 
   useEffect(() => {
     let active = true;
@@ -45,7 +52,9 @@ export function MediaHotkeySettingsPanel() {
         if (!active) return;
         setSettings(next);
         setOverlaySettings(nextOverlay);
-        setDraft({ ...pickBindings(next), voiceOverlay: nextOverlay.hotkey || DEFAULT_VOICE_OVERLAY_HOTKEY });
+        const loaded = { ...pickBindings(next), voiceOverlay: nextOverlay.hotkey || DEFAULT_VOICE_OVERLAY_HOTKEY };
+        setDraftState(loaded);
+        setSaved(loaded);
         setError(next.registrationError ?? nextOverlay.registrationError ?? "");
       })
       .catch((err) => {
@@ -69,9 +78,12 @@ export function MediaHotkeySettingsPanel() {
     );
   }
 
+  const dirty = hotkeyDraftDirty(draft, saved);
+
   const save = async () => {
     setSaving(true);
     setError("");
+    setJustSaved(false);
     try {
       const mediaPatch = pickMediaDraft(draft);
       const [next, nextOverlay] = await Promise.all([
@@ -80,8 +92,13 @@ export function MediaHotkeySettingsPanel() {
       ]);
       setSettings(next);
       setOverlaySettings(nextOverlay);
-      setDraft({ ...pickBindings(next), voiceOverlay: nextOverlay.hotkey || DEFAULT_VOICE_OVERLAY_HOTKEY });
-      setError(next.registrationError ?? nextOverlay.registrationError ?? "");
+      const stored = { ...pickBindings(next), voiceOverlay: nextOverlay.hotkey || DEFAULT_VOICE_OVERLAY_HOTKEY };
+      const refused = next.registrationError ?? nextOverlay.registrationError ?? "";
+      setDraftState(stored);
+      setSaved(stored);
+      setError(refused);
+      // A key the system refused is not a success, even when the others registered.
+      setJustSaved(!refused);
     } catch (err) {
       setError(messageFromHotkeyError(err));
     } finally {
@@ -120,9 +137,12 @@ export function MediaHotkeySettingsPanel() {
 
       <div className="flex items-center justify-between gap-3">
         <Button type="button" variant="ghost" onClick={() => setDraft(DEFAULT_HOTKEY_DRAFT)} disabled={saving}>Restore defaults</Button>
-        <Button type="button" onClick={() => void save()} disabled={saving || Object.values(draft).some((value) => !value.trim())}>
-          {saving ? "Saving…" : "Save shortcuts"}
-        </Button>
+        <div className="flex items-center gap-3">
+          {justSaved && !dirty ? <span role="status" className="text-small text-muted-foreground">Saved.</span> : null}
+          <Button type="button" onClick={() => void save()} disabled={saving || !dirty || Object.values(draft).some((value) => !value.trim())}>
+            {saving ? "Saving…" : "Save shortcuts"}
+          </Button>
+        </div>
       </div>
     </SettingsSection>
   );

@@ -71,6 +71,9 @@ export function MediaTile({
   const [playbackWaiting, setPlaybackWaiting] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const moreRef = useRef<HTMLButtonElement | null>(null);
+  const infoRequested = useRef(false);
+  const infoEscaped = useRef(false);
   const canFullscreen = typeof document !== "undefined" && document.fullscreenEnabled;
 
   useEffect(() => {
@@ -204,11 +207,23 @@ export function MediaTile({
         {canFullscreen ? <TileAction label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</TileAction> : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" className={TILE_ACTION_CLASS} aria-label={`More for ${label}`}>
+            <button ref={moreRef} type="button" className={TILE_ACTION_CLASS} aria-label={`More for ${label}`}>
               <MoreHorizontal />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56" onClick={(event) => event.stopPropagation()}>
+          <DropdownMenuContent
+            align="end"
+            className="w-56"
+            onClick={(event) => event.stopPropagation()}
+            onCloseAutoFocus={(event) => {
+              // The menu would hand focus back to "…", and the popover opening beside it
+              // reads that as focus leaving and dismisses itself. Open it now instead.
+              if (!infoRequested.current) return;
+              infoRequested.current = false;
+              event.preventDefault();
+              setInfoOpen(true);
+            }}
+          >
             {receiveAction ? (
               <DropdownMenuItem onSelect={() => onReceivingChange?.(receiveAction.receiving)}>
                 {receiveAction.icon}
@@ -216,8 +231,7 @@ export function MediaTile({
               </DropdownMenuItem>
             ) : null}
             {canShowInfo ? (
-              // Opened once the menu has closed and handed focus back, so the popover keeps it.
-              <DropdownMenuItem onSelect={() => window.setTimeout(() => setInfoOpen(true), 0)}>
+              <DropdownMenuItem onSelect={() => { infoRequested.current = true; }}>
                 <Activity />
                 Stream info
               </DropdownMenuItem>
@@ -241,6 +255,14 @@ export function MediaTile({
           className="w-72"
           aria-label={`Stream info for ${label}`}
           onClick={(event) => event.stopPropagation()}
+          onEscapeKeyDown={() => { infoEscaped.current = true; }}
+          onCloseAutoFocus={(event) => {
+            // There is no trigger to return to, so after Escape "…" gets focus back by
+            // hand. After a click elsewhere, focus stays where the click put it.
+            event.preventDefault();
+            if (infoEscaped.current) moreRef.current?.focus();
+            infoEscaped.current = false;
+          }}
         >
           {infoOpen && tile.streamId ? (
             <StreamInfo streamId={tile.streamId} source={tile.source} presentationProfile={presentationProfile} />
