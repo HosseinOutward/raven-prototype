@@ -20,10 +20,10 @@ use crate::audio::domain::{
     AudioPlaybackStatus, AudioPreset, AudioPresetDefinition, AudioPresetTarget, AudioProcessorId,
     AudioProcessorKind, AudioProcessorParameters, AudioProcessorState, AudioSessionHealth,
     AudioSourceId, AudioSourceRuntimeStatus, AudioSourceState, AudioSourceType,
-    AudioSubscriptionStatus, ChannelHealthState, GainDb, MeterState, ParticipantId,
-    ProcessorChainState, PublishedTrackId, PublishedTrackMetadata, PublishedTrackMetadataPatch,
-    RemoteAudioTrackState, RemoteParticipantAudioState, TrackLifecycleEvent,
-    WebRtcAudioProcessingSettings,
+    AudioSubscriptionStatus, ChannelHealthState, GainDb, MeterState, NoiseSuppressionMode,
+    ParticipantId, ProcessorChainState, PublishedTrackId, PublishedTrackMetadata,
+    PublishedTrackMetadataPatch, RemoteAudioTrackState, RemoteParticipantAudioState,
+    TrackLifecycleEvent, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{
     measure_audio_network_totals, AudioEngine, AudioNetworkTotals, OutputMixer, UiSound,
@@ -574,19 +574,24 @@ impl AudioEngineState {
         processing: WebRtcAudioProcessingSettings,
     ) -> Result<(AudioSourceState, Option<AudioTrackPublishInstruction>), AudioStateError> {
         let source = self.local_source_mut(source_id)?;
-        source.channel_strip.webrtc_processing = processing;
+        let current = &mut source.channel_strip.webrtc_processing;
+        // The noise suppression mode changes live in the running capture and reopens
+        // nothing, so choosing one republishes nothing either.
+        let switches_changed = current.echo_cancellation != processing.echo_cancellation
+            || current.auto_gain_control != processing.auto_gain_control;
+        *current = processing;
         let source = source.clone();
-        let instruction =
-            source
-                .published_track
-                .clone()
-                .map(|track| AudioTrackPublishInstruction::Publish {
-                    source: audio_track_source_from_source(&source),
-                    webrtc_track_id: track.webrtc_track_id.clone().unwrap_or_else(|| {
-                        crate::audio::publisher::stable_webrtc_track_id(track.track_id)
-                    }),
-                    track,
-                });
+        let instruction = source
+            .published_track
+            .clone()
+            .filter(|_| switches_changed)
+            .map(|track| AudioTrackPublishInstruction::Publish {
+                source: audio_track_source_from_source(&source),
+                webrtc_track_id: track.webrtc_track_id.clone().unwrap_or_else(|| {
+                    crate::audio::publisher::stable_webrtc_track_id(track.track_id)
+                }),
+                track,
+            });
         Ok((source, instruction))
     }
 
@@ -2777,7 +2782,7 @@ pub async fn add_and_publish_shared_audio_source(
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         let processing = match source_type {
             AudioSourceType::SystemAudio => Some(WebRtcAudioProcessingSettings {
-                noise_suppression: false,
+                noise_suppression: NoiseSuppressionMode::Off,
                 // Windows and macOS capture system audio with Raven's own playback
                 // already excluded, so there is nothing to cancel and the shared audio
                 // stays untouched. Linux records the whole output, the room included, and
@@ -2786,7 +2791,7 @@ pub async fn add_and_publish_shared_audio_source(
                 auto_gain_control: false,
             }),
             AudioSourceType::AppAudio => Some(WebRtcAudioProcessingSettings {
-                noise_suppression: false,
+                noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: false,
                 auto_gain_control: false,
             }),
@@ -3674,7 +3679,7 @@ mod tests {
             .set_local_webrtc_processing(
                 mic.id,
                 WebRtcAudioProcessingSettings {
-                    noise_suppression: false,
+                    noise_suppression: NoiseSuppressionMode::Off,
                     echo_cancellation: true,
                     auto_gain_control: false,
                 },
@@ -3682,7 +3687,10 @@ mod tests {
             .expect("set mic processing");
 
         assert_eq!(updated.id, mic.id);
-        assert!(!updated.channel_strip.webrtc_processing.noise_suppression);
+        assert_eq!(
+            updated.channel_strip.webrtc_processing.noise_suppression,
+            NoiseSuppressionMode::Off
+        );
         assert!(updated.channel_strip.webrtc_processing.echo_cancellation);
         assert!(!updated.channel_strip.webrtc_processing.auto_gain_control);
         assert_eq!(
@@ -3700,7 +3708,10 @@ mod tests {
         match instruction.expect("published source should re-emit publish instruction") {
             AudioTrackPublishInstruction::Publish { source, .. } => {
                 assert_eq!(source.source_id, mic.id);
-                assert!(!source.webrtc_processing.noise_suppression);
+                assert_eq!(
+                    source.webrtc_processing.noise_suppression,
+                    NoiseSuppressionMode::Off
+                );
                 assert!(source.webrtc_processing.echo_cancellation);
                 assert!(!source.webrtc_processing.auto_gain_control);
             }
@@ -3708,6 +3719,31 @@ mod tests {
                 panic!("expected publish instruction")
             }
         }
+    }
+
+    #[test]
+    fn choosing_a_noise_suppression_mode_republishes_nothing() {
+        let mut engine = AudioEngineState::default();
+        let mic = engine.add_local_source(AudioSourceType::Microphone, "Desk mic");
+        engine
+            .publish_audio_source(mic.id)
+            .expect("publish microphone");
+
+        let (updated, instruction) = engine
+            .set_local_webrtc_processing(
+                mic.id,
+                WebRtcAudioProcessingSettings {
+                    noise_suppression: NoiseSuppressionMode::Standard,
+                    ..WebRtcAudioProcessingSettings::default()
+                },
+            )
+            .expect("set mic processing");
+
+        assert_eq!(
+            updated.channel_strip.webrtc_processing.noise_suppression,
+            NoiseSuppressionMode::Standard
+        );
+        assert!(instruction.is_none());
     }
 
     fn excel() -> AppAudioSource {

@@ -106,8 +106,17 @@ export interface ProcessorChainState {
   processors: AudioProcessorState[];
 }
 
+export type NoiseSuppressionMode = "off" | "standard" | "strong" | "studio";
+export type NoiseSuppressionFallback = "notAvailable" | "failedToStart";
+
+/** What a microphone's noise suppression is really doing, as opposed to the mode chosen. */
+export interface NoiseSuppressionRuntime {
+  active: NoiseSuppressionMode;
+  fallback: NoiseSuppressionFallback | null;
+}
+
 export interface WebRtcAudioProcessingSettings {
-  noiseSuppression: boolean;
+  noiseSuppression: NoiseSuppressionMode;
   echoCancellation: boolean;
   autoGainControl: boolean;
 }
@@ -137,6 +146,7 @@ export interface AudioSourceRuntimeState {
   updatedAt: string | null;
   /** The chosen device is unavailable and the system default is standing in for it. */
   fallbackDevice?: boolean;
+  noiseSuppression?: NoiseSuppressionRuntime | null;
 }
 
 export interface AudioInputDevice {

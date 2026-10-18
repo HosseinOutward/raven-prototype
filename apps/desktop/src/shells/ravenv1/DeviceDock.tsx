@@ -16,6 +16,7 @@ import {
   VideoProfileFields,
 } from "@/components/nest/VideoPickers";
 import { customDraftFromProfile, profileFromSelection } from "@/components/nest/customQuality";
+import { NoiseSuppressionRow } from "@/components/NoiseSuppressionRow";
 import { buildVoiceOverlaySnapshot, EMPTY_VOICE_OVERLAY_SNAPSHOT, voiceOverlayCommands } from "@/lib/voiceOverlay";
 import { mediaHotkeyCommands, subscribeMediaHotkeys, type MediaHotkeySettings } from "@/lib/mediaHotkeys";
 import { useTalkingWhileMuted } from "@/lib/mutedSpeech";
@@ -1065,7 +1066,13 @@ function MicMenu({ media }: { media: RavenMediaAdapterState }) {
         ))}
       </div>
       <div className="mx-2 my-1.5 h-px bg-border" />
-      <SwitchRow label="Noise suppression" hint="Reduces background noise." checked={Boolean(processing?.noiseSuppression)} disabled={!processing} onChange={(checked) => updateProcessing({ noiseSuppression: checked })} />
+      <NoiseSuppressionRow
+        className="px-2 py-1.5"
+        value={processing?.noiseSuppression ?? null}
+        runtime={media.localNoiseSuppression}
+        disabled={!processing}
+        onChange={(noiseSuppression) => updateProcessing({ noiseSuppression })}
+      />
       <SwitchRow label="Echo cancellation" hint="Keeps speaker sound out of your mic." checked={Boolean(processing?.echoCancellation)} disabled={!processing} onChange={(checked) => updateProcessing({ echoCancellation: checked })} />
       <SwitchRow label="Automatic gain" hint="Evens out how loud you are." checked={Boolean(processing?.autoGainControl)} disabled={!processing} onChange={(checked) => updateProcessing({ autoGainControl: checked })} />
       {processing ? null : <p className="px-2 pb-1 pt-1.5 text-caption text-subtle">These unlock once your microphone has been turned on.</p>}

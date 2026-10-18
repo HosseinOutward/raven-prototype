@@ -35,6 +35,8 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
 ringbuf = "0.4"
 futures-util = "0.3"
 sonora = "0.1"
+# RNNoise in pure Rust: the "Strong" noise suppression mode.
+nnnoiseless = { version = "0.5", default-features = false }
 # Native camera capture (MSMF on Windows, AVFoundation on macOS, V4L2 on Linux).
 nokhwa = { version = "0.10", features = ["input-native"] }
 

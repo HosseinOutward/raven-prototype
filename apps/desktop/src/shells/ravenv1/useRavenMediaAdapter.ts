@@ -8,6 +8,8 @@ import {
   AudioOutputDevice,
   AudioSourceState,
   NativeAudioCapabilityReport,
+  NoiseSuppressionMode,
+  NoiseSuppressionRuntime,
   subscribeAudioDevicesChanged,
   subscribeAudioStateChanged,
   WebRtcAudioProcessingSettings,
@@ -139,6 +141,8 @@ export interface RavenMediaAdapterState {
   preferredCameraProfile: VideoQualityProfile;
   activeShareProfile: VideoQualityProfile | null;
   localAudioProcessing: WebRtcAudioProcessingSettings | null;
+  /** What the microphone's noise suppression is really doing; it can differ from the mode chosen. */
+  localNoiseSuppression: NoiseSuppressionRuntime | null;
   availableInputDevices: AudioInputDevice[];
   availableOutputDevices: AudioOutputDevice[];
   availableCameras: CameraDevice[];
@@ -427,6 +431,7 @@ export function useRavenMediaAdapter(
     (source) => source.sourceType === "appAudio" && source.enabled && source.runtime.status !== "error",
   );
   const localAudioProcessing = micSources[0]?.channelStrip.webrtcProcessing ?? null;
+  const localNoiseSuppression = micSources[0]?.runtime.noiseSuppression ?? null;
   const participantMedia = useMemo<ParticipantMediaState[]>(() => {
     const tracks = videoState?.remoteTracks ?? [];
     return (videoState?.participants ?? []).map((participant) => ({
@@ -743,6 +748,14 @@ export function useRavenMediaAdapter(
       );
       const mics = state.localSources.filter((source) => source.sourceType === "microphone");
       mic = mics[mics.length - 1];
+      // Like the device below, the remembered noise suppression is applied once, when the
+      // source is created; no capture is running yet, so nothing reopens.
+      const noiseSuppression = readMediaSettings().noiseSuppression;
+      if (mic && noiseSuppression && noiseSuppression !== mic.channelStrip.webrtcProcessing.noiseSuppression) {
+        const micId = mic.id;
+        state = await audioCommands.setLocalWebRtcProcessing(micId, { ...mic.channelStrip.webrtcProcessing, noiseSuppression });
+        mic = state.localSources.find((source) => source.id === micId) ?? mic;
+      }
     }
     if (!mic) throw new Error("No microphone source is available.");
 
@@ -1095,10 +1108,13 @@ export function useRavenMediaAdapter(
     try {
       const mic = await ensureDefaultMic();
       setAudioState(await audioCommands.setLocalWebRtcProcessing(mic.id, processing));
+      if (processing.noiseSuppression !== mic.channelStrip.webrtcProcessing.noiseSuppression) {
+        saveMediaSettings({ noiseSuppression: processing.noiseSuppression });
+      }
     } catch (err) {
       setSafeError(messageFromError(err, "Microphone processing could not be changed"), "publish_failure", "Try again from the mixer or leave and rejoin media.");
     }
-  }, [ensureDefaultMic, setSafeError]);
+  }, [ensureDefaultMic, saveMediaSettings, setSafeError]);
 
   const retryIncomingAudio = useCallback(async () => {
     setError("");
@@ -1189,6 +1205,7 @@ export function useRavenMediaAdapter(
     preferredCameraProfile,
     activeShareProfile: screenSource?.profile ?? null,
     localAudioProcessing,
+    localNoiseSuppression,
     availableInputDevices: inputDevices,
     availableOutputDevices: outputDevices,
     availableCameras: cameras,
@@ -1305,6 +1322,7 @@ function classifyMediaError(error: unknown, fallback = "Media action failed"): M
 type MediaSettings = {
   selectedMic?: string | null;
   selectedOutput?: string | null;
+  noiseSuppression?: NoiseSuppressionMode;
   deafenMode?: DeafenMode;
   networkActivity?: NetworkActivitySettings;
   selfMediaPreviewMode?: SelfMediaPreviewMode;
@@ -1325,6 +1343,7 @@ function readMediaSettings(): MediaSettings {
     return {
       selectedMic: normalizeSelectedDeviceId(parsed.selectedMic),
       selectedOutput: typeof parsed.selectedOutput === "string" ? parsed.selectedOutput : null,
+      noiseSuppression: isNoiseSuppressionMode(parsed.noiseSuppression) ? parsed.noiseSuppression : undefined,
       deafenMode: isDeafenMode(parsed.deafenMode) ? parsed.deafenMode : "instant",
       networkActivity: normalizeNetworkActivitySettings(parsed.networkActivity),
       selfMediaPreviewMode: isSelfMediaPreviewMode(parsed.selfMediaPreviewMode) ? parsed.selfMediaPreviewMode : "local",
@@ -1341,6 +1360,10 @@ function writeMediaSettings(settings: MediaSettings) {
   } catch {
     // Settings persistence is best-effort; the active media state still updates.
   }
+}
+
+function isNoiseSuppressionMode(value: unknown): value is NoiseSuppressionMode {
+  return value === "off" || value === "standard" || value === "strong" || value === "studio";
 }
 
 function isDeafenMode(value: unknown): value is DeafenMode {

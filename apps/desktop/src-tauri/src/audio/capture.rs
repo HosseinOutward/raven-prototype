@@ -3,7 +3,7 @@ use std::{
     f32::consts::TAU,
     panic::AssertUnwindSafe,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
         mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender},
         Arc, Mutex,
     },
@@ -24,7 +24,8 @@ use thiserror::Error;
 use crate::audio::domain::{
     AudioInputDevice, AudioMeterUpdate, AudioOutputDevice, AudioSampleFormat, AudioSourceId,
     AudioSourceRuntimeState, AudioSourceRuntimeStatus, AudioSourceState, AudioSourceType, GainDb,
-    MeterState, ProcessorChainState, WebRtcAudioProcessingSettings,
+    MeterState, NoiseSuppressionFallback, NoiseSuppressionMode, NoiseSuppressionRuntime,
+    ProcessorChainState, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{RenderCursor, RenderReference};
 use crate::audio::processor::{AudioBuffer, AudioProcessorPrepareConfig, ProcessorChainRuntime};
@@ -35,6 +36,7 @@ use crate::audio::safety::{
 use crate::audio::state::{
     SharedAudioEngineState, AUDIO_METER_CHANGED_EVENT, AUDIO_STATE_CHANGED_EVENT,
 };
+use crate::audio::suppression::{new_suppressor, SuppressorError, SuppressorStage};
 
 const METER_INTERVAL: Duration = Duration::from_millis(120);
 const CAPTURE_EVENT_CAPACITY: usize = 16;
@@ -90,6 +92,9 @@ pub struct LiveControls {
     /// reopens the device.
     chain: Mutex<ProcessorChainState>,
     chain_version: AtomicU64,
+    /// The noise suppression mode as last chosen, as a small code (see the accessors).
+    /// The capture thread compares it with the mode it runs and switches without a reopen.
+    noise_suppression: AtomicU8,
     sink: Mutex<Option<Arc<dyn ProcessedSampleSink>>>,
 }
 
@@ -108,7 +113,28 @@ impl LiveControls {
         controls.set_gain_linear(gain_linear);
         controls.set_muted(muted);
         controls.set_safety_ceiling_db(GainDb::new(-1.0));
+        controls.set_noise_suppression(NoiseSuppressionMode::default());
         controls
+    }
+
+    fn set_noise_suppression(&self, mode: NoiseSuppressionMode) {
+        let code = match mode {
+            NoiseSuppressionMode::Off => 0,
+            NoiseSuppressionMode::Standard => 1,
+            NoiseSuppressionMode::Strong => 2,
+            NoiseSuppressionMode::Studio => 3,
+        };
+        self.noise_suppression.store(code, Ordering::Relaxed);
+    }
+
+    fn noise_suppression(&self) -> NoiseSuppressionMode {
+        match self.noise_suppression.load(Ordering::Relaxed) {
+            0 => NoiseSuppressionMode::Off,
+            1 => NoiseSuppressionMode::Standard,
+            2 => NoiseSuppressionMode::Strong,
+            3 => NoiseSuppressionMode::Studio,
+            _ => NoiseSuppressionMode::default(),
+        }
     }
 
     fn set_safety_ceiling_db(&self, ceiling: GainDb) {
@@ -259,6 +285,8 @@ impl CaptureRuntimeManager {
             }));
             controls.set_gain_linear(db_to_linear(source.channel_strip.gain_db));
             controls.set_muted(source.channel_strip.mute.muted);
+            controls
+                .set_noise_suppression(source.channel_strip.webrtc_processing.noise_suppression);
             controls.set_safety_ceiling_db(source.channel_strip.safety_limiter_ceiling_db);
             controls.set_chain(&source.channel_strip.processor_chain);
             controls.set_sink(sinks.get(&source.id).cloned());
@@ -366,13 +394,15 @@ pub struct AudioCaptureStartRequest {
 /// it. Gain, mute, the safety ceiling and the whole processor chain are deliberately
 /// excluded — they live in [`LiveControls`] and are applied by the running capture thread
 /// — so only changes that really need the device reopened (source type, device, or the
-/// WebRTC voice processing mode) trigger a restart.
+/// echo cancellation and automatic gain switches) trigger a restart. The noise suppression
+/// mode is live too.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaptureConfigSignature {
     source_id: AudioSourceId,
     source_type: AudioSourceType,
     capture_device_id: Option<String>,
-    webrtc_processing: WebRtcAudioProcessingSettings,
+    echo_cancellation: bool,
+    auto_gain_control: bool,
 }
 
 impl CaptureConfigSignature {
@@ -381,7 +411,8 @@ impl CaptureConfigSignature {
             source_id: source.id,
             source_type: source.source_type.clone(),
             capture_device_id: source.capture_device_id.clone(),
-            webrtc_processing: source.channel_strip.webrtc_processing.clone(),
+            echo_cancellation: source.channel_strip.webrtc_processing.echo_cancellation,
+            auto_gain_control: source.channel_strip.webrtc_processing.auto_gain_control,
         }
     }
 }
@@ -944,6 +975,7 @@ fn open_input_device(
         sample_rate,
         Arc::clone(render_reference),
     )?;
+    let suppression = processing.suppression_runtime();
     let watch = Arc::new(StreamWatch::default());
     let stream = build_input_stream(
         device,
@@ -966,6 +998,7 @@ fn open_input_device(
         Some(device_name.clone()),
     );
     state.fallback_device = fallback;
+    state.noise_suppression = suppression;
     Ok(OpenedMicrophone {
         stream,
         state,
@@ -1143,6 +1176,13 @@ fn handle_input_block(
     last_meter: &mut Instant,
 ) -> Result<(), String> {
     let analysis = process_source_samples_guarded(processing, samples)?;
+    // Kept for the next block when the channel is full, so the UI never stays on a
+    // stale mode.
+    if let Some(report) = processing.suppression_report.clone() {
+        if sender.try_send(CaptureEvent::Suppression(report)).is_ok() {
+            processing.suppression_report = None;
+        }
+    }
     if last_meter.elapsed() >= METER_INTERVAL {
         let _ = sender.try_send(CaptureEvent::Health(analysis));
         *last_meter = Instant::now();
@@ -1182,8 +1222,23 @@ struct SourceProcessingConfig {
     controls: Arc<LiveControls>,
     sample_rate: u32,
     channel_count: usize,
-    apm: Option<WebRtcApmRuntime>,
+    microphone: bool,
+    /// The settings the stages were built from, carrying the noise suppression mode the
+    /// capture runs now rather than the one the source was cloned with.
+    settings: WebRtcAudioProcessingSettings,
+    /// sonora's first half: high-pass, echo cancellation and, for Standard, its own noise
+    /// suppressor.
+    front: Option<WebRtcApmRuntime>,
+    /// Microphones only.
+    suppressor: Option<SuppressorStage>,
+    /// sonora's second half: automatic gain, after the noise is gone.
+    back: Option<WebRtcApmRuntime>,
+    /// The suppressor stopped working and sonora's own suppressor stands in for it.
+    suppression_failed: bool,
+    /// A change in what runs, until the capture event for it is sent.
+    suppression_report: Option<NoiseSuppressionRuntime>,
     safety: ChannelSafetyRuntime,
+    /// The chain's and the safety limiter's delay. The suppressor's is added when reported.
     latency_samples: u32,
     processor_cpu_estimate: Option<f32>,
     processor_chain: ProcessorChainRuntime,
@@ -1210,17 +1265,38 @@ impl SourceProcessingConfig {
         safety.configure(sample_rate, channel_count);
         let chain_version = controls.chain_version();
         let applied_gain = fader_target(&controls);
+        let microphone = source.source_type == AudioSourceType::Microphone;
+        let mut settings = source.channel_strip.webrtc_processing.clone();
+        // A device reopened mid-call must keep the mode chosen since the source was cloned.
+        settings.noise_suppression = controls.noise_suppression();
         let mut processing = Self {
             controls,
             sample_rate,
             channel_count,
-            apm: WebRtcApmRuntime::new(
-                source.source_type.clone(),
-                &source.channel_strip.webrtc_processing,
+            microphone,
+            front: WebRtcApmRuntime::front(
+                &source.source_type,
+                &settings,
                 sample_rate,
                 channel_count,
                 render_reference,
             )?,
+            suppressor: microphone.then(|| {
+                SuppressorStage::new(
+                    new_suppressor(settings.noise_suppression),
+                    sample_rate,
+                    channel_count,
+                )
+            }),
+            back: WebRtcApmRuntime::back(
+                &source.source_type,
+                &settings,
+                sample_rate,
+                channel_count,
+            )?,
+            settings,
+            suppression_failed: false,
+            suppression_report: None,
             safety,
             latency_samples: 0,
             processor_cpu_estimate: None,
@@ -1273,6 +1349,83 @@ impl SourceProcessingConfig {
         }
     }
 
+    fn reported_latency_samples(&self) -> u32 {
+        self.latency_samples
+            + self
+                .suppressor
+                .as_ref()
+                .map_or(0, |stage| stage.latency_samples() as u32)
+    }
+
+    /// What the microphone's noise suppression is really doing, as opposed to the mode
+    /// chosen. `None` for sources without a suppressor stage.
+    fn suppression_runtime(&self) -> Option<NoiseSuppressionRuntime> {
+        self.suppressor.as_ref()?;
+        let chosen = self.settings.noise_suppression;
+        let (active, fallback) = if self.suppression_failed {
+            (
+                NoiseSuppressionMode::Standard,
+                Some(NoiseSuppressionFallback::FailedToStart),
+            )
+        } else if chosen == NoiseSuppressionMode::Studio {
+            (
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::NotAvailable),
+            )
+        } else {
+            (chosen, None)
+        };
+        Some(NoiseSuppressionRuntime { active, fallback })
+    }
+
+    /// Pick up a mode chosen since the last block. sonora's own suppressor is switched in
+    /// place, which leaves the echo canceller alone, and the stage fades to the new
+    /// suppressor, so changing the mode neither reopens the device nor clicks. A change
+    /// that arrives mid-fade waits for it to finish.
+    fn sync_live_suppression(&mut self) {
+        let mode = self.controls.noise_suppression();
+        let Some(stage) = self.suppressor.as_mut() else {
+            return;
+        };
+        if mode == self.settings.noise_suppression || stage.is_switching() {
+            return;
+        }
+        stage.switch(new_suppressor(mode));
+        self.settings.noise_suppression = mode;
+        self.suppression_failed = false;
+        self.set_front_noise_suppression(mode);
+        self.suppression_report = self.suppression_runtime();
+    }
+
+    /// Turn sonora's own noise suppressor on or off to match `mode`.
+    fn set_front_noise_suppression(&mut self, mode: NoiseSuppressionMode) {
+        if let Some(front) = self.front.as_mut() {
+            front.processor.apply_config(front_config(
+                self.microphone,
+                self.settings.echo_cancellation,
+                mode,
+            ));
+        }
+    }
+
+    /// A suppressor that errors is dropped for the rest of this capture and sonora's own
+    /// suppressor stands in, so the microphone keeps working.
+    fn fall_back_after_error(&mut self, error: &SuppressorError) {
+        eprintln!("[audio-engine] noise suppression stopped: {error}");
+        if let Some(stage) = self.suppressor.as_mut() {
+            stage.bypass();
+        }
+        // A suppressor failing while the stage fades away from it has nothing to replace.
+        if matches!(
+            self.settings.noise_suppression,
+            NoiseSuppressionMode::Strong | NoiseSuppressionMode::Studio
+        ) {
+            self.suppression_failed = true;
+            self.set_front_noise_suppression(NoiseSuppressionMode::Standard);
+            self.suppression_report = self.suppression_runtime();
+        }
+    }
+
     /// Apply the fader and mute, moving toward the target gain at a bounded rate so a
     /// mute or a fast fader move never produces a click.
     fn apply_fader(&mut self, samples: &mut [f32]) {
@@ -1314,12 +1467,12 @@ fn fader_target(controls: &LiveControls) -> f32 {
 
 struct WebRtcApmRuntime {
     processor: AudioProcessing,
-    render_reference: Arc<RenderReference>,
+    /// What the speaker played, for the echo canceller. Absent without one.
+    render_reference: Option<Arc<RenderReference>>,
     /// This canceller's position in the stream of played audio.
     render_cursor: RenderCursor,
     render_left: Vec<f32>,
     render_right: Vec<f32>,
-    aec_enabled: bool,
     sample_rate: u32,
     channel_count: usize,
     frame_samples_per_channel: usize,
@@ -1338,29 +1491,61 @@ impl std::fmt::Debug for WebRtcApmRuntime {
 }
 
 impl WebRtcApmRuntime {
-    fn new(
-        source_type: AudioSourceType,
+    /// The half of the voice processing that runs before the noise suppressor.
+    fn front(
+        source_type: &AudioSourceType,
         settings: &WebRtcAudioProcessingSettings,
         sample_rate: u32,
         channel_count: usize,
         render_reference: Arc<RenderReference>,
     ) -> Result<Option<Self>, CaptureError> {
-        let supports_apm = source_type == AudioSourceType::Microphone
-            || (source_type == AudioSourceType::SystemAudio && settings.echo_cancellation);
-        if !supports_apm || !apm_enabled(settings) {
+        let microphone = *source_type == AudioSourceType::Microphone;
+        let echo_only = *source_type == AudioSourceType::SystemAudio && settings.echo_cancellation;
+        if !microphone && !echo_only {
             return Ok(None);
         }
+        let config = front_config(
+            microphone,
+            settings.echo_cancellation,
+            settings.noise_suppression,
+        );
+        Self::build(
+            config,
+            sample_rate,
+            channel_count,
+            settings.echo_cancellation.then_some(render_reference),
+        )
+        .map(Some)
+    }
+
+    /// The half that runs after it: automatic gain, microphones only.
+    fn back(
+        source_type: &AudioSourceType,
+        settings: &WebRtcAudioProcessingSettings,
+        sample_rate: u32,
+        channel_count: usize,
+    ) -> Result<Option<Self>, CaptureError> {
+        if *source_type != AudioSourceType::Microphone || !settings.auto_gain_control {
+            return Ok(None);
+        }
+        Self::build(back_config(), sample_rate, channel_count, None).map(Some)
+    }
+
+    fn build(
+        config: ApmConfig,
+        sample_rate: u32,
+        channel_count: usize,
+        render_reference: Option<Arc<RenderReference>>,
+    ) -> Result<Self, CaptureError> {
         let channel_count = channel_count.max(1);
         // sonora operates on 10ms frames at the stream sample rate.
         let frame_samples_per_channel = (sample_rate / 100) as usize;
-        let config = apm_config(&source_type, settings);
-        let aec_enabled = config.echo_canceller.is_some();
         let mut processor = AudioProcessing::builder()
             .config(config)
             .capture_config(StreamConfig::new(sample_rate as _, channel_count as _))
             .render_config(StreamConfig::new(sample_rate as _, channel_count as _))
             .build();
-        if aec_enabled {
+        if render_reference.is_some() {
             // AEC3 estimates the render delay internally, but the API requires an
             // initial value to be set when echo cancellation is enabled.
             processor
@@ -1369,29 +1554,28 @@ impl WebRtcApmRuntime {
                     message: format!("WebRTC APM stream-delay init failed: {error}"),
                 })?;
         }
-        Ok(Some(Self {
+        Ok(Self {
             processor,
             render_reference,
             render_cursor: RenderCursor::default(),
             render_left: Vec::new(),
             render_right: Vec::new(),
-            aec_enabled,
             sample_rate,
             channel_count,
             frame_samples_per_channel,
             pending: Vec::new(),
-        }))
+        })
     }
 
     /// Hand the canceller every 10 ms frame Raven has played since the last capture
     /// frame, in order and at the speaker's own sample rate. The canceller needs the far
     /// end as one unbroken stream to model the echo path.
     fn feed_render(&mut self) -> Result<(), CaptureError> {
-        if !self.aec_enabled {
+        let Some(render_reference) = self.render_reference.as_ref() else {
             return Ok(());
-        }
+        };
         for _ in 0..MAX_RENDER_FRAMES_PER_CAPTURE {
-            let Some(rate) = self.render_reference.next_frame(
+            let Some(rate) = render_reference.next_frame(
                 &mut self.render_cursor,
                 &mut self.render_left,
                 &mut self.render_right,
@@ -1459,23 +1643,29 @@ impl WebRtcApmRuntime {
     }
 }
 
-fn apm_enabled(settings: &WebRtcAudioProcessingSettings) -> bool {
-    settings.noise_suppression || settings.echo_cancellation || settings.auto_gain_control
-}
-
-fn apm_config(
-    source_type: &AudioSourceType,
-    settings: &WebRtcAudioProcessingSettings,
+/// sonora's configuration for the stages before the noise suppressor. The high-pass
+/// filter runs whenever the microphone is being cleaned, and sonora's own suppressor only
+/// for Standard.
+fn front_config(
+    microphone: bool,
+    echo_cancellation: bool,
+    noise_suppression: NoiseSuppressionMode,
 ) -> ApmConfig {
-    let microphone = *source_type == AudioSourceType::Microphone;
     ApmConfig {
         high_pass_filter: (microphone
-            && (settings.noise_suppression || settings.echo_cancellation))
+            && (noise_suppression != NoiseSuppressionMode::Off || echo_cancellation))
             .then(HighPassFilter::default),
-        echo_canceller: settings.echo_cancellation.then(EchoCanceller::default),
-        noise_suppression: (microphone && settings.noise_suppression)
+        echo_canceller: echo_cancellation.then(EchoCanceller::default),
+        noise_suppression: (microphone && noise_suppression == NoiseSuppressionMode::Standard)
             .then(NoiseSuppression::default),
-        gain_controller2: (microphone && settings.auto_gain_control).then(|| GainController2 {
+        ..ApmConfig::default()
+    }
+}
+
+/// sonora's configuration for the stage after it.
+fn back_config() -> ApmConfig {
+    ApmConfig {
+        gain_controller2: Some(GainController2 {
             input_volume_controller: false,
             adaptive_digital: Some(AdaptiveDigital {
                 headroom_db: 6.0,
@@ -1529,8 +1719,17 @@ fn process_source_samples(
     processing: &mut SourceProcessingConfig,
     samples: &mut Vec<f32>,
 ) -> Result<SourceBlockAnalysis, CaptureError> {
-    if let Some(apm) = processing.apm.as_mut() {
-        apm.process_interleaved(samples)?;
+    processing.sync_live_suppression();
+    if let Some(front) = processing.front.as_mut() {
+        front.process_interleaved(samples)?;
+    }
+    if let Some(stage) = processing.suppressor.as_mut() {
+        if let Err(error) = stage.process(samples) {
+            processing.fall_back_after_error(&error);
+        }
+    }
+    if let Some(back) = processing.back.as_mut() {
+        back.process_interleaved(samples)?;
     }
 
     let muted_input = processing
@@ -1552,7 +1751,7 @@ fn process_source_samples(
                 health: crate::audio::safety::health_from_meter(
                     meter,
                     ceiling_db,
-                    processing.latency_samples,
+                    processing.reported_latency_samples(),
                     processing.processor_cpu_estimate,
                 ),
             },
@@ -1585,7 +1784,7 @@ fn process_source_samples(
     let analysis = processing.safety.analyze_and_limit(
         samples,
         ceiling_db,
-        processing.latency_samples,
+        processing.reported_latency_samples(),
         processing.processor_cpu_estimate,
     );
     // The samples are now fully processed (gain → chain → safety limiter). If this source
@@ -1643,6 +1842,10 @@ fn spawn_capture_event_pump(
                         source.runtime = runtime;
                         CaptureEmission::State(engine.snapshot())
                     }
+                    CaptureEvent::Suppression(runtime) => {
+                        source.runtime.noise_suppression = Some(runtime);
+                        CaptureEmission::State(engine.snapshot())
+                    }
                 }
             };
             match emission {
@@ -1669,6 +1872,8 @@ enum CaptureEvent {
     /// The capture was (re)opened: replaces the source's runtime state, clearing any
     /// earlier error.
     Runtime(AudioSourceRuntimeState),
+    /// The microphone switched noise suppression mode, or its suppressor stopped.
+    Suppression(NoiseSuppressionRuntime),
 }
 
 fn should_capture_source(source: &AudioSourceState, demand: CaptureDemand) -> bool {
@@ -1710,6 +1915,7 @@ fn running_runtime_state(
         error: None,
         updated_at: Some(now_unix_ms_string()),
         fallback_device: false,
+        noise_suppression: None,
     }
 }
 
@@ -3473,11 +3679,7 @@ mod tests {
 
     #[test]
     fn microphone_agc_uses_active_upstream_style_adaptive_defaults() {
-        let config = apm_config(
-            &AudioSourceType::Microphone,
-            &WebRtcAudioProcessingSettings::default(),
-        );
-        let agc = config.gain_controller2.expect("AGC2 enabled");
+        let agc = back_config().gain_controller2.expect("AGC2 enabled");
         let adaptive = agc.adaptive_digital.expect("adaptive digital enabled");
         assert!(!agc.input_volume_controller);
         assert_eq!(agc.fixed_digital.gain_db, 0.0);
@@ -3490,17 +3692,15 @@ mod tests {
 
     #[test]
     fn microphone_agc_lifts_quiet_voice_without_clipping_or_hidden_bypass_gain() {
-        let render_reference = Arc::new(RenderReference::default());
-        let mut runtime = WebRtcApmRuntime::new(
-            AudioSourceType::Microphone,
+        let mut runtime = WebRtcApmRuntime::back(
+            &AudioSourceType::Microphone,
             &WebRtcAudioProcessingSettings {
-                noise_suppression: false,
+                noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: false,
                 auto_gain_control: true,
             },
             48_000,
             1,
-            Arc::clone(&render_reference),
         )
         .expect("build microphone APM")
         .expect("AGC runtime enabled");
@@ -3522,16 +3722,15 @@ mod tests {
         assert!(output.rms_db.0 > input_rms + 3.0);
         assert!(output.peak_db.0 <= 0.0);
 
-        let bypass = WebRtcApmRuntime::new(
-            AudioSourceType::Microphone,
+        let bypass = WebRtcApmRuntime::back(
+            &AudioSourceType::Microphone,
             &WebRtcAudioProcessingSettings {
-                noise_suppression: false,
+                noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: false,
                 auto_gain_control: false,
             },
             48_000,
             1,
-            render_reference,
         )
         .expect("build bypass");
         assert!(bypass.is_none());
@@ -3539,14 +3738,7 @@ mod tests {
 
     #[test]
     fn system_share_uses_echo_cancellation_without_voice_gain_or_suppression() {
-        let config = apm_config(
-            &AudioSourceType::SystemAudio,
-            &WebRtcAudioProcessingSettings {
-                noise_suppression: false,
-                echo_cancellation: true,
-                auto_gain_control: false,
-            },
-        );
+        let config = front_config(false, true, NoiseSuppressionMode::Off);
         assert!(config.echo_canceller.is_some());
         assert!(config.noise_suppression.is_none());
         assert!(config.gain_controller2.is_none());
@@ -3556,10 +3748,10 @@ mod tests {
     #[test]
     fn system_share_echo_path_consumes_raven_render_reference() {
         let render_reference = Arc::new(RenderReference::default());
-        let mut runtime = WebRtcApmRuntime::new(
-            AudioSourceType::SystemAudio,
+        let mut runtime = WebRtcApmRuntime::front(
+            &AudioSourceType::SystemAudio,
             &WebRtcAudioProcessingSettings {
-                noise_suppression: false,
+                noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: true,
                 auto_gain_control: false,
             },
@@ -3893,16 +4085,204 @@ mod tests {
     }
 
     #[test]
-    fn webrtc_processing_changes_capture_signature() {
+    fn echo_and_gain_switches_change_the_capture_signature_but_the_noise_mode_does_not() {
         let source =
             AudioSourceState::new(ParticipantId::new(), AudioSourceType::Microphone, "Mic");
-        let mut changed = source.clone();
-        changed.channel_strip.webrtc_processing.noise_suppression = false;
+        let signature = CaptureConfigSignature::from_source(&source);
 
-        assert_ne!(
-            CaptureConfigSignature::from_source(&source),
-            CaptureConfigSignature::from_source(&changed)
+        let mut echo = source.clone();
+        echo.channel_strip.webrtc_processing.echo_cancellation = false;
+        assert_ne!(signature, CaptureConfigSignature::from_source(&echo));
+        let mut gain = source.clone();
+        gain.channel_strip.webrtc_processing.auto_gain_control = false;
+        assert_ne!(signature, CaptureConfigSignature::from_source(&gain));
+
+        let mut mode = source.clone();
+        mode.channel_strip.webrtc_processing.noise_suppression = NoiseSuppressionMode::Off;
+        assert_eq!(signature, CaptureConfigSignature::from_source(&mode));
+    }
+
+    /// Speech-like harmonics over deterministic white noise, 48 kHz mono.
+    fn voice_over_noise(frames: usize) -> Vec<f32> {
+        let mut seed = 12_345_u32;
+        (0..frames)
+            .map(|n| {
+                let time = n as f32 / 48_000.0;
+                let envelope = 0.6 + 0.4 * (TAU * 3.0 * time).sin();
+                let voice = envelope
+                    * (0.12 * (TAU * 150.0 * time).sin()
+                        + 0.06 * (TAU * 300.0 * time).sin()
+                        + 0.03 * (TAU * 450.0 * time).sin());
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                voice + 0.02 * ((seed >> 8) as f32 / 8_388_608.0 - 1.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn off_and_standard_match_the_single_sonora_instance_they_replace() {
+        for mode in [NoiseSuppressionMode::Off, NoiseSuppressionMode::Standard] {
+            let settings = WebRtcAudioProcessingSettings {
+                noise_suppression: mode,
+                ..WebRtcAudioProcessingSettings::default()
+            };
+            let mut front = WebRtcApmRuntime::front(
+                &AudioSourceType::Microphone,
+                &settings,
+                48_000,
+                1,
+                Arc::new(RenderReference::default()),
+            )
+            .expect("build front")
+            .expect("front runs on a microphone");
+            let mut stage = SuppressorStage::new(new_suppressor(mode), 48_000, 1);
+            let mut back =
+                WebRtcApmRuntime::back(&AudioSourceType::Microphone, &settings, 48_000, 1)
+                    .expect("build back")
+                    .expect("gain control is on");
+            // One instance with everything, as the microphone ran before the split.
+            let mut single = WebRtcApmRuntime::build(
+                ApmConfig {
+                    gain_controller2: back_config().gain_controller2,
+                    ..front_config(true, true, mode)
+                },
+                48_000,
+                1,
+                Some(Arc::new(RenderReference::default())),
+            )
+            .expect("build single instance");
+
+            let mut worst = 0.0_f32;
+            let mut peak = 0.0_f32;
+            for block in voice_over_noise(96_000).chunks(480) {
+                let mut split = block.to_vec();
+                front.process_interleaved(&mut split).expect("front");
+                stage.process(&mut split).expect("stage");
+                back.process_interleaved(&mut split).expect("back");
+                let mut whole = block.to_vec();
+                single.process_interleaved(&mut whole).expect("single");
+                for (a, b) in split.iter().zip(&whole) {
+                    worst = worst.max((a - b).abs());
+                    peak = peak.max(b.abs());
+                }
+            }
+            assert!(peak > 0.05, "{mode:?} produced no signal");
+            assert!(worst < 1e-5, "{mode:?} differs by {worst}");
+        }
+    }
+
+    fn microphone_processing(controls: &Arc<LiveControls>) -> SourceProcessingConfig {
+        let source =
+            AudioSourceState::new(ParticipantId::new(), AudioSourceType::Microphone, "Mic");
+        SourceProcessingConfig::from_source(
+            &source,
+            Arc::clone(controls),
+            48_000,
+            Arc::new(RenderReference::default()),
+        )
+        .expect("build processing config")
+    }
+
+    /// Run `blocks` 10 ms blocks of voice over noise through the processing.
+    fn run_blocks(processing: &mut SourceProcessingConfig, blocks: usize) {
+        for block in voice_over_noise(480 * blocks).chunks(480) {
+            let mut samples = block.to_vec();
+            process_source_samples(processing, &mut samples).expect("process samples");
+        }
+    }
+
+    #[test]
+    fn a_noise_mode_chosen_mid_call_takes_effect_on_the_running_capture() {
+        let controls = LiveControls::new(1.0, false);
+        controls.set_noise_suppression(NoiseSuppressionMode::Standard);
+        let mut processing = microphone_processing(&controls);
+        run_blocks(&mut processing, 5);
+        // Without a suppressor the reported delay is the chain's and the safety limiter's.
+        let baseline = processing.latency_samples;
+        assert_eq!(processing.reported_latency_samples(), baseline);
+        assert_eq!(
+            processing.suppression_runtime(),
+            Some(NoiseSuppressionRuntime {
+                active: NoiseSuppressionMode::Standard,
+                fallback: None,
+            })
         );
+
+        controls.set_noise_suppression(NoiseSuppressionMode::Strong);
+        run_blocks(&mut processing, 5);
+        // RNNoise adds one 10 ms hop on top of the safety limiter's look-ahead.
+        assert_eq!(processing.reported_latency_samples(), baseline + 480);
+        assert_eq!(
+            processing.suppression_report.take(),
+            Some(NoiseSuppressionRuntime {
+                active: NoiseSuppressionMode::Strong,
+                fallback: None,
+            })
+        );
+
+        controls.set_noise_suppression(NoiseSuppressionMode::Off);
+        run_blocks(&mut processing, 5);
+        assert_eq!(processing.reported_latency_samples(), baseline);
+    }
+
+    #[test]
+    fn studio_runs_as_strong_and_says_so() {
+        let controls = LiveControls::new(1.0, false);
+        controls.set_noise_suppression(NoiseSuppressionMode::Studio);
+        let processing = microphone_processing(&controls);
+        assert_eq!(
+            processing.suppression_runtime(),
+            Some(NoiseSuppressionRuntime {
+                active: NoiseSuppressionMode::Strong,
+                fallback: Some(NoiseSuppressionFallback::NotAvailable),
+            })
+        );
+    }
+
+    struct FailingSuppressor;
+
+    impl crate::audio::suppression::VoiceSuppressor for FailingSuppressor {
+        fn process_hop(
+            &mut self,
+            _input: &[f32; 480],
+            _output: &mut [f32; 480],
+        ) -> Result<(), SuppressorError> {
+            Err(SuppressorError("the model is gone".to_string()))
+        }
+
+        fn latency_samples(&self) -> usize {
+            0
+        }
+    }
+
+    #[test]
+    fn a_suppressor_that_fails_leaves_the_microphone_running_on_standard() {
+        let controls = LiveControls::new(1.0, false);
+        let mut processing = microphone_processing(&controls);
+        processing
+            .suppressor
+            .as_mut()
+            .expect("microphones have a suppressor stage")
+            .switch(Some(Box::new(FailingSuppressor)));
+
+        let mut samples = voice_over_noise(480);
+        process_source_samples(&mut processing, &mut samples).expect("the block still goes out");
+
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+        assert_eq!(
+            processing.suppression_report.take(),
+            Some(NoiseSuppressionRuntime {
+                active: NoiseSuppressionMode::Standard,
+                fallback: Some(NoiseSuppressionFallback::FailedToStart),
+            })
+        );
+        // The fallback is the whole rest of this capture, with no suppressor delay left.
+        run_blocks(&mut processing, 5);
+        assert_eq!(
+            processing.reported_latency_samples(),
+            processing.latency_samples
+        );
+        assert!(processing.suppression_report.is_none());
     }
 
     #[test]

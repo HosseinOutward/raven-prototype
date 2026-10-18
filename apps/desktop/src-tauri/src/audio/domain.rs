@@ -195,6 +195,9 @@ pub struct AudioSourceRuntimeState {
     /// True while the chosen capture device is unavailable and the system default is
     /// standing in for it. The saved choice is kept and used again when it returns.
     pub fallback_device: bool,
+    /// Which noise suppression is really running on a microphone, as opposed to the one
+    /// chosen in `webrtc_processing`. `None` until the capture reports it.
+    pub noise_suppression: Option<NoiseSuppressionRuntime>,
 }
 
 impl Default for AudioSourceRuntimeState {
@@ -209,6 +212,7 @@ impl Default for AudioSourceRuntimeState {
             error: None,
             updated_at: None,
             fallback_device: false,
+            noise_suppression: None,
         }
     }
 }
@@ -642,10 +646,42 @@ pub struct ProcessorChainState {
     pub processors: Vec<AudioProcessorState>,
 }
 
+/// How much of the room the microphone keeps out of the call.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoiseSuppressionMode {
+    Off,
+    /// WebRTC's classic suppressor: steady noise such as fans and hum.
+    Standard,
+    /// RNNoise: also keyboards, clicks and room noise.
+    #[default]
+    Strong,
+    /// Reserved for the deep-learning tier; runs as `Strong` until it exists.
+    Studio,
+}
+
+/// What a microphone's noise suppression is actually doing. The strip keeps the user's
+/// choice; this says what runs and, when it differs, why.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoiseSuppressionRuntime {
+    pub active: NoiseSuppressionMode,
+    pub fallback: Option<NoiseSuppressionFallback>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoiseSuppressionFallback {
+    /// This build cannot run the chosen mode.
+    NotAvailable,
+    /// The chosen mode stopped working, so a simpler one is running.
+    FailedToStart,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WebRtcAudioProcessingSettings {
-    pub noise_suppression: bool,
+    pub noise_suppression: NoiseSuppressionMode,
     pub echo_cancellation: bool,
     pub auto_gain_control: bool,
 }
@@ -653,7 +689,7 @@ pub struct WebRtcAudioProcessingSettings {
 impl Default for WebRtcAudioProcessingSettings {
     fn default() -> Self {
         Self {
-            noise_suppression: true,
+            noise_suppression: NoiseSuppressionMode::default(),
             echo_cancellation: true,
             auto_gain_control: true,
         }

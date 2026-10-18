@@ -1,4 +1,4 @@
-//! Sample-rate conversion for the publish path.
+//! Sample-rate conversion for the publish path and the noise suppressor.
 //!
 //! Capture devices run at whatever rate they like (44.1 kHz is common, 16 kHz for a
 //! hands-free headset, 96 kHz for an audio interface) while every source is published at
@@ -21,42 +21,39 @@ fn f32_to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * 32767.0) as i16
 }
 
-/// Streaming resampler that turns interleaved f32 at any rate / channel count into
-/// interleaved stereo i16 at a fixed rate. State carries across blocks, so the output is
-/// continuous whatever sizes the capture callback delivers.
-pub(crate) struct StereoResampler {
+/// Streaming resampler for one channel of f32 at any rate pair. State carries across
+/// blocks, so the output is continuous whatever sizes the input arrives in.
+pub(crate) struct MonoResampler {
     src_rate: u32,
     dst_rate: u32,
     half: usize,
-    /// `PHASES + 1` rows of `2 * half` taps.
+    /// `PHASES + 1` rows of `2 * half` taps. Empty when the rates match: nothing to do.
     kernel: Vec<f32>,
     /// Input frames not yet fully consumed, oldest first.
-    input: VecDeque<[f32; 2]>,
+    input: VecDeque<f32>,
     /// Position of the next output frame, in input frames, as an index into `input`.
     position: f64,
 }
 
-impl StereoResampler {
-    pub(crate) fn new(dst_rate: u32) -> Self {
-        Self {
-            src_rate: 0,
+impl MonoResampler {
+    pub(crate) fn new(src_rate: u32, dst_rate: u32) -> Self {
+        let mut resampler = Self {
+            src_rate,
             dst_rate,
             half: BASE_HALF_TAPS,
             kernel: Vec::new(),
             input: VecDeque::new(),
             position: 0.0,
+        };
+        if src_rate != dst_rate && src_rate != 0 {
+            resampler.build_kernel();
         }
+        resampler
     }
 
-    /// (Re)build the kernel for a new source rate and start from silence.
-    fn configure(&mut self, src_rate: u32) {
-        self.src_rate = src_rate;
-        self.input.clear();
-        if src_rate == self.dst_rate || src_rate == 0 {
-            self.kernel.clear();
-            return;
-        }
-        let ratio = f64::from(src_rate) / f64::from(self.dst_rate);
+    /// Tabulate the kernel for this rate pair and start from silence.
+    fn build_kernel(&mut self) {
+        let ratio = f64::from(self.src_rate) / f64::from(self.dst_rate);
         // Converting down needs a lower cutoff and a proportionally longer kernel to keep
         // the same transition width.
         self.half = ((BASE_HALF_TAPS as f64 * ratio.max(1.0)).ceil() as usize)
@@ -84,8 +81,79 @@ impl StereoResampler {
         }
         // Prime with silence so the first output aligns with the first input frame.
         self.input
-            .extend(std::iter::repeat([0.0; 2]).take(self.half - 1));
+            .extend(std::iter::repeat(0.0).take(self.half - 1));
         self.position = (self.half - 1) as f64;
+    }
+
+    /// Input frames the kernel must see beyond an output's own position before it can
+    /// produce it: how far the output trails the input.
+    pub(crate) fn lookahead_frames(&self) -> usize {
+        if self.kernel.is_empty() {
+            0
+        } else {
+            self.half
+        }
+    }
+
+    pub(crate) fn process(&mut self, samples: impl IntoIterator<Item = f32>, out: &mut Vec<f32>) {
+        if self.kernel.is_empty() {
+            out.extend(samples);
+            return;
+        }
+        self.input.extend(samples);
+
+        let taps = self.half * 2;
+        let step = f64::from(self.src_rate) / f64::from(self.dst_rate);
+        // An output at `position` needs input frames up to `floor(position) + half`.
+        while (self.position.floor() as usize) + self.half < self.input.len() {
+            let base = self.position.floor() as usize;
+            let fraction = self.position - base as f64;
+            let phase = fraction * PHASES as f64;
+            let row = phase.floor() as usize;
+            let blend = (phase - row as f64) as f32;
+            let lower = &self.kernel[row * taps..(row + 1) * taps];
+            let upper = &self.kernel[(row + 1) * taps..(row + 2) * taps];
+            let first = base + 1 - self.half;
+
+            let mut value = 0.0_f32;
+            for tap in 0..taps {
+                let weight = lower[tap] + (upper[tap] - lower[tap]) * blend;
+                value += self.input[first + tap] * weight;
+            }
+            out.push(value);
+            self.position += step;
+        }
+
+        // Drop input no future output can reach.
+        let keep_from = (self.position.floor() as usize + 1).saturating_sub(self.half);
+        if keep_from > 0 {
+            self.input.drain(..keep_from.min(self.input.len()));
+            self.position -= keep_from as f64;
+        }
+    }
+}
+
+/// Streaming resampler that turns interleaved f32 at any rate / channel count into
+/// interleaved stereo i16 at a fixed rate, one [`MonoResampler`] per channel.
+pub(crate) struct StereoResampler {
+    src_rate: u32,
+    dst_rate: u32,
+    left: MonoResampler,
+    right: MonoResampler,
+    left_out: Vec<f32>,
+    right_out: Vec<f32>,
+}
+
+impl StereoResampler {
+    pub(crate) fn new(dst_rate: u32) -> Self {
+        Self {
+            src_rate: 0,
+            dst_rate,
+            left: MonoResampler::new(0, dst_rate),
+            right: MonoResampler::new(0, dst_rate),
+            left_out: Vec::new(),
+            right_out: Vec::new(),
+        }
     }
 
     pub(crate) fn process(
@@ -113,7 +181,9 @@ impl StereoResampler {
 
         if sample_rate != self.src_rate {
             // Format changed (device switch): start over at the new rate.
-            self.configure(sample_rate);
+            self.src_rate = sample_rate;
+            self.left = MonoResampler::new(sample_rate, self.dst_rate);
+            self.right = MonoResampler::new(sample_rate, self.dst_rate);
         }
 
         if sample_rate == self.dst_rate {
@@ -126,39 +196,20 @@ impl StereoResampler {
             return;
         }
 
-        self.input.extend((0..frames).map(frame_at));
-
-        let taps = self.half * 2;
-        let step = f64::from(self.src_rate) / f64::from(self.dst_rate);
-        // An output at `position` needs input frames up to `floor(position) + half`.
-        while (self.position.floor() as usize) + self.half < self.input.len() {
-            let base = self.position.floor() as usize;
-            let fraction = self.position - base as f64;
-            let phase = fraction * PHASES as f64;
-            let row = phase.floor() as usize;
-            let blend = (phase - row as f64) as f32;
-            let lower = &self.kernel[row * taps..(row + 1) * taps];
-            let upper = &self.kernel[(row + 1) * taps..(row + 2) * taps];
-            let first = base + 1 - self.half;
-
-            let mut left = 0.0_f32;
-            let mut right = 0.0_f32;
-            for tap in 0..taps {
-                let weight = lower[tap] + (upper[tap] - lower[tap]) * blend;
-                let frame = self.input[first + tap];
-                left += frame[0] * weight;
-                right += frame[1] * weight;
-            }
-            out.push(f32_to_i16(left));
-            out.push(f32_to_i16(right));
-            self.position += step;
-        }
-
-        // Drop input no future output can reach.
-        let keep_from = (self.position.floor() as usize + 1).saturating_sub(self.half);
-        if keep_from > 0 {
-            self.input.drain(..keep_from.min(self.input.len()));
-            self.position -= keep_from as f64;
+        self.left_out.clear();
+        self.right_out.clear();
+        self.left.process(
+            (0..frames).map(|index| frame_at(index)[0]),
+            &mut self.left_out,
+        );
+        self.right.process(
+            (0..frames).map(|index| frame_at(index)[1]),
+            &mut self.right_out,
+        );
+        out.reserve(self.left_out.len() * 2);
+        for (left, right) in self.left_out.iter().zip(&self.right_out) {
+            out.push(f32_to_i16(*left));
+            out.push(f32_to_i16(*right));
         }
     }
 }

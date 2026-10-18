@@ -40,6 +40,7 @@ import {
   AudioSourceRuntimeState,
   AudioSourceType,
   GainDb,
+  NoiseSuppressionRuntime,
   PublishedTrackMetadata,
   RemoteAudioTrackState,
   WebRtcAudioProcessingSettings,
@@ -48,6 +49,7 @@ import {
   subscribeAudioStateChanged,
 } from "@/lib/audio";
 import { cn } from "@/lib/utils";
+import { NoiseSuppressionRow } from "@/components/NoiseSuppressionRow";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -1571,6 +1573,7 @@ function ChannelTab({
         <VoiceProcessingSection
           sourceId={strip.id}
           processing={strip.webrtcProcessing}
+          noiseSuppression={strip.runtime.noiseSuppression}
           editable={editable}
           onChange={onWebRtcProcessingChange}
         />
@@ -1848,23 +1851,25 @@ function SafetyCeilingSlider({
 function VoiceProcessingSection({
   sourceId,
   processing,
+  noiseSuppression,
   editable,
   onChange,
 }: {
   sourceId: string;
   processing: WebRtcAudioProcessingSettings;
+  noiseSuppression: NoiseSuppressionRuntime | null | undefined;
   editable: boolean;
   onChange?: (sourceId: string, processing: WebRtcAudioProcessingSettings) => void;
 }) {
   const update = (patch: Partial<WebRtcAudioProcessingSettings>) => onChange?.(sourceId, { ...processing, ...patch });
   return (
     <ToolSection icon={<SlidersHorizontal />} title="Voice processing">
-      <ToggleRow
-        label="Noise suppression"
-        helper="Reduces steady background noise."
-        checked={processing.noiseSuppression}
+      <NoiseSuppressionRow
+        className="rounded-xl bg-secondary/50 px-3 py-2"
+        value={processing.noiseSuppression}
+        runtime={noiseSuppression}
         disabled={!editable}
-        onChange={(checked) => update({ noiseSuppression: checked })}
+        onChange={(mode) => update({ noiseSuppression: mode })}
       />
       <ToggleRow
         label="Echo cancellation"

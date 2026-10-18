@@ -46,6 +46,7 @@ Rules the engines are built around:
 - **The model is the desired state.** A reconcile pass makes publications and capture runtimes match it. That is how a reconnect, a device change, or a failed publish heals: the same pass runs again.
 - **Devices are followed, not assumed.** Playback and capture open a device in its own format, follow the system default, fall back to it when a chosen device disappears (keeping the choice), and keep retrying.
 - **Capture runs only when needed.** An enabled local source holds its device open while the user is in a call (from join until a real leave, across the app's own reconnects) or the Mixer is on screen. Leaving releases the microphone.
+- **Noise suppression is a live control.** The microphone's mode (Off, Standard, Strong) is read by the capture thread, which fades to the new suppressor, so changing it mid-call never reopens the device. Echo cancellation and automatic gain are still part of the capture's identity and do reopen it.
 - **Mute keeps the track.** A muted source stays published (its samples are zeroed in the capture path), so unmuting is instant and a source keeps one track identity; peers keep their own strip settings for it.
 - **A lost room is rejoined by the app.** The engines report why a connection was lost; the UI rejoins with fresh tokens and backoff, except after a duplicate sign-in, a removal, or a closed room.
 

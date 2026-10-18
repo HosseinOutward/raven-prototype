@@ -9,3 +9,4 @@ pub mod publisher;
 pub mod resample;
 pub mod safety;
 pub mod state;
+pub mod suppression;
