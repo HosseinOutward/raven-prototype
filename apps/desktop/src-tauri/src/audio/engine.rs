@@ -40,6 +40,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::audio::capture::ProcessedSampleSink;
+use crate::audio::cues::{PresenceCues, LEAVE_GRACE};
 use crate::audio::domain::{
     AudioConnectionLoss, AudioConnectionStatus, AudioMeterUpdate, AudioOutputDevice, AudioSourceId,
     AudioSourceState, AudioSourceType, AudioSubscriptionStatus, GainDb, MeterState,
@@ -416,6 +417,50 @@ fn base_participant_identity(identity: &str) -> &str {
         .strip_suffix("#audio")
         .or_else(|| identity.strip_suffix("#video"))
         .unwrap_or(identity)
+}
+
+/// The user behind another person's audio sidecar. A person's arrival is their audio
+/// sidecar connecting: their video publisher and viewer join the same room separately,
+/// and our own other sidecars (or another device of ours) are not someone arriving.
+fn audio_peer_identity(identity: &str, local_identity: &str) -> Option<String> {
+    identity
+        .strip_suffix("#audio")
+        .filter(|base| *base != local_identity && ParticipantId::parse(base).is_some())
+        .map(str::to_string)
+}
+
+fn audio_peers(identities: impl IntoIterator<Item = String>, local_identity: &str) -> Vec<String> {
+    identities
+        .into_iter()
+        .filter_map(|identity| audio_peer_identity(&identity, local_identity))
+        .collect()
+}
+
+/// Announce a departure once its grace period passes without the person coming back.
+fn schedule_leave_cue(
+    runtime: &Handle,
+    presence: &Arc<Mutex<PresenceCues>>,
+    output: &Arc<OutputMixer>,
+    active: &Arc<AtomicBool>,
+    identity: String,
+    token: u64,
+) {
+    let presence = Arc::clone(presence);
+    let output = Arc::clone(output);
+    let active = Arc::clone(active);
+    runtime.spawn(async move {
+        tokio::time::sleep(LEAVE_GRACE).await;
+        if !active.load(Ordering::SeqCst) {
+            return;
+        }
+        let cue = presence
+            .lock()
+            .ok()
+            .and_then(|mut presence| presence.confirm_leave(&identity, token, Instant::now()));
+        if let Some(cue) = cue {
+            let _ = output.play_cue(cue);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1025,8 @@ impl AudioEngine {
         let output = Arc::clone(&self.output);
         let receive_remote_audio = Arc::clone(&self.receive_remote_audio);
         let runtime_handle = self.runtime().handle().clone();
+        // Who is in the room, for the joined and left sound cues.
+        let presence = Arc::new(Mutex::new(PresenceCues::default()));
 
         let (reader_ended_sender, mut reader_ended_receiver) = mpsc::unbounded_channel();
 
@@ -1010,6 +1057,16 @@ impl AudioEngine {
                     RoomEvent::Connected {
                         participants_with_tracks,
                     } => {
+                        // Everyone in this snapshot was here before us: no cue for them.
+                        let present = audio_peers(
+                            participants_with_tracks
+                                .iter()
+                                .map(|(participant, _)| participant.identity().0),
+                            &local_identity,
+                        );
+                        if let Ok(mut presence) = presence.lock() {
+                            presence.connected(present, Instant::now());
+                        }
                         // LiveKit emits `Connected` while it is still completing its initial
                         // participant/track dispatch. Calling `set_subscribed` inline can make
                         // the subscription callback re-enter that dispatch, leaving callback
@@ -1417,8 +1474,36 @@ impl AudioEngine {
                             );
                         }
                     }
+                    RoomEvent::ParticipantConnected(participant) => {
+                        let identity = participant.identity().0;
+                        if let Some(peer) = audio_peer_identity(&identity, &local_identity) {
+                            let cue = presence
+                                .lock()
+                                .ok()
+                                .and_then(|mut presence| presence.arrived(&peer, Instant::now()));
+                            if let Some(cue) = cue {
+                                let _ = output.play_cue(cue);
+                            }
+                        }
+                    }
                     RoomEvent::ParticipantDisconnected(participant) => {
                         let identity = participant.identity().0;
+                        if let Some(peer) = audio_peer_identity(&identity, &local_identity) {
+                            let token = presence
+                                .lock()
+                                .ok()
+                                .and_then(|mut presence| presence.departed(&peer));
+                            if let Some(token) = token {
+                                schedule_leave_cue(
+                                    &runtime_handle,
+                                    &presence,
+                                    &output,
+                                    &active,
+                                    peer,
+                                    token,
+                                );
+                            }
+                        }
                         let base = identity
                             .strip_suffix("#audio")
                             .unwrap_or(&identity)
@@ -1451,6 +1536,9 @@ impl AudioEngine {
                         }
                     }
                     RoomEvent::Reconnecting => {
+                        if let Ok(mut presence) = presence.lock() {
+                            presence.reconnecting();
+                        }
                         update_connection_health(
                             &app,
                             &shared,
@@ -1459,6 +1547,15 @@ impl AudioEngine {
                         );
                     }
                     RoomEvent::Reconnected => {
+                        let present = audio_peers(
+                            room.remote_participants()
+                                .values()
+                                .map(|participant| participant.identity().0),
+                            &local_identity,
+                        );
+                        if let Ok(mut presence) = presence.lock() {
+                            presence.reconnected(present, Instant::now());
+                        }
                         // A full reconnect republishes local tracks inside the SDK; if any
                         // of that failed, a reconcile pass publishes the missing ones.
                         let resync_app = app.clone();

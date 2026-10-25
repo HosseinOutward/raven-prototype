@@ -11,7 +11,9 @@
 //!   sample format, follows default-device changes, falls back to the system default when
 //!   the chosen speaker disappears, returns to it when it comes back, and never gives up
 //!   while a session is active;
-//! - the [`RenderReference`] echo cancellation reads to learn what Raven played.
+//! - the [`RenderReference`] echo cancellation reads to learn what Raven played;
+//! - sound cues (`cues.rs`), mixed into the bus so they reach the same speaker and the
+//!   render reference.
 
 use std::collections::{HashMap, VecDeque};
 use std::f32::consts::TAU;
@@ -25,6 +27,9 @@ use cpal::{Device, FromSample, Sample, SizedSample, Stream};
 use tauri::{AppHandle, Emitter};
 
 use crate::audio::capture::list_output_devices;
+use crate::audio::cues::{
+    render_cue, CueDecision, CueGate, CueVoice, CueVoices, SoundCue, SoundCueSettings,
+};
 use crate::audio::domain::{AudioOutputDevice, AudioPlaybackStatus};
 use crate::audio::state::{SharedAudioEngineState, AUDIO_STATE_CHANGED_EVENT};
 
@@ -294,6 +299,8 @@ impl PlayoutBuffer {
 #[derive(Debug)]
 struct MixBus {
     tracks: Mutex<HashMap<String, PlayoutBuffer>>,
+    /// Sound cues being played, already rendered at `sample_rate`.
+    cues: Mutex<CueVoices>,
     sample_rate: AtomicU32,
     muted: AtomicBool,
 }
@@ -302,6 +309,7 @@ impl Default for MixBus {
     fn default() -> Self {
         Self {
             tracks: Mutex::new(HashMap::new()),
+            cues: Mutex::new(CueVoices::default()),
             sample_rate: AtomicU32::new(48_000),
             muted: AtomicBool::new(false),
         }
@@ -342,6 +350,12 @@ impl BusRenderer {
                 buffer.mix_into(out, self.limits);
             }
         }
+        // Cues are mixed on either side of the deafen ramp: most go silent with the call,
+        // your own mute toggle is still heard. A busy cue list waits for the next block.
+        let mut cues = self.bus.cues.try_lock().ok();
+        if let Some(cues) = cues.as_mut() {
+            cues.mix_into(out, false);
+        }
         self.master_gain = apply_master_gain(
             out,
             self.master_gain,
@@ -352,6 +366,10 @@ impl BusRenderer {
             },
             self.sample_rate,
         );
+        if let Some(cues) = cues.as_mut() {
+            cues.mix_into(out, true);
+        }
+        drop(cues);
         self.limiter_gain = limit_bus(out, self.limiter_gain, self.sample_rate);
         // The canceller must see exactly what reached the speaker, post mute and limiter.
         self.reference.push_stereo(out, self.sample_rate);
@@ -429,6 +447,7 @@ pub struct OutputMixer {
     reopen: Arc<AtomicBool>,
     selected_device_id: Arc<Mutex<Option<String>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    cue_gate: Mutex<CueGate>,
 }
 
 impl std::fmt::Debug for OutputMixer {
@@ -449,6 +468,7 @@ impl OutputMixer {
             reopen: Arc::new(AtomicBool::new(false)),
             selected_device_id: Arc::new(Mutex::new(None)),
             worker: Mutex::new(None),
+            cue_gate: Mutex::new(CueGate::default()),
         })
     }
 
@@ -505,6 +525,9 @@ impl OutputMixer {
         }
         if let Ok(mut tracks) = self.bus.tracks.lock() {
             tracks.clear();
+        }
+        if let Ok(mut cues) = self.bus.cues.lock() {
+            cues.clear();
         }
     }
 
@@ -575,12 +598,61 @@ impl OutputMixer {
         play_tones(target.as_deref(), UiSound::SpeakerTest)
     }
 
-    /// Play a short interface sound on the chosen speaker. Blocks for its duration.
-    pub fn play_ui_sound(&self, sound: UiSound) -> Result<(), String> {
-        if self.is_muted() {
-            return Ok(());
+    pub fn set_cue_settings(&self, settings: SoundCueSettings) {
+        if let Ok(mut gate) = self.cue_gate.lock() {
+            gate.set_settings(settings);
         }
-        play_tones(self.preferred_device_id().as_deref(), sound)
+    }
+
+    /// Play a sound cue if the user's settings, deafen and debouncing allow it.
+    ///
+    /// In a call the cue is mixed into the bus and this returns at once. Outside a call
+    /// the few cues that make sense there play on a one-off stream to the chosen speaker,
+    /// and this blocks for the cue's length.
+    pub fn play_cue(&self, cue: SoundCue) -> Result<(), String> {
+        let decision = match self.cue_gate.lock() {
+            Ok(mut gate) => gate.admit(cue, Instant::now(), self.is_muted(), self.is_running()),
+            Err(_) => return Ok(()),
+        };
+        self.play_cue_decision(cue, decision)
+    }
+
+    /// Play a cue at `volume` (0 to 1) whatever the settings say, so the volume slider can
+    /// be heard while it is set: into the call if there is one, otherwise on its own.
+    pub fn preview_cue(&self, cue: SoundCue, volume: f32) -> Result<(), String> {
+        let settings = SoundCueSettings {
+            volume,
+            ..SoundCueSettings::default()
+        }
+        .normalized();
+        let decision = if self.is_running() {
+            CueDecision::Mix(settings.gain())
+        } else {
+            CueDecision::Detached(settings.gain())
+        };
+        self.play_cue_decision(cue, decision)
+    }
+
+    fn play_cue_decision(&self, cue: SoundCue, decision: CueDecision) -> Result<(), String> {
+        if decision != CueDecision::Drop {
+            eprintln!("[audio-engine] sound cue {cue:?} ({decision:?})");
+        }
+        match decision {
+            CueDecision::Drop => Ok(()),
+            CueDecision::Mix(gain) => {
+                let sample_rate = self.sample_rate();
+                let voice = CueVoice::new(cue, render_cue(cue, sample_rate, gain));
+                if let Ok(mut cues) = self.bus.cues.lock() {
+                    cues.push(voice, sample_rate);
+                }
+                Ok(())
+            }
+            CueDecision::Detached(gain) => {
+                play_detached(self.preferred_device_id().as_deref(), |sample_rate| {
+                    render_cue(cue, sample_rate, gain)
+                })
+            }
+        }
     }
 
     pub(crate) fn ensure_track(&self, key: &str) {
@@ -722,6 +794,9 @@ impl OutputWorker {
                 for buffer in tracks.values_mut() {
                     buffer.reset();
                 }
+            }
+            if let Ok(mut cues) = self.bus.cues.lock() {
+                cues.clear();
             }
         }
     }
@@ -972,12 +1047,11 @@ fn resolve_output_device(device_id: Option<&str>) -> Result<(Device, Option<Stri
 // ---------------------------------------------------------------------------
 
 /// Short generated sounds played straight to the chosen speaker, outside the mix bus.
+/// Sounds about the call are sound cues (`cues.rs`) and go through the bus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiSound {
     /// The speaker test in Media Setup.
     SpeakerTest,
-    /// Someone is about to enter the room you are in.
-    Knock,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -993,23 +1067,12 @@ impl UiSound {
                 frequency_hz: 660.0,
                 duration_ms: 420,
             }],
-            UiSound::Knock => &[
-                Tone {
-                    frequency_hz: 587.33,
-                    duration_ms: 110,
-                },
-                Tone {
-                    frequency_hz: 783.99,
-                    duration_ms: 170,
-                },
-            ],
         }
     }
 
     fn level(self) -> f32 {
         match self {
             UiSound::SpeakerTest => 0.18,
-            UiSound::Knock => 0.11,
         }
     }
 }
@@ -1078,6 +1141,44 @@ impl ToneRenderer {
 }
 
 fn play_tones(device_id: Option<&str>, sound: UiSound) -> Result<(), String> {
+    let (device, supported) = open_detached_output(device_id)?;
+    let mut renderer = ToneRenderer::new(sound, supported.sample_rate().0);
+    play_on_stream(
+        &device,
+        &supported,
+        move |out| renderer.render(out),
+        ToneRenderer::total_duration(sound),
+    )
+}
+
+/// Play mono samples, rendered for the speaker's rate, on a one-off stream. Blocks until
+/// they have played.
+fn play_detached(
+    device_id: Option<&str>,
+    render: impl FnOnce(u32) -> Vec<f32>,
+) -> Result<(), String> {
+    let (device, supported) = open_detached_output(device_id)?;
+    let sample_rate = supported.sample_rate().0;
+    let samples = render(sample_rate);
+    let duration = Duration::from_secs_f64(samples.len() as f64 / f64::from(sample_rate.max(1)));
+    let mut position = 0;
+    play_on_stream(
+        &device,
+        &supported,
+        move |out| {
+            for frame in out.chunks_mut(BUS_CHANNELS) {
+                let sample = samples.get(position).copied().unwrap_or(0.0);
+                position += 1;
+                frame.fill(sample);
+            }
+        },
+        duration,
+    )
+}
+
+fn open_detached_output(
+    device_id: Option<&str>,
+) -> Result<(Device, cpal::SupportedStreamConfig), String> {
     // A sound for the chosen speaker still plays if that speaker is gone: use the default.
     let (device, _) = resolve_output_device(device_id).or_else(|error| {
         if device_id.is_some() {
@@ -1089,18 +1190,23 @@ fn play_tones(device_id: Option<&str>, sound: UiSound) -> Result<(), String> {
     let supported = device
         .default_output_config()
         .map_err(|error| format!("Speaker could not be opened: {error}"))?;
-    let mut renderer = ToneRenderer::new(sound, supported.sample_rate().0);
-    let stream = build_bus_output_stream(
-        &device,
-        &supported,
-        move |out| renderer.render(out),
-        |error| eprintln!("[audio-engine] interface sound stream error: {error}"),
-    )
+    Ok((device, supported))
+}
+
+fn play_on_stream(
+    device: &Device,
+    supported: &cpal::SupportedStreamConfig,
+    render: impl FnMut(&mut [f32]) + Send + 'static,
+    duration: Duration,
+) -> Result<(), String> {
+    let stream = build_bus_output_stream(device, supported, render, |error| {
+        eprintln!("[audio-engine] interface sound stream error: {error}")
+    })
     .map_err(|error| format!("Sound could not start: {error}"))?;
     stream
         .play()
         .map_err(|error| format!("Sound could not play: {error}"))?;
-    thread::sleep(ToneRenderer::total_duration(sound) + Duration::from_millis(80));
+    thread::sleep(duration + Duration::from_millis(80));
     drop(stream);
     Ok(())
 }
@@ -1393,7 +1499,7 @@ mod tests {
 
     #[test]
     fn interface_sounds_are_finite_and_silent_after_they_end() {
-        for sound in [UiSound::SpeakerTest, UiSound::Knock] {
+        for sound in [UiSound::SpeakerTest] {
             let mut renderer = ToneRenderer::new(sound, 48_000);
             let total = (ToneRenderer::total_duration(sound).as_secs_f32() * 48_000.0) as usize;
             let mut audio = vec![0.0_f32; (total + 4_800) * BUS_CHANNELS];
@@ -1406,5 +1512,65 @@ mod tests {
                 .iter()
                 .all(|sample| *sample == 0.0));
         }
+    }
+
+    fn bus_with_cues(cues: &[SoundCue], muted: bool) -> (BusRenderer, Arc<RenderReference>) {
+        let bus = Arc::new(MixBus::default());
+        bus.muted.store(muted, Ordering::Relaxed);
+        for cue in cues {
+            let voice = CueVoice::new(*cue, render_cue(*cue, 48_000, 1.0));
+            bus.cues.lock().unwrap().push(voice, 48_000);
+        }
+        let reference = Arc::new(RenderReference::default());
+        (
+            BusRenderer::new(bus, Arc::clone(&reference), 48_000),
+            reference,
+        )
+    }
+
+    fn render_blocks(renderer: &mut BusRenderer, blocks: usize) -> Vec<f32> {
+        let mut played = Vec::new();
+        for _ in 0..blocks {
+            let mut out = vec![0.0; 480 * BUS_CHANNELS];
+            renderer.render(&mut out);
+            played.extend(out);
+        }
+        played
+    }
+
+    #[test]
+    fn cues_reach_the_speaker_and_the_echo_reference() {
+        let (mut renderer, reference) = bus_with_cues(&[SoundCue::PersonJoined], false);
+        let played = render_blocks(&mut renderer, 10);
+        let expected = render_cue(SoundCue::PersonJoined, 48_000, 1.0);
+        for (frame, sample) in played.chunks(BUS_CHANNELS).zip(&expected) {
+            assert!((frame[0] - sample).abs() < 1e-6 && (frame[1] - sample).abs() < 1e-6);
+        }
+        // Echo cancellation is fed exactly what the speaker got, cue included.
+        let mut cursor = RenderCursor::default();
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut heard = 0.0_f32;
+        while reference
+            .next_frame(&mut cursor, &mut left, &mut right)
+            .is_some()
+        {
+            heard = left
+                .iter()
+                .fold(heard, |peak, sample| peak.max(sample.abs()));
+        }
+        assert!(heard > 0.1, "the render reference carries the cue");
+    }
+
+    #[test]
+    fn deafened_you_still_hear_your_own_mute_toggle_and_nothing_else() {
+        let (mut renderer, _) = bus_with_cues(&[SoundCue::ShareStarted], true);
+        assert!(render_blocks(&mut renderer, 20)
+            .iter()
+            .all(|sample| *sample == 0.0));
+        let (mut renderer, _) = bus_with_cues(&[SoundCue::Unmute], true);
+        let peak = render_blocks(&mut renderer, 20)
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak > 0.2, "the unmute cue plays while deafened ({peak})");
     }
 }

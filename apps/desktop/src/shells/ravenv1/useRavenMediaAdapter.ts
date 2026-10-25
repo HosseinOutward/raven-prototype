@@ -11,6 +11,7 @@ import {
   NoiseSuppressionDepth,
   NoiseSuppressionMode,
   NoiseSuppressionRuntime,
+  type SoundCueSettings,
   subscribeAudioDevicesChanged,
   subscribeAudioStateChanged,
   WebRtcAudioProcessingSettings,
@@ -37,6 +38,13 @@ import {
   useVoiceActivity,
 } from "@/lib/speakingActivity";
 import type { NetworkActivityCategory, NetworkActivityDirection, NetworkActivitySettings } from "./networkActivity";
+import {
+  DEFAULT_SOUND_CUE_SETTINGS,
+  INITIAL_SHARE_CUE_STATE,
+  normalizeSoundCueSettings,
+  remoteSharers,
+  shareCueStep,
+} from "@/lib/soundCues";
 import {
   isConfirmedMicrophoneActive,
   isLocalVideoChosen,
@@ -154,6 +162,8 @@ export interface RavenMediaAdapterState {
   participantMedia: ParticipantMediaState[];
   screenSharingUserIds: string[];
   networkActivity: NetworkActivitySettings;
+  /** Sound cue switches and volume, kept on this device. */
+  soundCues: SoundCueSettings;
   bitrateSupported: boolean;
   bitrateLabel: string;
   micLabel: string;
@@ -191,6 +201,9 @@ export interface RavenMediaAdapterState {
   unpublishMic: () => Promise<void>;
   setMicProcessing: (processing: WebRtcAudioProcessingSettings) => Promise<void>;
   setNetworkActivity: (patch: Partial<NetworkActivitySettings>) => void;
+  setSoundCues: (patch: Partial<SoundCueSettings>) => void;
+  /** Play a sample cue at this volume, whatever the switches say. */
+  previewSoundCue: (volume: number) => void;
   setSelfMediaPreviewMode: (mode: SelfMediaPreviewMode) => Promise<void>;
   setVideoPresentationProfile: (profile: VideoPresentationProfile) => Promise<void>;
   setLocalPreviewSurfaceVisible: (visible: boolean) => Promise<void>;
@@ -242,6 +255,7 @@ export function useRavenMediaAdapter(
   const [networkActivitySettings, setNetworkActivitySettings] = useState<NetworkActivitySettings>(
     initialSettings.networkActivity ?? DEFAULT_NETWORK_ACTIVITY_SETTINGS,
   );
+  const [soundCues, setSoundCuesState] = useState<SoundCueSettings>(initialSettings.soundCues ?? DEFAULT_SOUND_CUE_SETTINGS);
   const [deafened, setDeafened] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const deafenRef = useRef({ deafened: false, mode: deafenMode });
@@ -331,6 +345,23 @@ export function useRavenMediaAdapter(
       return next;
     });
   }, [saveMediaSettings]);
+
+  const setSoundCues = useCallback((patch: Partial<SoundCueSettings>) => {
+    setSoundCuesState((current) => {
+      const next = normalizeSoundCueSettings({ ...current, ...patch });
+      saveMediaSettings({ soundCues: next });
+      return next;
+    });
+  }, [saveMediaSettings]);
+
+  // The engine decides the joined and left cues itself, so it needs the switches too.
+  useEffect(() => {
+    void audioCommands.setSoundCueSettings(soundCues).catch(() => undefined);
+  }, [soundCues]);
+
+  const previewSoundCue = useCallback((volume: number) => {
+    void audioCommands.previewSoundCue("personJoined", volume).catch(() => undefined);
+  }, []);
 
   const setSelfMediaPreviewMode = useCallback(async (mode: SelfMediaPreviewMode) => {
     const previousMode = selfMediaPreviewModeRef.current;
@@ -479,6 +510,19 @@ export function useRavenMediaAdapter(
     () => participantMedia.filter((participant) => participant.screenSharing).map((participant) => participant.participantId).sort(),
     [participantMedia],
   );
+
+  // A cue when someone in this room starts or stops sharing. The viewer only sees the
+  // room the user is in, and joining never replays the shares already there.
+  const shareCuesRef = useRef(INITIAL_SHARE_CUE_STATE);
+  useEffect(() => {
+    const { state, cues } = shareCueStep(
+      shareCuesRef.current,
+      { nestId: activeNestId, viewerConnected: Boolean(videoState?.viewerConnected), sharers: remoteSharers(videoState) },
+      Date.now(),
+    );
+    shareCuesRef.current = state;
+    for (const cue of cues) void audioCommands.playSoundCue(cue).catch(() => undefined);
+  }, [activeNestId, videoState]);
 
   const setSafeError = useCallback((message: string, kind: MediaErrorKind = "capture_failure", action = "Check the selected source and try again.") => {
     setError(message);
@@ -867,6 +911,9 @@ export function useRavenMediaAdapter(
   }, [micSources, setSafeError]);
 
   const toggleMic = useCallback(async () => {
+    // Heard at once, as the answer to the click or hotkey. Only in a call: the engine
+    // drops it when no call is playing.
+    void audioCommands.playSoundCue(localMicEnabled ? "mute" : "unmute").catch(() => undefined);
     if (localMicEnabled) {
       await muteMic();
     } else {
@@ -1243,6 +1290,7 @@ export function useRavenMediaAdapter(
     participantMedia,
     screenSharingUserIds,
     networkActivity: networkActivitySettings,
+    soundCues,
     bitrateSupported: false,
     bitrateLabel: "Managed by the native video profile",
     micLabel: micStateLabel(micSources, localMicEnabled),
@@ -1279,6 +1327,8 @@ export function useRavenMediaAdapter(
     unpublishMic,
     setMicProcessing,
     setNetworkActivity,
+    setSoundCues,
+    previewSoundCue,
     setSelfMediaPreviewMode,
     setVideoPresentationProfile,
     setLocalPreviewSurfaceVisible,
@@ -1356,6 +1406,7 @@ type MediaSettings = {
   autoGainControl?: boolean;
   deafenMode?: DeafenMode;
   networkActivity?: NetworkActivitySettings;
+  soundCues?: SoundCueSettings;
   selfMediaPreviewMode?: SelfMediaPreviewMode;
   videoPresentationProfile?: VideoPresentationProfile;
 };
@@ -1380,6 +1431,7 @@ export function readMediaSettings(): MediaSettings {
       autoGainControl: typeof parsed.autoGainControl === "boolean" ? parsed.autoGainControl : undefined,
       deafenMode: isDeafenMode(parsed.deafenMode) ? parsed.deafenMode : "instant",
       networkActivity: normalizeNetworkActivitySettings(parsed.networkActivity),
+      soundCues: normalizeSoundCueSettings(parsed.soundCues),
       selfMediaPreviewMode: isSelfMediaPreviewMode(parsed.selfMediaPreviewMode) ? parsed.selfMediaPreviewMode : "local",
       videoPresentationProfile: isVideoPresentationProfile(parsed.videoPresentationProfile) ? parsed.videoPresentationProfile : "balanced",
     };

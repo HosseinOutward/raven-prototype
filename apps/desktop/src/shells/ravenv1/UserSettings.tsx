@@ -29,6 +29,7 @@ import {
   type SettingsCategoryGroup,
 } from "./SettingsScaffold";
 import { InfoTooltip } from "./atoms";
+import { cn } from "@/lib/utils";
 import { ConfirmLeaveSection, DockOrderSection } from "./DockSettings";
 import type { RavenShellData, RavenView } from "./state";
 import type {
@@ -308,6 +309,90 @@ function AppearanceSettings({ data }: { data: RavenShellData }) {
   );
 }
 
+function SoundCueSection({ media, nest }: { media: RavenMediaAdapterState; nest: string }) {
+  const cues = media.soundCues;
+  const off = !cues.enabled;
+  return (
+    <SettingsSection title="Sounds" description="Short, quiet sounds for what happens around you. Only you hear them. Kept on this device.">
+      <SettingsRows>
+        <SettingsToggleRow label="Play sounds" checked={cues.enabled} onChange={(enabled) => media.setSoundCues({ enabled })} />
+        <SettingsRow
+          label="Volume"
+          className={cn(off && "opacity-55")}
+          control={<SoundCueVolume value={cues.volume} disabled={off} onCommit={(volume) => {
+            media.setSoundCues({ volume });
+            media.previewSoundCue(volume);
+          }} />}
+        />
+        <SettingsToggleRow
+          label="Your microphone"
+          description="When you mute or unmute. Heard even after you stop hearing people."
+          checked={cues.microphone}
+          disabled={off}
+          onChange={(microphone) => media.setSoundCues({ microphone })}
+        />
+        <SettingsToggleRow
+          label="Someone about to join"
+          description={`The heads-up a few seconds before someone enters your ${nest}.`}
+          checked={cues.entryHeadsUp}
+          disabled={off}
+          onChange={(entryHeadsUp) => media.setSoundCues({ entryHeadsUp })}
+        />
+        <SettingsToggleRow
+          label="People joining and leaving"
+          description={`When someone arrives in your ${nest} and can be heard, or leaves it.`}
+          checked={cues.people}
+          disabled={off}
+          onChange={(people) => media.setSoundCues({ people })}
+        />
+        <SettingsToggleRow
+          label="Screen shares"
+          description={`When someone in your ${nest} starts or stops sharing.`}
+          checked={cues.screenShares}
+          disabled={off}
+          onChange={(screenShares) => media.setSoundCues({ screenShares })}
+        />
+        <SettingsToggleRow
+          label="Knocks"
+          description="When someone knocks on you, in a call or not. Do not disturb silences it."
+          checked={cues.knocks}
+          disabled={off}
+          onChange={(knocks) => media.setSoundCues({ knocks })}
+        />
+      </SettingsRows>
+    </SettingsSection>
+  );
+}
+
+/** The cue volume. It is applied, and a sample played, when you let go. */
+function SoundCueVolume({ value, disabled, onCommit }: { value: number; disabled: boolean; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = (next: number) => {
+    if (next !== value) onCommit(next);
+  };
+  const percent = `${Math.round(draft * 100)}%`;
+  return (
+    <div className="flex items-center gap-3">
+      <input
+        className="raven-fader w-40"
+        type="range"
+        aria-label="Sound volume"
+        aria-valuetext={percent}
+        min={0}
+        max={1}
+        step={0.05}
+        value={draft}
+        disabled={disabled}
+        onChange={(event) => setDraft(Number(event.target.value))}
+        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+      />
+      <span className="w-10 text-right text-small tabular-nums text-muted-foreground">{percent}</span>
+    </div>
+  );
+}
+
 function AudioVideoSettings({ data, media }: { data: RavenShellData; media: RavenMediaAdapterState }) {
   const nest = data.labels.nestSingular.toLowerCase();
   const [joinMuted, setJoinMuted] = useAppliedPreference(data.preferences.alwaysJoinMuted, (value) => data.updatePreferences({ alwaysJoinMuted: value }));
@@ -389,6 +474,8 @@ function AudioVideoSettings({ data, media }: { data: RavenShellData; media: Rave
           />
         </SettingsRows>
       </SettingsSection>
+
+      <SoundCueSection media={media} nest={nest} />
 
       <SettingsSection
         title={(

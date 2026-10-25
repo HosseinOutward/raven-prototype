@@ -392,6 +392,29 @@ export interface AudioMeterUpdate {
 
 export type AudioUiSound = "knock";
 
+/** Short sounds for things that happen in a call. Synthesised and mixed natively. */
+export type SoundCue =
+  | "mute"
+  | "unmute"
+  | "profileKnock"
+  | "shareStarted"
+  | "shareStopped"
+  | "personJoined"
+  | "personLeft"
+  | "entryHeadsUp";
+
+/** Kept on this device with the other media settings and pushed to the engine. */
+export interface SoundCueSettings {
+  enabled: boolean;
+  /** 0 to 1. */
+  volume: number;
+  microphone: boolean;
+  knocks: boolean;
+  screenShares: boolean;
+  people: boolean;
+  entryHeadsUp: boolean;
+}
+
 export interface AudioNetworkTotals {
   sentBytes: number;
   receivedBytes: number;
@@ -457,8 +480,18 @@ export const audioCommands = {
   setOutputMuted: (muted: boolean) =>
     invoke<AudioMixerState>("audio_set_output_muted", { muted }),
 
-  /** Play a short interface sound on the chosen speaker, outside the call mix. */
+  /** Play a short interface sound. `knock` is the `entryHeadsUp` sound cue. */
   playUiSound: (sound: AudioUiSound) => invoke<void>("audio_play_ui_sound", { sound }),
+
+  /** Play a sound cue if the user's cue settings and deafen allow it. */
+  playSoundCue: (cue: SoundCue) => invoke<void>("audio_play_sound_cue", { cue }),
+
+  /** A sample cue at `volume` (0 to 1), regardless of the cue settings. */
+  previewSoundCue: (cue: SoundCue, volume: number) =>
+    invoke<void>("audio_preview_sound_cue", { cue, volume }),
+
+  setSoundCueSettings: (settings: SoundCueSettings) =>
+    invoke<void>("audio_set_sound_cue_settings", { settings }),
 
   setRemoteAudioReceiving: (enabled: boolean) =>
     invoke<AudioMixerState>("audio_set_remote_audio_receiving", { enabled }),
