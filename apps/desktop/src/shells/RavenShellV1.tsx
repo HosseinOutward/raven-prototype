@@ -18,6 +18,8 @@ import type { RavenView } from "./ravenv1/state";
 import { useRavenShellData } from "./ravenv1/useRavenShellData";
 import { useRavenMediaAdapter } from "./ravenv1/useRavenMediaAdapter";
 import { useNestEntry } from "./ravenv1/useNestEntry";
+import { useEntryToasts } from "./ravenv1/useEntryToasts";
+import { connectedPeerIds } from "@/lib/callArrivals";
 import { useChat } from "./ravenv1/useChat";
 import { audioCommands } from "@/lib/audio";
 import { useRavenUpdater } from "@/lib/updater";
@@ -76,6 +78,14 @@ export function RavenShellV1() {
     }
     chimedNoticesRef.current = current;
   }, [activeEntryNotices]);
+  // The toast keeps people inside told until the joiner is really here: the same
+  // "connected" the room view and the overlay use.
+  const activeSession = media.activeNestId ? data.getActiveSession(media.activeNestId) : null;
+  const activeConnectedPeers = useMemo(
+    () => connectedPeerIds({ session: activeSession, audioState: media.audioState, videoState: media.videoState }),
+    [activeSession, media.audioState, media.videoState],
+  );
+  const entryToasts = useEntryToasts(activeEntryNotices, activeConnectedPeers);
   const view = history.entries[history.index] ?? { kind: "home" };
   const canGoBack = history.index > 0;
   const canGoForward = history.index < history.entries.length - 1;
@@ -345,18 +355,22 @@ export function RavenShellV1() {
         />
       </div>
 
-      {activeEntryNotices.length > 0 ? (
+      {entryToasts.length > 0 ? (
         <div className="pointer-events-none fixed bottom-[76px] left-1/2 z-[70] flex -translate-x-1/2 flex-col items-center gap-2" role="status" aria-live="polite">
-          {activeEntryNotices.map((notice) => (
+          {entryToasts.map(({ notice, phase }) => (
             <div
               key={`${notice.actorId}:${notice.receivedAt}`}
               className="flex animate-pop-in items-center gap-2.5 rounded-full bg-popover py-1.5 pl-1.5 pr-4 text-small text-popover-foreground shadow-raised"
             >
               <Avatar name={notice.actorName} src={api.userAvatarUrl(notice.actorId)} className="h-6 w-6" />
               <span>
-                <span className="font-medium">{notice.actorName}</span> is about to join
+                <span className="font-medium">{notice.actorName}</span> {phase === "connecting" ? "is connecting…" : "is about to join"}
               </span>
-              <Hand className="h-3.5 w-3.5 text-muted-foreground" />
+              {phase === "connecting" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              ) : (
+                <Hand className="h-3.5 w-3.5 text-muted-foreground" />
+              )}
             </div>
           ))}
         </div>

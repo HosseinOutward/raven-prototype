@@ -44,6 +44,8 @@ export type NativeMediaTile = {
   sharePaused?: VideoPauseReason | null;
   /** Your own window share's app, to say which app is minimized. */
   shareAppName?: string;
+  /** Listed by LiveKit, but no media from them yet (see `connectedPeerIds`). Set by the stage. */
+  connecting?: boolean;
 };
 
 export function useNativeMediaTiles(

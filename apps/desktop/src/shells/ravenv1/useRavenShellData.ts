@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
 import { clearAvatarVersions, noteAvatarVersion } from "@/lib/avatarVersions";
+import { ENTRY_CONNECTING_TTL_MS } from "@/lib/callArrivals";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
 import { loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
@@ -8,8 +9,11 @@ import type { NestEntryNotice, PendingItem, RavenShellData, SelectablePresence, 
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
 import { ApiError, type ProfileKnockState } from "@/lib/api";
 
-/** How long an entry notice stays on screen if it is neither cancelled nor replaced. */
-const ENTRY_NOTICE_TTL_MS = 8000;
+/**
+ * How long an entry notice is kept if it is neither cancelled nor replaced. The toast
+ * itself goes as soon as the person is connected (`entryNoticePhase`).
+ */
+const ENTRY_NOTICE_TTL_MS = ENTRY_CONNECTING_TTL_MS;
 /** Every this many presence heartbeats, also refresh the people shown from Trees. */
 const TREE_PRESENCE_REFRESH_EVERY = 4;
 

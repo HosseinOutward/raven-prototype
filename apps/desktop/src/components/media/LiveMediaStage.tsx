@@ -14,6 +14,7 @@ import { SatelliteCluster } from "./SatelliteCluster";
 import { MediaTile, type MediaFit } from "./MediaTile";
 import { motionClass, useMotionArmed, useStageMotion, type MotionEntry } from "./stageMotion";
 import { bestGridColumns, newestScreenShareKey, newShareKeys, partitionStageTiles, resolveStageFocusKeys } from "./stageState";
+import { isConnecting } from "@/lib/callArrivals";
 import { useNativeMediaTiles, type NativeMediaTile } from "./useNativeMediaTiles";
 import { effectiveReceiving, receivingKey, useVideoReceiving } from "./useVideoReceiving";
 
@@ -57,6 +58,7 @@ export function LiveMediaStage({
   satellites = EMPTY_SATELLITES,
   satelliteActions = NO_SATELLITE_ACTIONS,
   roomLabel = "Nest",
+  connectedPeerIds = null,
   className,
 }: {
   title: string;
@@ -77,6 +79,11 @@ export function LiveMediaStage({
   satellites?: AudioSatellites;
   satelliteActions?: SatelliteActions;
   roomLabel?: string;
+  /**
+   * The people who are really in the call (`connectedPeerIds`). Anyone else the engine
+   * lists is drawn as connecting. Null while it is not known: nobody is marked.
+   */
+  connectedPeerIds?: ReadonlySet<string> | null;
   className?: string;
 }) {
   const stageRef = useRef<HTMLElement | null>(null);
@@ -111,7 +118,10 @@ export function LiveMediaStage({
   const readEngineDesired = useCallback((key: string) => engineDesired.get(key), [engineDesired]);
   const { pendingFor, setReceiving } = useVideoReceiving(connected, readEngineDesired);
 
-  const tiles = useMemo<StageTile[]>(() => nativeTiles.map((tile) => {
+  const tiles = useMemo<StageTile[]>(() => nativeTiles.map((nativeTile) => {
+    const tile = isConnecting(nativeTile.participantId, nativeTile.isLocal, connectedPeerIds)
+      ? { ...nativeTile, connecting: true }
+      : nativeTile;
     if (tile.isLocal) {
       // Your own share is a card unless you ask for a preview. Without an <img> nothing
       // subscribes to its frames, so no JPEGs are made for it.
@@ -119,7 +129,7 @@ export function LiveMediaStage({
     }
     const receiving = effectiveReceiving(tile.receiving, pendingFor(tile.participantId, tile.source));
     return { ...tile, receiving, watching: receiving, loading: tile.source === "screenshare" ? receiving && !tile.streamUrl : tile.loading };
-  }), [nativeTiles, ownPreview, pendingFor]);
+  }), [connectedPeerIds, nativeTiles, ownPreview, pendingFor]);
 
   const { visual, cards, voice } = useMemo(() => partitionStageTiles(tiles), [tiles]);
   // Arrivals and departures move only once the room has settled: nobody pops in when you
@@ -142,7 +152,8 @@ export function LiveMediaStage({
   const sideTiles = sideEntries.filter((entry) => entry.phase !== "leave");
   const visualPhase = new Map(motion.visual.map((entry) => [entry.key, entry.phase]));
   const reconnecting = connected && !videoState?.viewerConnected;
-  const participantCount = new Set(tiles.map((tile) => tile.participantId)).size;
+  // "Here" means connected; someone still connecting is drawn, not counted.
+  const participantCount = new Set(tiles.filter((tile) => !tile.connecting).map((tile) => tile.participantId)).size;
   const narrowFocus = size.width > 0 && size.width < 720;
   const filmstripShown = sideTiles.length > 0 && !filmstripCollapsed;
   const mainWidth = (size.width || 900) - (filmstripShown && !narrowFocus ? FILMSTRIP_WIDTH + 8 : 0);
@@ -538,13 +549,13 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
           >
             <span className="relative">
               <span
-                className={cn("block rounded-full", person.speaking && "raven-speaking-avatar")}
+                className={cn("block rounded-full", person.speaking && "raven-speaking-avatar", person.connecting && "raven-connecting-avatar")}
                 style={speakingGlowStyle(person.speakingIntensity, "avatar")}
               >
                 <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className={size} />
               </span>
               {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="absolute -bottom-0.5 -left-0.5 h-6 w-6 rounded-full bg-card" /> : null}
-              {person.audioMuted ? (
+              {person.audioMuted && !person.connecting ? (
                 <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-card text-destructive" title="Muted" aria-label="Muted">
                   <MicOff className="h-3.5 w-3.5" />
                 </span>
@@ -558,8 +569,8 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
                 className="absolute left-full top-1/2 ml-1.5 -translate-y-1/2"
               />
             </span>
-            <span className="mt-3 max-w-full truncate text-small font-medium">{person.isLocal ? "You" : person.displayName}</span>
-            <ConnectionCaption person={person} />
+            <span className={cn("mt-3 max-w-full truncate text-small font-medium", person.connecting && "text-muted-foreground")}>{person.isLocal ? "You" : person.displayName}</span>
+            {person.connecting ? <ConnectingCaption /> : <ConnectionCaption person={person} />}
           </div>
         );
       })}
@@ -580,14 +591,16 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
             aria-hidden={phase === "leave" || undefined}
           >
             <span
-              className={cn("block rounded-full", person.speaking && "raven-speaking-ring")}
+              className={cn("block rounded-full", person.speaking && "raven-speaking-ring", person.connecting && "raven-connecting-avatar")}
               style={speakingGlowStyle(person.speakingIntensity, "avatar")}
             >
               <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className="h-7 w-7" />
             </span>
-            <span className="max-w-[140px] truncate text-small">{person.isLocal ? "You" : person.displayName}</span>
+            <span className={cn("max-w-[140px] truncate text-small", person.connecting && "text-muted-foreground")}>{person.isLocal ? "You" : person.displayName}</span>
             {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="-mr-1.5 h-6 w-6 shrink-0 rounded-full" /> : null}
-            {person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
+            {person.connecting ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="Connecting" />
+            ) : person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
             <SatelliteCluster
               satellites={satellitesFor(satellites.satellites, person)}
               ownerName={person.isLocal ? "You" : person.displayName}
@@ -613,6 +626,16 @@ function tileKey(tile: StageTile) {
 function satellitesFor(satellites: AudioSatellites, person: NativeMediaTile) {
   if (person.isLocal) return satellites.local;
   return satellites.remote.get(stripSidecarIdentity(person.participantId)) ?? NO_SATELLITES;
+}
+
+/** Listed in the room, but nothing from them has arrived yet. */
+function ConnectingCaption() {
+  return (
+    <span className="mt-0.5 inline-flex items-center gap-1 text-caption text-muted-foreground">
+      <Loader2 className="h-3 w-3 animate-spin" />
+      Connecting…
+    </span>
+  );
 }
 
 function ConnectionCaption({ person }: { person: NativeMediaTile }) {
