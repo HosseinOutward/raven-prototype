@@ -803,6 +803,18 @@ func chatDeleteConversationTx(tx *database.Tx, conversationID string) error {
 	return nil
 }
 
+// chatHideTextNestTx deletes a text nest for everyone without destroying what was
+// written in it: the conversation is marked deleted, which every read and write already
+// treats as gone, and it leaves the tree's layout. Its messages and read positions stay
+// in the database, and go with the tree if the tree is ever deleted.
+func chatHideTextNestTx(tx *database.Tx, conversationID string) error {
+	if _, err := tx.Exec(`UPDATE chat_conversations SET status = 'deleted', updated_at = ? WHERE id = ?`, database.Now(), conversationID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`DELETE FROM tree_layout_items WHERE kind = 'text' AND item_id = ?`, conversationID)
+	return err
+}
+
 // deleteChatForTreeTx removes a tree's text nests, categories and layout along with the
 // tree. It runs first in the tree's delete transaction for the reason given above.
 func deleteChatForTreeTx(tx *database.Tx, treeID string) error {
@@ -859,7 +871,12 @@ func (s *Server) deleteChatConversation(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if err := chatDeleteConversationTx(tx, conversationID); err != nil {
+	if access.Kind == chatKindNest {
+		err = chatHideTextNestTx(tx, conversationID)
+	} else {
+		err = chatDeleteConversationTx(tx, conversationID)
+	}
+	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

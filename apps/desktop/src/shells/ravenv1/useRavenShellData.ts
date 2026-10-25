@@ -35,6 +35,10 @@ function isPasswordChangeRequired(error: unknown) {
   return error instanceof ApiError && error.reasonCode === "password_change_required";
 }
 
+function isNestGone(error: unknown) {
+  return error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 410);
+}
+
 function messageFromError(error: unknown, fallback = "Request failed") {
   return error instanceof Error && error.message ? error.message : fallback;
 }
@@ -187,9 +191,11 @@ export function useRavenShellData(): RavenShellData {
         .catch((reason: unknown) => ({ status: "rejected" as const, reason })),
       Promise.all(nestIds.map(async (nestId) => {
         try {
-          return [nestId, await api.getNest(nestId)] as const;
-        } catch {
-          return [nestId, undefined] as const;
+          return [nestId, await api.getNest(nestId), false] as const;
+        } catch (err) {
+          // The server refuses a nest that was ended or that this person no longer has
+          // access to; a dropped connection says nothing about the nest itself.
+          return [nestId, undefined, isNestGone(err)] as const;
         }
       })),
       Promise.all(nestIds.map(async (nestId) => {
@@ -207,8 +213,9 @@ export function useRavenShellData(): RavenShellData {
     setServerUnreachable(false);
     setNestDetails((current) => {
       const next = { ...current };
-      detailResults.forEach(([nestId, details]) => {
+      detailResults.forEach(([nestId, details, isGone]) => {
         if (details) next[nestId] = details;
+        else if (isGone) delete next[nestId];
       });
       return next;
     });
@@ -220,9 +227,13 @@ export function useRavenShellData(): RavenShellData {
       return next;
     });
 
-    const treeIds = [...new Set(detailResults.flatMap(([, details]) => details?.nest.treeId ? [details.nest.treeId] : []))];
-    if (treeIds.length > 0) {
-      const trees = await Promise.all(treeIds.map(async (treeId) => {
+    const gone = detailResults.flatMap(([nestId, , isGone]) => (isGone ? [nestId] : []));
+    const treeIds = new Set(detailResults.flatMap(([, details]) => details?.nest.treeId ? [details.nest.treeId] : []));
+    // A nest that was ended has no details to name its tree, but the update does. Its tree
+    // is fetched again so the nest leaves the list.
+    for (const update of updates) if (update.treeId && gone.includes(update.nestId ?? "")) treeIds.add(update.treeId);
+    if (treeIds.size > 0) {
+      const trees = await Promise.all([...treeIds].map(async (treeId) => {
         try {
           return [treeId, await api.getTree(treeId)] as const;
         } catch {
@@ -651,6 +662,8 @@ export function useRavenShellData(): RavenShellData {
     (treeId: string, name: string) => runMutation(() => api.createTreeNest(treeId, name).then((result) => result.nest)),
     [runMutation],
   );
+  const renameNest = useCallback((nestId: string, name: string) => runMutation(() => api.renameNest(nestId, name).then(() => undefined)), [runMutation]);
+  const deleteNest = useCallback((nestId: string) => runMutation(() => api.archiveNest(nestId)), [runMutation]);
   const addTreeMember = useCallback(
     (treeId: string, username: string, role: TreeRole = "member") =>
       runMutation(() => api.addTreeMember(treeId, username, role).then((result) => result.member)),
@@ -756,6 +769,8 @@ export function useRavenShellData(): RavenShellData {
     deleteTree,
     joinTree,
     createTreeNest,
+    renameNest,
+    deleteNest,
     addTreeMember,
     updateTreeMemberRole,
     removeTreeMember,

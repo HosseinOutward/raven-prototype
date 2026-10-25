@@ -26,17 +26,24 @@ export interface VoiceOverlaySettings {
   hotkey: string;
   layout: VoiceOverlayLayout;
   showNames: boolean;
+  nameBackground: VoiceOverlayNameBackground;
   position: VoiceOverlayPosition | null;
   registrationError: string | null;
 }
 
 export type VoiceOverlayLayout = "vertical" | "horizontal";
 
+/** The fill behind each name, so it stays readable over any game. */
+export type VoiceOverlayNameBackground = "off" | "light" | "strong";
+
+export const DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND: VoiceOverlayNameBackground = "light";
+
 export interface VoiceOverlaySettingsPatch {
   enabled?: boolean;
   hotkey?: string;
   layout?: VoiceOverlayLayout;
   showNames?: boolean;
+  nameBackground?: VoiceOverlayNameBackground;
 }
 
 export interface VoiceOverlayParticipant {

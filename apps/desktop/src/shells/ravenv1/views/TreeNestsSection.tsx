@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -8,6 +8,7 @@ import { UnreadCount } from "@/components/chat/ConversationRow";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { toast } from "@/components/ui/toast";
 import type { Nest, TreeDetails } from "@/lib/api";
 import { failureText } from "@/lib/chat/errors";
 import { canMoveCategory, entryKey, layoutSections, moveCategory, moveEntry, toEntries, toLayoutRequest, type ArrangeEntry, type NestRef } from "@/lib/chat/layout";
@@ -17,17 +18,20 @@ import type { TreeCategory } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
 import { GroupedList, LiveDot, SectionLabel } from "../atoms";
 import { lifecycleLabel, type RavenShellData, type RavenView } from "../state";
+import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useChatState } from "../useChat";
 import { nestView } from "./shared";
 
 /**
  * A tree's nests as its owners arranged them: categories, with text and voice nests in
  * order inside each. Owners and moderators can switch to arranging, where rows are
- * dragged (or moved with the keyboard) and categories are moved as a block.
+ * dragged (or moved with the keyboard) and categories are moved as a block. They can
+ * also rename or delete a nest from its row.
  */
 export function TreeNestsSection({
   details,
   data,
+  media,
   chat,
   canManage,
   arranging,
@@ -36,6 +40,7 @@ export function TreeNestsSection({
 }: {
   details: TreeDetails;
   data: RavenShellData;
+  media: RavenMediaAdapterState;
   chat: ChatStore;
   canManage: boolean;
   arranging: boolean;
@@ -49,6 +54,9 @@ export function TreeNestsSection({
   const [renaming, setRenaming] = useState<TreeCategory | null>(null);
   const [deleting, setDeleting] = useState<TreeCategory | null>(null);
   const [working, setWorking] = useState(false);
+  const [renamingNest, setRenamingNest] = useState<NestRef | null>(null);
+  const [deletingNest, setDeletingNest] = useState<NestRef | null>(null);
+  const nestSingular = data.labels.nestSingular.toLowerCase();
 
   useEffect(() => {
     void chat.loadLayout(treeId).catch(() => undefined);
@@ -121,9 +129,20 @@ export function TreeNestsSection({
               <GroupedList>
                 {section.items.map((ref) =>
                   ref.kind === "text" ? (
-                    <TextNestRow key={`text:${ref.id}`} name={nameOf(ref)} unread={textById.get(ref.id)?.unreadCount ?? 0} onOpen={() => onNavigate({ kind: "chat", id: ref.id })} />
+                    <TextNestRow
+                      key={`text:${ref.id}`}
+                      name={nameOf(ref)}
+                      unread={textById.get(ref.id)?.unreadCount ?? 0}
+                      onOpen={() => onNavigate({ kind: "chat", id: ref.id })}
+                      menu={canManage ? <NestRowMenu name={nameOf(ref)} onRename={() => setRenamingNest(ref)} onDelete={() => setDeletingNest(ref)} /> : undefined}
+                    />
                   ) : (
-                    <VoiceNestRow key={`voice:${ref.id}`} nest={voiceById.get(ref.id)!} onOpen={(nest) => onNavigate(nestView(nest))} />
+                    <VoiceNestRow
+                      key={`voice:${ref.id}`}
+                      nest={voiceById.get(ref.id)!}
+                      onOpen={(nest) => onNavigate(nestView(nest))}
+                      menu={canManage ? <NestRowMenu name={nameOf(ref)} onRename={() => setRenamingNest(ref)} onDelete={() => setDeletingNest(ref)} /> : undefined}
+                    />
                   ),
                 )}
               </GroupedList>
@@ -168,33 +187,114 @@ export function TreeNestsSection({
           }
         }}
       />
+
+      <RenameDialog
+        open={renamingNest !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenamingNest(null);
+        }}
+        title={`Rename ${nestSingular}`}
+        current={renamingNest ? nameOf(renamingNest) : ""}
+        onRename={async (name) => {
+          if (!renamingNest) return;
+          if (renamingNest.kind === "text") await chat.rename(renamingNest.id, { name });
+          else await data.renameNest(renamingNest.id, name);
+        }}
+      />
+      <ConfirmDialog
+        open={deletingNest !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeletingNest(null);
+        }}
+        title={`Delete “${deletingNest ? nameOf(deletingNest) : ""}”?`}
+        description={
+          deletingNest?.kind === "voice"
+            ? `Anyone inside is put out of the call, and the ${nestSingular} disappears for everyone.`
+            : `The ${nestSingular} disappears for everyone and can’t be opened again.`
+        }
+        confirmLabel={`Delete ${nestSingular}`}
+        destructive
+        busy={working}
+        onConfirm={async () => {
+          if (!deletingNest) return;
+          setWorking(true);
+          try {
+            if (deletingNest.kind === "text") {
+              await chat.deleteConversation(deletingNest.id);
+            } else {
+              // Someone deleting the room they are in leaves it first, so their microphone
+              // and camera stop and the dock does not show a call that no longer exists.
+              if (media.activeNestId === deletingNest.id) await media.leaveMediaSession();
+              await data.deleteNest(deletingNest.id);
+            }
+            setDeletingNest(null);
+          } catch (failure) {
+            // The shell already says why a voice nest could not be deleted.
+            if (deletingNest.kind === "text") toast({ title: failureText(failure, `Couldn’t delete the ${nestSingular}.`), tone: "error" });
+          } finally {
+            setWorking(false);
+          }
+        }}
+      />
     </>
   );
 }
 
-function TextNestRow({ name, unread, onOpen }: { name: string; unread: number; onOpen: () => void }) {
+/** The "…" at the end of a nest's row, for people who run the tree. */
+function NestRowMenu({ name, onRename, onDelete }: { name: string; onRename: () => void; onDelete: () => void }) {
   return (
-    <button type="button" onClick={onOpen} className="group flex h-11 w-full items-center gap-3 px-3.5 text-left transition-colors hover:bg-secondary">
-      <Hash className="h-4 w-4 shrink-0 text-subtle" aria-hidden />
-      <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 && "font-medium")}><bdi>{name}</bdi></span>
-      <UnreadCount count={unread} />
-      <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
-    </button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label={`More for ${name}`} className="mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-subtle transition-colors hover:bg-accent hover:text-foreground">
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onRename}>
+          <Pencil className="text-muted-foreground" />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem destructive onSelect={onDelete}>
+          <Trash2 />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
-function VoiceNestRow({ nest, onOpen }: { nest: Nest; onOpen: (nest: Nest) => void }) {
+const rowClassName = "group flex h-11 w-full items-center transition-colors hover:bg-secondary";
+const rowButtonClassName = "flex h-11 min-w-0 flex-1 items-center gap-3 px-3.5 text-left";
+
+function TextNestRow({ name, unread, onOpen, menu }: { name: string; unread: number; onOpen: () => void; menu?: ReactNode }) {
+  return (
+    <div className={rowClassName}>
+      <button type="button" onClick={onOpen} className={rowButtonClassName}>
+        <Hash className="h-4 w-4 shrink-0 text-subtle" aria-hidden />
+        <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 && "font-medium")}><bdi>{name}</bdi></span>
+        <UnreadCount count={unread} />
+        <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
+      </button>
+      {menu}
+    </div>
+  );
+}
+
+function VoiceNestRow({ nest, onOpen, menu }: { nest: Nest; onOpen: (nest: Nest) => void; menu?: ReactNode }) {
   const live = nest.lifecycleState === "active";
   const state = lifecycleLabel(nest);
   return (
-    <button type="button" onClick={() => onOpen(nest)} className="group flex h-11 w-full items-center gap-3 px-3.5 text-left transition-colors hover:bg-secondary">
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-        {live ? <LiveDot /> : <span className="h-1.5 w-1.5 rounded-full bg-subtle/60" aria-hidden />}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
-      {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
-      <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
-    </button>
+    <div className={rowClassName}>
+      <button type="button" onClick={() => onOpen(nest)} className={rowButtonClassName}>
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+          {live ? <LiveDot /> : <span className="h-1.5 w-1.5 rounded-full bg-subtle/60" aria-hidden />}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
+        {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
+        <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
+      </button>
+      {menu}
+    </div>
   );
 }
 
