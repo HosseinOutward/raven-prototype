@@ -450,7 +450,7 @@ function LayoutButton({ active, label, onClick, children }: { active: boolean; l
   );
 }
 
-const SHARE_CARD_CLASS = "flex h-12 min-w-0 max-w-sm items-center gap-2.5 rounded-card bg-secondary/50 pl-2 pr-1.5";
+const SHARE_CARD_CLASS = "flex h-12 min-w-0 max-w-md items-center gap-2.5 rounded-card bg-secondary/50 pl-2 pr-1.5";
 
 /** Someone is sharing and you have not chosen to watch. Nothing is downloaded until you do. */
 function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) {

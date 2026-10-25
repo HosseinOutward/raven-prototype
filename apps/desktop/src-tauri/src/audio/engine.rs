@@ -354,7 +354,8 @@ pub struct AudioNetworkTotals {
     /// The worst round trip and jitter the server reports for this peer's audio.
     pub sent_round_trip_ms: Option<f64>,
     pub sent_jitter_ms: Option<f64>,
-    /// Round trip to the server on the connection's active ICE pair, in milliseconds.
+    /// Round trip to the server in milliseconds: the active ICE pair's, else the server's
+    /// receiver reports for this peer's audio.
     pub round_trip_ms: Option<f64>,
     /// LiveKit's own verdict on this connection: excellent, good, poor or lost.
     pub connection_quality: Option<&'static str>,
@@ -408,8 +409,12 @@ pub async fn measure_audio_network_totals(room: Arc<Room>) -> Result<AudioNetwor
             _ => {}
         }
     }
+    // The ICE pair's own measurement when libwebrtc reports a nominated one. On this SDK
+    // against a LiveKit server it often reports only an unanswered pair (measured
+    // 2026-10-25), so the server's RTCP receiver reports for our audio stand in for it.
     totals.round_trip_ms =
-        active_pair_round_trip_ms(stats.publisher_stats.iter().chain(&stats.subscriber_stats));
+        active_pair_round_trip_ms(stats.publisher_stats.iter().chain(&stats.subscriber_stats))
+            .or(totals.sent_round_trip_ms);
     totals.connection_quality = Some(quality_word(room.local_participant().connection_quality()));
     totals.received_bytes = stats
         .subscriber_stats
