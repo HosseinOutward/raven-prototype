@@ -49,6 +49,8 @@ export type NativeMediaTile = {
   watchedShares: WatchTarget[];
   /** On a share's tile: the other people watching it, for the avatar stack. */
   shareWatchers: WatchPerson[];
+  /** Listed by LiveKit, but no media from them yet (see `connectedPeerIds`). Set by the stage. */
+  connecting?: boolean;
 };
 
 export function useNativeMediaTiles(

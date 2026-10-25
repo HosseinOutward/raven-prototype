@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api, type NestDetails, type SessionSummary, type User } from "@/lib/api";
 import type { AudioMixerState } from "@/lib/audio";
 import type { VideoMixerState } from "@/lib/video";
+import { connectedPeerIds } from "@/lib/callArrivals";
 import { stripSidecarIdentity } from "@/lib/mediaIdentity";
 import {
   resolveParticipantVoicePresentation,
@@ -127,12 +128,27 @@ export function buildVoiceOverlaySnapshot({
   screenSharingUserIds: string[];
   locationLabel: string;
 }): VoiceOverlaySnapshot {
-  const participants = new Map<string, { userId: string; displayName: string; isLocal: boolean }>();
+  // Who is listed is exactly who the room view counts as connected (`connectedPeerIds`),
+  // so a slow joiner shows up here at the same moment their avatar stops "connecting".
+  const connectedIds = connectedPeerIds({ session: activeSession, audioState: mixerState, videoState: videoMixer });
+  const names = new Map<string, string>();
+  for (const participant of activeSession?.participants ?? []) {
+    names.set(participant.userId, participant.displayName || participant.username);
+  }
+  for (const remoteParticipant of mixerState?.remoteParticipants ?? []) {
+    const userId = stripSidecarIdentity(remoteParticipant.participantId);
+    if (userId && !names.has(userId) && remoteParticipant.displayName) names.set(userId, remoteParticipant.displayName);
+  }
+  for (const track of videoMixer?.remoteTracks ?? []) {
+    const userId = stripSidecarIdentity(track.participantId);
+    if (userId && !names.has(userId) && track.displayName) names.set(userId, track.displayName);
+  }
 
+  const participants = new Map<string, { userId: string; displayName: string; isLocal: boolean }>();
   for (const participant of activeSession?.participants ?? []) {
     participants.set(participant.userId, {
       userId: participant.userId,
-      displayName: participant.displayName || participant.username,
+      displayName: names.get(participant.userId) ?? participant.userId,
       isLocal: participant.userId === user.id,
     });
   }
@@ -145,33 +161,9 @@ export function buildVoiceOverlaySnapshot({
     });
   }
 
-  for (const remoteParticipant of mixerState?.remoteParticipants ?? []) {
-    const userId = stripSidecarIdentity(remoteParticipant.participantId);
-    if (!userId || userId === user.id || participants.has(userId)) continue;
-    participants.set(userId, {
-      userId,
-      displayName: remoteParticipant.displayName ?? userId,
-      isLocal: false,
-    });
-  }
-
-  for (const userId of screenSharingUserIds.map(stripSidecarIdentity)) {
-    if (!userId || participants.has(userId)) continue;
-    participants.set(userId, {
-      userId,
-      displayName: userId,
-      isLocal: userId === user.id,
-    });
-  }
-
-  for (const track of videoMixer?.remoteTracks ?? []) {
-    const userId = stripSidecarIdentity(track.participantId);
-    if (!userId || participants.has(userId)) continue;
-    participants.set(userId, {
-      userId,
-      displayName: track.displayName || userId,
-      isLocal: userId === user.id,
-    });
+  for (const userId of connectedIds) {
+    if (participants.has(userId)) continue;
+    participants.set(userId, { userId, displayName: names.get(userId) ?? userId, isLocal: userId === user.id });
   }
 
   const screenSharing = new Set(screenSharingUserIds.map(stripSidecarIdentity).filter(Boolean));

@@ -71,6 +71,12 @@ export async function runNestEntry(
     }
   }
 
-  await deps.joinMedia(nestId);
+  try {
+    await deps.joinMedia(nestId);
+  } catch (error) {
+    // The people inside are being told "connecting"; tell them it is off.
+    if (announced) void deps.withdraw(nestId).catch(() => undefined);
+    throw error;
+  }
   return "joined";
 }

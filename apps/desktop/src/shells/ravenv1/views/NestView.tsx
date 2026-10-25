@@ -6,6 +6,7 @@ import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import type { LauncherNest, Nest } from "@/lib/api";
+import { knownConnectedPeerIds } from "@/lib/callArrivals";
 import { AvatarStack, GroupedList, LiveDot } from "../atoms";
 import { formatRelativeTime, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
@@ -41,6 +42,11 @@ export function NestView({
     () => groupAudioSatellites(inside ? media.audioState : null, media.sourceActivity, linkedAudioIds),
     [inside, linkedAudioIds, media.audioState, media.sourceActivity],
   );
+  const activeSession = data.getActiveSession(nest.id);
+  const connectedPeers = useMemo(
+    () => (inside ? knownConnectedPeerIds({ session: activeSession, audioState: media.audioState, videoState: media.videoState }) : null),
+    [activeSession, inside, media.audioState, media.videoState],
+  );
   const { setRemoteTrackVolume, setRemoteTrackMuted, stopScreenShare } = media;
   const satelliteActions = useMemo<SatelliteActions>(() => ({
     setVolume: async (satellite, gainDb) => {
@@ -73,6 +79,7 @@ export function NestView({
         satellites={satellites}
         satelliteActions={satelliteActions}
         roomLabel={data.labels.nestSingular}
+        connectedPeerIds={connectedPeers}
       />
     );
   }

@@ -105,6 +105,32 @@ describe("entering a Nest", () => {
     expect(entry.ticks).toEqual([]);
   });
 
+  test("a media connect that fails takes the notice back, so nobody waits on a connecting toast", async () => {
+    const entry = harness({
+      joinMedia: async () => {
+        entry.calls.push("joinMedia");
+        throw new Error("could not establish pc connection");
+      },
+    });
+
+    await expect(entry.start()).rejects.toThrow("could not establish pc connection");
+
+    expect(entry.calls).toEqual(["announce", "joinNest", "joinMedia", "withdraw"]);
+  });
+
+  test("a failed connect into an empty Nest has nothing to take back", async () => {
+    const entry = harness({
+      announce: async () => ({ notified: 0, delaySeconds: 3 }),
+      joinMedia: async () => {
+        throw new Error("offline");
+      },
+    });
+
+    await expect(entry.start()).rejects.toThrow("offline");
+
+    expect(entry.calls).not.toContain("withdraw");
+  });
+
   test("counts the wait from when the notice went out, not from when membership finished", async () => {
     const entry = harness();
     entry.deps.joinNest = async () => {

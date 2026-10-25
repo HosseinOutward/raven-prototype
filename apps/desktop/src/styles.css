@@ -154,6 +154,15 @@ textarea {
   transition: outline-color 140ms ease-out;
 }
 
+/* Connecting: listed in the room, but nothing from them has arrived yet. Shape
+   first (a dashed ring, an open circle), and no colour until they are here:
+   colour belongs to people who are present. */
+.raven-connecting-avatar {
+  outline: 2px dashed hsl(var(--muted-foreground));
+  outline-offset: 2px;
+  filter: grayscale(1);
+}
+
 /* Fullscreen elements live in the browser's top layer. Give both the whole
    stage and an individual participant an explicit top-layer box so inherited
    flex/percentage sizing cannot leave a strip of the app visible underneath. */
