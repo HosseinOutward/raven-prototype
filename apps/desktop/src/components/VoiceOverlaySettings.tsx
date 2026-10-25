@@ -1,23 +1,34 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   SettingsChoice,
   SettingsHint,
+  SettingsRow,
   SettingsRows,
   SettingsSection,
   SettingsToggleRow,
 } from "@/shells/ravenv1/SettingsScaffold";
 import {
+  DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND,
   type VoiceOverlayLayout,
+  type VoiceOverlayNameBackground,
   type VoiceOverlaySettings,
   voiceOverlayCommands,
 } from "@/lib/voiceOverlay";
+
+const NAME_BACKGROUND_LABEL: Record<VoiceOverlayNameBackground, string> = {
+  off: "Off",
+  light: "Light",
+  strong: "Strong",
+};
 
 export function VoiceOverlaySettingsPanel() {
   const [settings, setSettings] = useState<VoiceOverlaySettings | null>(null);
   const [enabled, setEnabled] = useState(true);
   const [layout, setLayout] = useState<VoiceOverlayLayout>("vertical");
   const [showNames, setShowNames] = useState(true);
+  const [nameBackground, setNameBackground] = useState<VoiceOverlayNameBackground>(DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -31,6 +42,7 @@ export function VoiceOverlaySettingsPanel() {
         setEnabled(nextSettings.enabled);
         setLayout(nextSettings.layout);
         setShowNames(nextSettings.showNames);
+        setNameBackground(nextSettings.nameBackground ?? DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
         setError(nextSettings.registrationError ?? "");
       })
       .catch(() => undefined);
@@ -59,11 +71,12 @@ export function VoiceOverlaySettingsPanel() {
     setSaving(true);
     setError("");
     try {
-      const nextSettings = await voiceOverlayCommands.updateSettings({ enabled, layout, showNames });
+      const nextSettings = await voiceOverlayCommands.updateSettings({ enabled, layout, showNames, nameBackground });
       setSettings(nextSettings);
       setEnabled(nextSettings.enabled);
       setLayout(nextSettings.layout);
       setShowNames(nextSettings.showNames);
+      setNameBackground(nextSettings.nameBackground ?? DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
       setError(nextSettings.registrationError ?? "");
     } catch (err) {
       setError(messageFromOverlayError(err));
@@ -91,6 +104,33 @@ export function VoiceOverlaySettingsPanel() {
           checked={showNames}
           disabled={layout === "horizontal"}
           onChange={setShowNames}
+        />
+        <SettingsRow
+          label="Name background"
+          description={
+            layout === "horizontal" || !showNames
+              ? "Only applies when names are shown in the list."
+              : "A dark fill behind each name, so it can be read over any game."
+          }
+          className={layout === "horizontal" || !showNames ? "opacity-55" : undefined}
+          control={
+            <Select
+              value={nameBackground}
+              disabled={layout === "horizontal" || !showNames}
+              onValueChange={(value) => setNameBackground(value as VoiceOverlayNameBackground)}
+            >
+              <SelectTrigger size="sm" className="w-[112px]" aria-label="Name background">
+                <SelectValue>{NAME_BACKGROUND_LABEL[nameBackground]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectGroup>
+                  <SelectItem value="off">Off</SelectItem>
+                  <SelectItem value="light">Light</SelectItem>
+                  <SelectItem value="strong">Strong</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          }
         />
       </SettingsRows>
 

@@ -70,6 +70,11 @@ describe("nest event subscriptions", () => {
     expect(parseNestLiveUpdateEvent("event: nest-update\ndata: not-json" )).toBeNull();
   });
 
+  test("keeps the tree an update is about, so an ended nest's tree can be fetched again", () => {
+    expect(parseNestLiveUpdateEvent('event: nest-update\ndata: {"type":"nest.changed","treeId":"tree-1","nestId":"nest-1"}')?.treeId).toBe("tree-1");
+    expect(parseNestLiveUpdateEvent('event: nest-update\ndata: {"type":"nest.changed","nestId":"nest-1"}')?.treeId).toBeUndefined();
+  });
+
   test("carries who an entry notice is about and treats it as a moment, not a state change", () => {
     const update = parseNestLiveUpdateEvent(
       'event: nest-update\ndata: {"type":"nest.entering","nestId":"nest-1","actorId":"user-2","actorName":"Bob"}',

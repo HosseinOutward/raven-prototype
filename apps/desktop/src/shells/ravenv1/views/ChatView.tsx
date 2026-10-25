@@ -445,7 +445,9 @@ function describeConfirmation(confirming: Confirmation, name: string, kind: Conv
     case "delete":
       return {
         title: `Delete ${name} for everyone?`,
-        description: "The conversation and every message in it are erased for everyone. This can’t be undone.",
+        description: kind === "nest"
+          ? "It disappears for everyone and can’t be opened again."
+          : "The conversation and every message in it are erased for everyone. This can’t be undone.",
         confirmLabel: "Delete",
       };
   }

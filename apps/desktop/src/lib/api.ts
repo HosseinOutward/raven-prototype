@@ -459,6 +459,7 @@ export function parseNestLiveUpdateData(data: string): NestLiveUpdate | null {
     if (typeof parsed.type !== "string" || !parsed.type) return null;
     return {
       type: parsed.type,
+      treeId: typeof parsed.treeId === "string" && parsed.treeId ? parsed.treeId : undefined,
       nestId: typeof parsed.nestId === "string" && parsed.nestId ? parsed.nestId : undefined,
       sessionId: typeof parsed.sessionId === "string" && parsed.sessionId ? parsed.sessionId : undefined,
       actorId: typeof parsed.actorId === "string" && parsed.actorId ? parsed.actorId : undefined,
@@ -919,6 +920,13 @@ export class ApiClient {
 
   archiveNest(nestId: string) {
     return this.request<void>(`/v1/nests/${nestId}/archive`, { method: "POST" });
+  }
+
+  renameNest(nestId: string, name: string) {
+    return this.request<{ nest: Nest }>(`/v1/nests/${nestId}/settings`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
   }
 
   joinNestPresence(nestId: string) {

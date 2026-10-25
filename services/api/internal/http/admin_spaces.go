@@ -502,7 +502,8 @@ func (s *Server) adminRenameRoom(c *fiber.Ctx) error {
 	return s.adminSpaceResponse(c, fiber.StatusOK, space.ID)
 }
 
-// adminRemoveRoom ends a voice room, or deletes a text room with what was written in it.
+// adminRemoveRoom ends a voice room, or deletes a text room. Like anyone's delete, a text
+// room's messages stay in the database.
 func (s *Server) adminRemoveRoom(c *fiber.Ctx) error {
 	actor := currentUser(c)
 	space, err := s.adminSpace(c.Params("id"))
@@ -597,7 +598,7 @@ func (s *Server) deleteTextNestCore(treeID, conversationID string) error {
 	if err != nil {
 		return err
 	}
-	if err := chatDeleteConversationTx(tx, conversationID); err != nil {
+	if err := chatHideTextNestTx(tx, conversationID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

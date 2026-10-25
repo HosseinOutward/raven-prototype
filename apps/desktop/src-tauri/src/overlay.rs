@@ -30,6 +30,7 @@ pub struct VoiceOverlaySettings {
     pub hotkey: String,
     pub layout: VoiceOverlayLayout,
     pub show_names: bool,
+    pub name_background: VoiceOverlayNameBackground,
     pub position: Option<VoiceOverlayPosition>,
 }
 
@@ -40,6 +41,7 @@ impl Default for VoiceOverlaySettings {
             hotkey: DEFAULT_OVERLAY_HOTKEY.to_string(),
             layout: VoiceOverlayLayout::Vertical,
             show_names: true,
+            name_background: VoiceOverlayNameBackground::default(),
             position: None,
         }
     }
@@ -51,6 +53,16 @@ pub enum VoiceOverlayLayout {
     #[default]
     Vertical,
     Horizontal,
+}
+
+/// How much of a fill sits behind each name so it stays readable over any game.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VoiceOverlayNameBackground {
+    Off,
+    #[default]
+    Light,
+    Strong,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +113,7 @@ pub struct VoiceOverlaySettingsView {
     pub hotkey: String,
     pub layout: VoiceOverlayLayout,
     pub show_names: bool,
+    pub name_background: VoiceOverlayNameBackground,
     pub position: Option<VoiceOverlayPosition>,
     pub registration_error: Option<String>,
 }
@@ -112,6 +125,7 @@ pub struct VoiceOverlaySettingsPatch {
     pub hotkey: Option<String>,
     pub layout: Option<VoiceOverlayLayout>,
     pub show_names: Option<bool>,
+    pub name_background: Option<VoiceOverlayNameBackground>,
 }
 
 #[derive(Debug, Error, Serialize)]
@@ -306,6 +320,9 @@ fn apply_settings_patch(
     if let Some(show_names) = patch.show_names {
         next.show_names = show_names;
     }
+    if let Some(name_background) = patch.name_background {
+        next.name_background = name_background;
+    }
     next
 }
 
@@ -320,6 +337,7 @@ fn settings_view(
         hotkey: settings.hotkey.clone(),
         layout: settings.layout,
         show_names: settings.show_names,
+        name_background: settings.name_background,
         position: settings.position,
         registration_error: state
             .registration_error
@@ -676,6 +694,7 @@ mod tests {
             hotkey: "Control+Alt+O".to_string(),
             layout: VoiceOverlayLayout::Horizontal,
             show_names: false,
+            name_background: VoiceOverlayNameBackground::Strong,
             position: Some(VoiceOverlayPosition { x: 100, y: 120 }),
         };
 
@@ -694,6 +713,7 @@ mod tests {
 
         assert_eq!(settings.layout, VoiceOverlayLayout::Vertical);
         assert!(settings.show_names);
+        assert_eq!(settings.name_background, VoiceOverlayNameBackground::Light);
         assert_eq!(settings.position, Some(VoiceOverlayPosition { x: 4, y: 5 }));
     }
 
@@ -733,6 +753,7 @@ mod tests {
                 hotkey: "Alt+F9".to_string(),
                 layout: VoiceOverlayLayout::Vertical,
                 show_names: true,
+                name_background: VoiceOverlayNameBackground::Light,
                 position: Some(VoiceOverlayPosition { x: 2, y: 3 }),
             },
             VoiceOverlaySettingsPatch {
@@ -740,6 +761,7 @@ mod tests {
                 hotkey: Some("   ".to_string()),
                 layout: Some(VoiceOverlayLayout::Horizontal),
                 show_names: Some(false),
+                name_background: Some(VoiceOverlayNameBackground::Off),
             },
         );
 
@@ -747,6 +769,7 @@ mod tests {
         assert_eq!(settings.hotkey, DEFAULT_OVERLAY_HOTKEY);
         assert_eq!(settings.layout, VoiceOverlayLayout::Horizontal);
         assert!(!settings.show_names);
+        assert_eq!(settings.name_background, VoiceOverlayNameBackground::Off);
         assert_eq!(settings.position, Some(VoiceOverlayPosition { x: 2, y: 3 }));
     }
 

@@ -5,8 +5,10 @@ import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
 import {
+  DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND,
   EMPTY_VOICE_OVERLAY_SNAPSHOT,
   type VoiceOverlayLayout,
+  type VoiceOverlayNameBackground,
   type VoiceOverlayParticipant,
   type VoiceOverlaySnapshot,
   subscribeVoiceOverlaySettings,
@@ -17,10 +19,19 @@ import {
 
 const CHROME_HIDE_DELAY_MS = 1500;
 
+// A pill behind the name, sized by its text so it adds no height to the row (the window's
+// size is fixed natively). The text turns white on a fill so it reads over a bright game.
+const NAME_BACKGROUND_CLASS: Record<VoiceOverlayNameBackground, string> = {
+  off: "",
+  light: "rounded-md bg-black/45 px-2 py-0.5 text-white",
+  strong: "rounded-md bg-black/75 px-2 py-0.5 text-white",
+};
+
 export function VoiceOverlayWindow() {
   const [snapshot, setSnapshot] = useState<VoiceOverlaySnapshot>(EMPTY_VOICE_OVERLAY_SNAPSHOT);
   const [layout, setLayout] = useState<VoiceOverlayLayout>("vertical");
   const [showNames, setShowNames] = useState(true);
+  const [nameBackground, setNameBackground] = useState<VoiceOverlayNameBackground>(DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
   const [chromeVisible, setChromeVisible] = useState(false);
   const saveTimerRef = useRef<number | null>(null);
   const chromeTimerRef = useRef<number | null>(null);
@@ -62,10 +73,12 @@ export function VoiceOverlayWindow() {
   useEffect(() => {
     let active = true;
     let unlisten: (() => void) | undefined;
-    const applySettings = (settings: { layout: VoiceOverlayLayout; showNames: boolean }) => {
+    const applySettings = (settings: { layout: VoiceOverlayLayout; showNames: boolean; nameBackground?: VoiceOverlayNameBackground }) => {
       if (!active) return;
       setLayout(settings.layout);
       setShowNames(settings.showNames);
+      // An older build of the app does not send this; the default is on.
+      setNameBackground(settings.nameBackground ?? DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
     };
     voiceOverlayCommands.getSettings().then(applySettings).catch(() => undefined);
     subscribeVoiceOverlaySettings(applySettings)
@@ -185,6 +198,7 @@ export function VoiceOverlayWindow() {
                   participant={participant}
                   layout={layout}
                   showName={layout === "vertical" && showNames}
+                  nameBackground={nameBackground}
                 />
               ))}
               {layout === "horizontal" && horizontalParticipants.hiddenCount > 0 ? (
@@ -214,10 +228,12 @@ function OverlayParticipantRow({
   participant,
   layout,
   showName,
+  nameBackground,
 }: {
   participant: VoiceOverlayParticipant;
   layout: VoiceOverlayLayout;
   showName: boolean;
+  nameBackground: VoiceOverlayNameBackground;
 }) {
   const icons = [
     participant.muted ? <MicOff key="muted" className="h-3.5 w-3.5" /> : null,
@@ -253,9 +269,9 @@ function OverlayParticipantRow({
       <ParticipantAvatar participant={participant} />
       {showName ? (
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium leading-4">
+          <div className={cn("w-fit max-w-full truncate text-xs font-medium leading-4", NAME_BACKGROUND_CLASS[nameBackground])}>
             {participant.displayName}
-            {participant.isLocal ? <span className="ml-1 text-[10px] text-muted-foreground">(you)</span> : null}
+            {participant.isLocal ? <span className={cn("ml-1 text-[10px]", nameBackground === "off" ? "text-muted-foreground" : "text-white/70")}>(you)</span> : null}
           </div>
         </div>
       ) : null}

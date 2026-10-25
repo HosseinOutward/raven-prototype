@@ -172,6 +172,7 @@ export function TreeLobbyView({
               <TreeNestsSection
                 details={details}
                 data={data}
+                media={media}
                 chat={chat}
                 canManage={canManage}
                 arranging={arranging}

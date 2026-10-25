@@ -25,7 +25,7 @@ const SURFACE_VAR: Record<SurfaceName, string> = {
 
 /**
  * Presence as a shape as well as a colour, so it reads without colour vision:
- * open = filled, around = filled neutral, focused = half, do not disturb = bar,
+ * open = filled, around = filled periwinkle, focused = half, do not disturb = bar,
  * invisible and offline = hollow.
  */
 export function PresenceDot({

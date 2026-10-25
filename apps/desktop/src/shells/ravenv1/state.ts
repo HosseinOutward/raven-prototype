@@ -33,7 +33,7 @@ export type SelectablePresence = Exclude<Presence, "offline">;
 // have to be told apart by colour alone.
 export const PRESENCE: Record<Presence, { label: string; h: string }> = {
   open: { label: "Open to talk", h: "146 40% 58%" },
-  around: { label: "Around", h: "36 7% 68%" },
+  around: { label: "Around", h: "214 52% 70%" },
   focused: { label: "Focused", h: "38 80% 62%" },
   dnd: { label: "Do not disturb", h: "4 66% 64%" },
   invisible: { label: "Invisible", h: "34 6% 52%" },
@@ -144,6 +144,9 @@ export interface RavenShellData {
   deleteTree: (treeId: string, confirmation: string) => Promise<void>;
   joinTree: (treeId: string) => Promise<"joined" | "waiting">;
   createTreeNest: (treeId: string, name: string) => Promise<Nest>;
+  renameNest: (nestId: string, name: string) => Promise<void>;
+  /** Ends a voice nest for everyone in it. The caller leaves the call first if it is in it. */
+  deleteNest: (nestId: string) => Promise<void>;
   addTreeMember: (treeId: string, username: string, role?: TreeRole) => Promise<TreeMember>;
   updateTreeMemberRole: (treeId: string, userId: string, role: TreeRole) => Promise<TreeMember>;
   removeTreeMember: (treeId: string, userId: string) => Promise<void>;
