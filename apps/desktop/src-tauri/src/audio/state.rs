@@ -14,6 +14,7 @@ use crate::audio::capture::{
     list_input_devices, list_output_devices, system_audio_runtime_readiness, CaptureDemand,
     CaptureRuntimeManager,
 };
+use crate::audio::cues::{SoundCue, SoundCueSettings};
 use crate::audio::domain::RemoteChannelStripState;
 use crate::audio::domain::{
     AppAudioSource, AudioConnectionStatus, AudioInputDevice, AudioMixerState, AudioOutputDevice,
@@ -26,7 +27,7 @@ use crate::audio::domain::{
     TrackLifecycleEvent, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{
-    measure_audio_network_totals, AudioEngine, AudioNetworkTotals, OutputMixer, UiSound,
+    measure_audio_network_totals, AudioEngine, AudioNetworkTotals, OutputMixer,
 };
 use crate::audio::processor::{
     AudioParameterValue, AudioProcessorRuntime, ProcessorChainRuntime, ProcessorRuntime,
@@ -1712,23 +1713,64 @@ pub fn audio_set_output_muted(
     Ok(snapshot)
 }
 
-/// Play a short interface sound on the chosen speaker (not through the call mix).
+/// Play a short interface sound. `knock` is the heads-up before someone enters your
+/// room; it is the `entryHeadsUp` sound cue, so it follows the cue settings.
 #[tauri::command]
 pub async fn audio_play_ui_sound(
     state: State<'_, SharedAudioEngineState>,
     sound: String,
 ) -> Result<(), AudioStateError> {
-    let sound = match sound.as_str() {
-        "knock" => UiSound::Knock,
+    let cue = match sound.as_str() {
+        "knock" => SoundCue::EntryHeadsUp,
         _ => {
             return Err(AudioStateError::MediaPublisherFailed {
                 message: format!("unknown interface sound `{sound}`"),
             })
         }
     };
+    play_sound_cue(&state, cue)
+}
+
+/// Play a sound cue through the call's output (or, for a knock outside a call, a one-off
+/// stream to the chosen speaker). Settings, deafen and debouncing decide whether it plays.
+#[tauri::command]
+pub async fn audio_play_sound_cue(
+    state: State<'_, SharedAudioEngineState>,
+    cue: SoundCue,
+) -> Result<(), AudioStateError> {
+    play_sound_cue(&state, cue)
+}
+
+/// Play a cue at a given volume regardless of the cue settings (the volume slider's sample).
+#[tauri::command]
+pub async fn audio_preview_sound_cue(
+    state: State<'_, SharedAudioEngineState>,
+    cue: SoundCue,
+    volume: f32,
+) -> Result<(), AudioStateError> {
     let output = Arc::clone(&audio_runtime(&state)?.output);
-    tokio::task::block_in_place(|| output.play_ui_sound(sound))
+    tokio::task::block_in_place(|| output.preview_cue(cue, volume))
         .map_err(|message| AudioStateError::MediaPublisherFailed { message })
+}
+
+fn play_sound_cue(
+    state: &State<'_, SharedAudioEngineState>,
+    cue: SoundCue,
+) -> Result<(), AudioStateError> {
+    let output = Arc::clone(&audio_runtime(state)?.output);
+    tokio::task::block_in_place(|| output.play_cue(cue))
+        .map_err(|message| AudioStateError::MediaPublisherFailed { message })
+}
+
+/// The user's sound cue settings, kept by the app and pushed here because the joined and
+/// left cues are decided natively.
+#[tauri::command]
+pub fn audio_set_sound_cue_settings(
+    state: State<'_, SharedAudioEngineState>,
+    settings: SoundCueSettings,
+) -> Result<(), AudioStateError> {
+    audio_runtime(&state)?.output.set_cue_settings(settings);
+    Ok(())
 }
 
 #[tauri::command]

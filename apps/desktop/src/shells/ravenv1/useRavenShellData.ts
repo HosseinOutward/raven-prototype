@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
+import { audioCommands } from "@/lib/audio";
 import { clearAvatarVersions, noteAvatarVersion } from "@/lib/avatarVersions";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
@@ -73,7 +74,10 @@ export function useRavenShellData(): RavenShellData {
     if (!home) return;
     const { seen, fresh } = newProfileKnocks(seenKnocksRef.current, home.user.id, home.pendingKnocks);
     seenKnocksRef.current = seen;
-    if (fresh.length === 0 || home.presence?.state === "dnd" || !loadNotificationSettings().knocks) return;
+    if (fresh.length === 0 || home.presence?.state === "dnd") return;
+    // One soft knock however many arrived; the sound cue settings decide whether it plays.
+    void audioCommands.playSoundCue("profileKnock").catch(() => undefined);
+    if (!loadNotificationSettings().knocks) return;
     for (const knock of fresh) {
       void notificationCommands.notifyKnock(knock.fromDisplayName || knock.fromUsername, "wants to reach you").catch(() => undefined);
     }
