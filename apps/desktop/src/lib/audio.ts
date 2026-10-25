@@ -72,6 +72,10 @@ export interface ChannelHealthState {
   shortTermLoudnessDb: GainDb | null;
   latencySamples: number;
   processorCpuEstimate: number | null;
+  /** Microphones: the noise suppressor's measured mean cost per 10 ms hop, in ms. */
+  suppressorCostMs?: number | null;
+  /** The most one hop has cost since that suppressor started, in ms. */
+  suppressorWorstMs?: number | null;
   safetyLimiterActive: boolean;
   safetyLimiterCeilingDb: GainDb;
 }
@@ -107,7 +111,8 @@ export interface ProcessorChainState {
 }
 
 export type NoiseSuppressionMode = "off" | "standard" | "strong" | "studio";
-export type NoiseSuppressionFallback = "notAvailable" | "failedToStart";
+export type NoiseSuppressionDepth = "gentle" | "balanced" | "full";
+export type NoiseSuppressionFallback = "notAvailable" | "failedToStart" | "starting" | "tooSlow";
 
 /** What a microphone's noise suppression is really doing, as opposed to the mode chosen. */
 export interface NoiseSuppressionRuntime {
@@ -117,6 +122,7 @@ export interface NoiseSuppressionRuntime {
 
 export interface WebRtcAudioProcessingSettings {
   noiseSuppression: NoiseSuppressionMode;
+  noiseSuppressionDepth: NoiseSuppressionDepth;
   echoCancellation: boolean;
   autoGainControl: boolean;
 }
@@ -208,6 +214,8 @@ export interface RemoteChannelStripState {
   gainDb: GainDb;
   mute: MuteState;
   pinned: boolean;
+  /** Noise suppression on this person's microphone, for this listener only. */
+  noiseCleanup: boolean;
   preset: AudioPreset;
   presetId: string | null;
   safetyLimiterCeilingDb: GainDb;
@@ -374,6 +382,12 @@ export interface AudioMeterUpdate {
    * Local sources: present only while muted, the level before the mute.
    */
   inputMeter?: MeterState | null;
+  /**
+   * Microphones: the highest chance, 0 to 1, that the last meter window held a human voice.
+   * Worked out on this machine and never sent anywhere; it only tells speech from
+   * keyboards and coughs. Absent from older engines and non-microphone sources.
+   */
+  voiceProbability?: number | null;
 }
 
 export type AudioUiSound = "knock";
@@ -576,6 +590,9 @@ export const audioCommands = {
 
   setRemoteTrackMute: (remoteParticipantId: ParticipantId, remoteTrackId: PublishedTrackId, muted: boolean) =>
     invoke<AudioMixerState>("audio_set_remote_track_mute", { remoteParticipantId, remoteTrackId, muted }),
+
+  setRemoteNoiseCleanup: (remoteParticipantId: ParticipantId, remoteTrackId: PublishedTrackId, enabled: boolean) =>
+    invoke<AudioMixerState>("audio_set_remote_noise_cleanup", { remoteParticipantId, remoteTrackId, enabled }),
 
   addProcessorToRemoteTrack: (
     remoteParticipantId: ParticipantId,

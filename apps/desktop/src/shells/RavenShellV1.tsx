@@ -525,6 +525,7 @@ function viewKey(view: RavenView) {
     case "settings":
     case "mixer":
     case "messages":
+    case "licences":
       return view.kind;
     case "tree-preview":
       return `${view.kind}:${view.result.tree.id}`;

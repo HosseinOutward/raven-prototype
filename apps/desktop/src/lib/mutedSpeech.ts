@@ -6,11 +6,14 @@ import { subscribeAudioMeterChanged, type AudioMeterUpdate, type AudioMixerState
  * while it is muted the engine reports its level from before the mute as `inputMeter`.
  * That level never leaves this machine; it is only compared with these thresholds.
  *
- * Louder than voice activity (-52 dB) on purpose: noise suppression has already run, and
- * a cough or a keyboard should not set it off. Several loud meter windows within a
- * second count as talking; a few quiet seconds end it.
+ * A reading counts as speech when the voice detector hears a voice in it, so a keyboard
+ * or a cough does not set it off and quiet speech is not missed. Several such meter
+ * windows within a second count as talking; a few quiet seconds end it. Without a
+ * probability, only a louder level (-42 dB) counts, as it did before voice detection.
  */
-export const MUTED_SPEECH_ENTER_RMS_DB = -42;
+export const MUTED_SPEECH_ENTER_RMS_DB = -48;
+export const MUTED_SPEECH_MIN_VOICE_PROBABILITY = 0.6;
+export const MUTED_SPEECH_ENTER_RMS_DB_WITHOUT_VOICE = -42;
 export const MUTED_SPEECH_WINDOW_MS = 1000;
 export const MUTED_SPEECH_MIN_LOUD_READINGS = 3;
 export const MUTED_SPEECH_RELEASE_MS = 2500;
@@ -26,7 +29,11 @@ export class MutedSpeechDetector {
     if (!source || source.sourceType !== "microphone") return this.talking;
     if (!update.inputMeter) return this.reset();
 
-    if (update.inputMeter.rmsDb >= MUTED_SPEECH_ENTER_RMS_DB) this.loudReadings.push(nowMs);
+    const voice = update.voiceProbability;
+    const speech = voice == null
+      ? update.inputMeter.rmsDb >= MUTED_SPEECH_ENTER_RMS_DB_WITHOUT_VOICE
+      : update.inputMeter.rmsDb >= MUTED_SPEECH_ENTER_RMS_DB && voice >= MUTED_SPEECH_MIN_VOICE_PROBABILITY;
+    if (speech) this.loudReadings.push(nowMs);
     this.loudReadings = this.loudReadings.filter(
       (at) => nowMs - at <= Math.max(MUTED_SPEECH_WINDOW_MS, MUTED_SPEECH_RELEASE_MS),
     );

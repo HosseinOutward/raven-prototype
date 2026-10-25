@@ -15,7 +15,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
 use serde::Serialize;
 use sonora::config::{
-    AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, HighPassFilter, NoiseSuppression,
+    AdaptiveDigital, EchoCanceller, FixedDigital, GainController2, HighPassFilter,
+    NoiseSuppression, NoiseSuppressionLevel,
 };
 use sonora::{AudioProcessing, Config as ApmConfig, StreamConfig};
 use tauri::{AppHandle, Emitter};
@@ -24,8 +25,8 @@ use thiserror::Error;
 use crate::audio::domain::{
     AudioInputDevice, AudioMeterUpdate, AudioOutputDevice, AudioSampleFormat, AudioSourceId,
     AudioSourceRuntimeState, AudioSourceRuntimeStatus, AudioSourceState, AudioSourceType, GainDb,
-    MeterState, NoiseSuppressionFallback, NoiseSuppressionMode, NoiseSuppressionRuntime,
-    ProcessorChainState, WebRtcAudioProcessingSettings,
+    MeterState, NoiseSuppressionDepth, NoiseSuppressionFallback, NoiseSuppressionMode,
+    NoiseSuppressionRuntime, ProcessorChainState, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{RenderCursor, RenderReference};
 use crate::audio::processor::{AudioBuffer, AudioProcessorPrepareConfig, ProcessorChainRuntime};
@@ -36,7 +37,10 @@ use crate::audio::safety::{
 use crate::audio::state::{
     SharedAudioEngineState, AUDIO_METER_CHANGED_EVENT, AUDIO_STATE_CHANGED_EVENT,
 };
-use crate::audio::suppression::{new_suppressor, SuppressorError, SuppressorStage};
+use crate::audio::suppression::{
+    new_suppressor, StudioMailbox, StudioStart, SuppressorError, SuppressorStage, STUDIO_AVAILABLE,
+};
+use crate::audio::voice::VoiceDetector;
 
 const METER_INTERVAL: Duration = Duration::from_millis(120);
 const CAPTURE_EVENT_CAPACITY: usize = 16;
@@ -55,6 +59,11 @@ const CAPTURE_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 /// A stream that ran at least this long before it had to be recovered starts the
 /// recovery backoff from the beginning again.
 const CAPTURE_HEALTHY_RUN: Duration = Duration::from_secs(30);
+/// How long opening a microphone waits for Studio's model before starting on Strong and
+/// letting Studio take over when it arrives. None: building the model took about 200 ms
+/// on a fast desktop (measured 2026-10-18), more than joining a call may spend, so waiting
+/// would only delay the join and still start on Strong. A model already built is used.
+const STUDIO_START_WAIT: Duration = Duration::ZERO;
 /// Upper bound the processor chain is prepared for. Capture callbacks vary in size and
 /// are never close to this; it only has to be larger than any real block.
 const CAPTURE_MAX_BLOCK_FRAMES: usize = 1 << 20;
@@ -92,9 +101,13 @@ pub struct LiveControls {
     /// reopens the device.
     chain: Mutex<ProcessorChainState>,
     chain_version: AtomicU64,
-    /// The noise suppression mode as last chosen, as a small code (see the accessors).
-    /// The capture thread compares it with the mode it runs and switches without a reopen.
+    /// The noise suppression mode and depth as last chosen, as small codes (see the
+    /// accessors). The capture thread compares them with what it runs and changes them
+    /// without a reopen.
     noise_suppression: AtomicU8,
+    noise_suppression_depth: AtomicU8,
+    /// Studio's model, built off the audio thread whenever Studio is chosen.
+    studio: Arc<StudioMailbox>,
     sink: Mutex<Option<Arc<dyn ProcessedSampleSink>>>,
 }
 
@@ -114,17 +127,27 @@ impl LiveControls {
         controls.set_muted(muted);
         controls.set_safety_ceiling_db(GainDb::new(-1.0));
         controls.set_noise_suppression(NoiseSuppressionMode::default());
+        controls.set_noise_suppression_depth(NoiseSuppressionDepth::default());
         controls
     }
 
+    /// Choosing Studio starts building its model, and leaving it drops any build, so the
+    /// capture thread only ever collects a finished one. Set the depth first: the model is
+    /// built at the depth chosen then.
     fn set_noise_suppression(&self, mode: NoiseSuppressionMode) {
+        const STUDIO: u8 = 3;
         let code = match mode {
             NoiseSuppressionMode::Off => 0,
             NoiseSuppressionMode::Standard => 1,
             NoiseSuppressionMode::Strong => 2,
-            NoiseSuppressionMode::Studio => 3,
+            NoiseSuppressionMode::Studio => STUDIO,
         };
-        self.noise_suppression.store(code, Ordering::Relaxed);
+        let previous = self.noise_suppression.swap(code, Ordering::Relaxed);
+        if code == STUDIO && previous != STUDIO {
+            self.studio.request(self.noise_suppression_depth());
+        } else if code != STUDIO && previous == STUDIO {
+            self.studio.cancel();
+        }
     }
 
     fn noise_suppression(&self) -> NoiseSuppressionMode {
@@ -134,6 +157,24 @@ impl LiveControls {
             2 => NoiseSuppressionMode::Strong,
             3 => NoiseSuppressionMode::Studio,
             _ => NoiseSuppressionMode::default(),
+        }
+    }
+
+    fn set_noise_suppression_depth(&self, depth: NoiseSuppressionDepth) {
+        let code = match depth {
+            NoiseSuppressionDepth::Gentle => 0,
+            NoiseSuppressionDepth::Balanced => 1,
+            NoiseSuppressionDepth::Full => 2,
+        };
+        self.noise_suppression_depth.store(code, Ordering::Relaxed);
+    }
+
+    fn noise_suppression_depth(&self) -> NoiseSuppressionDepth {
+        match self.noise_suppression_depth.load(Ordering::Relaxed) {
+            0 => NoiseSuppressionDepth::Gentle,
+            1 => NoiseSuppressionDepth::Balanced,
+            2 => NoiseSuppressionDepth::Full,
+            _ => NoiseSuppressionDepth::default(),
         }
     }
 
@@ -285,6 +326,12 @@ impl CaptureRuntimeManager {
             }));
             controls.set_gain_linear(db_to_linear(source.channel_strip.gain_db));
             controls.set_muted(source.channel_strip.mute.muted);
+            controls.set_noise_suppression_depth(
+                source
+                    .channel_strip
+                    .webrtc_processing
+                    .noise_suppression_depth,
+            );
             controls
                 .set_noise_suppression(source.channel_strip.webrtc_processing.noise_suppression);
             controls.set_safety_ceiling_db(source.channel_strip.safety_limiter_ceiling_db);
@@ -1175,7 +1222,7 @@ fn handle_input_block(
     sender: &SyncSender<CaptureEvent>,
     last_meter: &mut Instant,
 ) -> Result<(), String> {
-    let analysis = process_source_samples_guarded(processing, samples)?;
+    let mut analysis = process_source_samples_guarded(processing, samples)?;
     // Kept for the next block when the channel is full, so the UI never stays on a
     // stale mode.
     if let Some(report) = processing.suppression_report.clone() {
@@ -1184,6 +1231,14 @@ fn handle_input_block(
         }
     }
     if last_meter.elapsed() >= METER_INTERVAL {
+        analysis.voice_probability = processing
+            .voice
+            .as_mut()
+            .map(VoiceDetector::take_probability);
+        if let Some((mean, worst)) = processing.suppressor_cost_ms() {
+            analysis.safety.health.suppressor_cost_ms = Some(mean);
+            analysis.safety.health.suppressor_worst_ms = Some(worst);
+        }
         let _ = sender.try_send(CaptureEvent::Health(analysis));
         *last_meter = Instant::now();
     }
@@ -1231,10 +1286,18 @@ struct SourceProcessingConfig {
     front: Option<WebRtcApmRuntime>,
     /// Microphones only.
     suppressor: Option<SuppressorStage>,
+    /// Microphones only. Listens to the cleaned signal, before the fader, so it still
+    /// hears a muted microphone.
+    voice: Option<VoiceDetector>,
     /// sonora's second half: automatic gain, after the noise is gone.
     back: Option<WebRtcApmRuntime>,
-    /// The suppressor stopped working and sonora's own suppressor stands in for it.
-    suppression_failed: bool,
+    /// The mode whose processing runs now. It differs from the chosen one while Studio
+    /// loads or after a fallback, and `suppression_fallback` says why.
+    running_suppression: NoiseSuppressionMode,
+    suppression_fallback: Option<NoiseSuppressionFallback>,
+    /// Studio couldn't keep up during this capture: choosing it again keeps Strong. A new
+    /// capture (the next call, or a device reopen) tries Studio again.
+    studio_too_slow: bool,
     /// A change in what runs, until the capture event for it is sent.
     suppression_report: Option<NoiseSuppressionRuntime>,
     safety: ChannelSafetyRuntime,
@@ -1267,8 +1330,34 @@ impl SourceProcessingConfig {
         let applied_gain = fader_target(&controls);
         let microphone = source.source_type == AudioSourceType::Microphone;
         let mut settings = source.channel_strip.webrtc_processing.clone();
-        // A device reopened mid-call must keep the mode chosen since the source was cloned.
+        // A device reopened mid-call must keep the mode and depth chosen since the source
+        // was cloned.
         settings.noise_suppression = controls.noise_suppression();
+        settings.noise_suppression_depth = controls.noise_suppression_depth();
+        let depth = settings.noise_suppression_depth;
+        // Studio's model is used from the start if it is already built; otherwise Strong
+        // starts and Studio takes over when its model arrives.
+        let mut running_suppression = settings.noise_suppression;
+        let mut suppression_fallback = None;
+        let mut studio = None;
+        if microphone && settings.noise_suppression == NoiseSuppressionMode::Studio {
+            running_suppression = NoiseSuppressionMode::Strong;
+            match controls.studio.start(depth, STUDIO_START_WAIT) {
+                StudioStart::Ready(suppressors) => {
+                    running_suppression = NoiseSuppressionMode::Studio;
+                    studio = Some(suppressors);
+                }
+                StudioStart::Pending => {
+                    suppression_fallback = Some(NoiseSuppressionFallback::Starting)
+                }
+                StudioStart::Failed => {
+                    suppression_fallback = Some(NoiseSuppressionFallback::FailedToStart)
+                }
+                StudioStart::Unavailable => {
+                    suppression_fallback = Some(NoiseSuppressionFallback::NotAvailable)
+                }
+            }
+        }
         let mut processing = Self {
             controls,
             sample_rate,
@@ -1281,13 +1370,17 @@ impl SourceProcessingConfig {
                 channel_count,
                 render_reference,
             )?,
-            suppressor: microphone.then(|| {
-                SuppressorStage::new(
-                    new_suppressor(settings.noise_suppression),
+            suppressor: microphone.then(|| match studio {
+                Some(suppressors) => {
+                    SuppressorStage::with_studio(suppressors, sample_rate, channel_count)
+                }
+                None => SuppressorStage::new(
+                    new_suppressor(running_suppression, depth),
                     sample_rate,
                     channel_count,
-                )
+                ),
             }),
+            voice: microphone.then(|| VoiceDetector::new(sample_rate, channel_count)),
             back: WebRtcApmRuntime::back(
                 &source.source_type,
                 &settings,
@@ -1295,7 +1388,9 @@ impl SourceProcessingConfig {
                 channel_count,
             )?,
             settings,
-            suppression_failed: false,
+            running_suppression,
+            suppression_fallback,
+            studio_too_slow: false,
             suppression_report: None,
             safety,
             latency_samples: 0,
@@ -1361,69 +1456,165 @@ impl SourceProcessingConfig {
     /// chosen. `None` for sources without a suppressor stage.
     fn suppression_runtime(&self) -> Option<NoiseSuppressionRuntime> {
         self.suppressor.as_ref()?;
-        let chosen = self.settings.noise_suppression;
-        let (active, fallback) = if self.suppression_failed {
-            (
-                NoiseSuppressionMode::Standard,
-                Some(NoiseSuppressionFallback::FailedToStart),
-            )
-        } else if chosen == NoiseSuppressionMode::Studio {
-            (
-                NoiseSuppressionMode::Strong,
-                Some(NoiseSuppressionFallback::NotAvailable),
-            )
-        } else {
-            (chosen, None)
-        };
-        Some(NoiseSuppressionRuntime { active, fallback })
+        Some(NoiseSuppressionRuntime {
+            active: self.running_suppression,
+            fallback: self.suppression_fallback,
+        })
     }
 
-    /// Pick up a mode chosen since the last block. sonora's own suppressor is switched in
-    /// place, which leaves the echo canceller alone, and the stage fades to the new
-    /// suppressor, so changing the mode neither reopens the device nor clicks. A change
-    /// that arrives mid-fade waits for it to finish.
+    /// The suppressor's measured mean and worst cost per hop, in milliseconds.
+    fn suppressor_cost_ms(&self) -> Option<(f32, f32)> {
+        let (mean, worst) = self.suppressor.as_ref()?.hop_cost()?;
+        Some((mean.as_secs_f32() * 1000.0, worst.as_secs_f32() * 1000.0))
+    }
+
+    /// Pick up a mode or depth chosen since the last block, and Studio's model once it
+    /// has arrived. sonora's own suppressor is reconfigured in place, which leaves the echo
+    /// canceller alone, and the stage fades to a new suppressor or ramps the depth of the
+    /// running one, so changing either neither reopens the device nor clicks. A change that
+    /// arrives mid-fade waits for it to finish.
     fn sync_live_suppression(&mut self) {
         let mode = self.controls.noise_suppression();
+        let depth = self.controls.noise_suppression_depth();
         let Some(stage) = self.suppressor.as_mut() else {
             return;
         };
-        if mode == self.settings.noise_suppression || stage.is_switching() {
+        if stage.is_switching() {
             return;
         }
-        stage.switch(new_suppressor(mode));
-        self.settings.noise_suppression = mode;
-        self.suppression_failed = false;
-        self.set_front_noise_suppression(mode);
+        if mode != self.settings.noise_suppression {
+            self.settings.noise_suppression = mode;
+            self.settings.noise_suppression_depth = depth;
+            self.run_chosen_suppression();
+        } else if depth != self.settings.noise_suppression_depth {
+            self.settings.noise_suppression_depth = depth;
+            stage.set_depth(depth);
+            self.set_front_noise_suppression(self.running_suppression);
+        }
+        if self.suppression_fallback == Some(NoiseSuppressionFallback::Starting) {
+            self.collect_studio();
+        }
+    }
+
+    /// Run the mode just chosen. Studio's model is collected later; until it arrives,
+    /// whatever ran before keeps running.
+    fn run_chosen_suppression(&mut self) {
+        let chosen = self.settings.noise_suppression;
+        let (running, fallback) = match chosen {
+            NoiseSuppressionMode::Studio if self.studio_too_slow => (
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::TooSlow),
+            ),
+            NoiseSuppressionMode::Studio if !STUDIO_AVAILABLE => (
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::NotAvailable),
+            ),
+            NoiseSuppressionMode::Studio => (
+                self.running_suppression,
+                Some(NoiseSuppressionFallback::Starting),
+            ),
+            other => (other, None),
+        };
+        if running != self.running_suppression {
+            if let Some(stage) = self.suppressor.as_mut() {
+                stage.switch(new_suppressor(
+                    running,
+                    self.settings.noise_suppression_depth,
+                ));
+            }
+            self.running_suppression = running;
+            self.set_front_noise_suppression(running);
+        }
+        self.suppression_fallback = fallback;
         self.suppression_report = self.suppression_runtime();
     }
 
-    /// Turn sonora's own noise suppressor on or off to match `mode`.
+    /// Swap Studio in if its model has arrived. Never waits for it.
+    fn collect_studio(&mut self) {
+        let Some(build) = self.controls.studio.try_take() else {
+            return;
+        };
+        let depth = self.settings.noise_suppression_depth;
+        let Some(stage) = self.suppressor.as_mut() else {
+            return;
+        };
+        match build {
+            Ok(mut suppressors) => {
+                suppressors.studio.set_depth(depth);
+                suppressors.standby.set_depth(depth);
+                stage.switch_to_studio(suppressors);
+                self.running_suppression = NoiseSuppressionMode::Studio;
+                self.suppression_fallback = None;
+            }
+            // The thread that built it has logged why.
+            Err(_) => {
+                if self.running_suppression != NoiseSuppressionMode::Strong {
+                    stage.switch(new_suppressor(NoiseSuppressionMode::Strong, depth));
+                    self.running_suppression = NoiseSuppressionMode::Strong;
+                }
+                self.suppression_fallback = Some(NoiseSuppressionFallback::FailedToStart);
+            }
+        }
+        self.set_front_noise_suppression(self.running_suppression);
+        self.suppression_report = self.suppression_runtime();
+    }
+
+    /// Turn sonora's own noise suppressor on or off to match `mode`, at the chosen depth.
     fn set_front_noise_suppression(&mut self, mode: NoiseSuppressionMode) {
         if let Some(front) = self.front.as_mut() {
             front.processor.apply_config(front_config(
                 self.microphone,
                 self.settings.echo_cancellation,
                 mode,
+                self.settings.noise_suppression_depth,
             ));
         }
     }
 
-    /// A suppressor that errors is dropped for the rest of this capture and sonora's own
-    /// suppressor stands in, so the microphone keeps working.
+    /// Studio can't keep up on this computer: Strong, built beside it, takes over for the
+    /// rest of this capture.
+    fn fall_back_too_slow(&mut self) {
+        let depth = self.settings.noise_suppression_depth;
+        let Some(stage) = self.suppressor.as_mut() else {
+            return;
+        };
+        if let Some((mean, worst)) = stage.hop_cost() {
+            eprintln!(
+                "[audio-engine] Studio is too slow here ({:.1} ms per 10 ms on average, {:.1} ms at worst); Strong takes over",
+                mean.as_secs_f32() * 1000.0,
+                worst.as_secs_f32() * 1000.0
+            );
+        }
+        stage.fall_back_to_standby(depth);
+        self.running_suppression = NoiseSuppressionMode::Strong;
+        self.suppression_fallback = Some(NoiseSuppressionFallback::TooSlow);
+        self.studio_too_slow = true;
+        self.set_front_noise_suppression(NoiseSuppressionMode::Strong);
+        self.suppression_report = self.suppression_runtime();
+    }
+
+    /// A suppressor that errors is dropped for the rest of this capture so the microphone
+    /// keeps working: Strong stands in for Studio, and sonora's own suppressor for Strong.
     fn fall_back_after_error(&mut self, error: &SuppressorError) {
         eprintln!("[audio-engine] noise suppression stopped: {error}");
-        if let Some(stage) = self.suppressor.as_mut() {
-            stage.bypass();
-        }
-        // A suppressor failing while the stage fades away from it has nothing to replace.
-        if matches!(
-            self.settings.noise_suppression,
-            NoiseSuppressionMode::Strong | NoiseSuppressionMode::Studio
-        ) {
-            self.suppression_failed = true;
-            self.set_front_noise_suppression(NoiseSuppressionMode::Standard);
-            self.suppression_report = self.suppression_runtime();
-        }
+        let depth = self.settings.noise_suppression_depth;
+        let Some(stage) = self.suppressor.as_mut() else {
+            return;
+        };
+        stage.bypass();
+        self.running_suppression = match self.running_suppression {
+            NoiseSuppressionMode::Studio => {
+                stage.fall_back_to_standby(depth);
+                NoiseSuppressionMode::Strong
+            }
+            NoiseSuppressionMode::Strong => NoiseSuppressionMode::Standard,
+            // A suppressor failing while the stage fades away from it has nothing to
+            // replace.
+            _ => return,
+        };
+        self.suppression_fallback = Some(NoiseSuppressionFallback::FailedToStart);
+        self.set_front_noise_suppression(self.running_suppression);
+        self.suppression_report = self.suppression_runtime();
     }
 
     /// Apply the fader and mute, moving toward the target gain at a bounded rate so a
@@ -1508,6 +1699,7 @@ impl WebRtcApmRuntime {
             microphone,
             settings.echo_cancellation,
             settings.noise_suppression,
+            settings.noise_suppression_depth,
         );
         Self::build(
             config,
@@ -1645,11 +1837,12 @@ impl WebRtcApmRuntime {
 
 /// sonora's configuration for the stages before the noise suppressor. The high-pass
 /// filter runs whenever the microphone is being cleaned, and sonora's own suppressor only
-/// for Standard.
+/// for Standard, where the depth picks its level.
 fn front_config(
     microphone: bool,
     echo_cancellation: bool,
     noise_suppression: NoiseSuppressionMode,
+    depth: NoiseSuppressionDepth,
 ) -> ApmConfig {
     ApmConfig {
         high_pass_filter: (microphone
@@ -1657,8 +1850,20 @@ fn front_config(
             .then(HighPassFilter::default),
         echo_canceller: echo_cancellation.then(EchoCanceller::default),
         noise_suppression: (microphone && noise_suppression == NoiseSuppressionMode::Standard)
-            .then(NoiseSuppression::default),
+            .then(|| NoiseSuppression {
+                level: standard_level(depth),
+                ..NoiseSuppression::default()
+            }),
         ..ApmConfig::default()
+    }
+}
+
+/// How hard sonora's own suppressor works at each depth.
+fn standard_level(depth: NoiseSuppressionDepth) -> NoiseSuppressionLevel {
+    match depth {
+        NoiseSuppressionDepth::Gentle => NoiseSuppressionLevel::Low,
+        NoiseSuppressionDepth::Balanced => NoiseSuppressionLevel::Moderate,
+        NoiseSuppressionDepth::Full => NoiseSuppressionLevel::VeryHigh,
     }
 }
 
@@ -1713,6 +1918,9 @@ struct SourceBlockAnalysis {
     /// mute, so the user can be told they are talking while nobody hears them. It is
     /// measured here and never leaves this machine.
     muted_input: Option<MeterState>,
+    /// The highest chance of speech since the last analysis was sent, filled in where it
+    /// is sent (blocks are analysed far more often than they are reported).
+    voice_probability: Option<f32>,
 }
 
 fn process_source_samples(
@@ -1724,14 +1932,24 @@ fn process_source_samples(
         front.process_interleaved(samples)?;
     }
     if let Some(stage) = processing.suppressor.as_mut() {
-        if let Err(error) = stage.process(samples) {
-            processing.fall_back_after_error(&error);
+        match stage.process(samples) {
+            Err(error) => processing.fall_back_after_error(&error),
+            Ok(())
+                if stage.overran()
+                    && processing.running_suppression == NoiseSuppressionMode::Studio =>
+            {
+                processing.fall_back_too_slow();
+            }
+            Ok(()) => {}
         }
     }
     if let Some(back) = processing.back.as_mut() {
         back.process_interleaved(samples)?;
     }
 
+    if let Some(voice) = processing.voice.as_mut() {
+        voice.process(samples);
+    }
     let muted_input = processing
         .controls
         .is_muted()
@@ -1756,6 +1974,7 @@ fn process_source_samples(
                 ),
             },
             muted_input,
+            voice_probability: None,
         });
     }
     let mut audio_buffer =
@@ -1796,6 +2015,7 @@ fn process_source_samples(
     Ok(SourceBlockAnalysis {
         safety: analysis,
         muted_input,
+        voice_probability: None,
     })
 }
 
@@ -1824,12 +2044,14 @@ fn spawn_capture_event_pump(
                         let SourceBlockAnalysis {
                             safety,
                             muted_input,
+                            voice_probability,
                         } = analysis;
                         source.channel_strip.meter = safety.meter.clone();
                         source.channel_strip.health = safety.health.clone();
                         let mut update =
                             AudioMeterUpdate::local(source_id, safety.meter, safety.health);
                         update.input_meter = muted_input;
+                        update.voice_probability = voice_probability;
                         CaptureEmission::Meter(update)
                     }
                     CaptureEvent::Error(message) => {
@@ -3676,6 +3898,8 @@ mod tests {
     use super::*;
     use crate::audio::domain::{AudioProcessorKind, AudioProcessorState, ParticipantId};
     use crate::audio::processor::meter_samples;
+    use crate::audio::suppression::test_support::FakeStudio;
+    use crate::audio::suppression::StudioSuppressors;
 
     #[test]
     fn microphone_agc_uses_active_upstream_style_adaptive_defaults() {
@@ -3698,6 +3922,7 @@ mod tests {
                 noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: false,
                 auto_gain_control: true,
+                ..WebRtcAudioProcessingSettings::default()
             },
             48_000,
             1,
@@ -3728,6 +3953,7 @@ mod tests {
                 noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: false,
                 auto_gain_control: false,
+                ..WebRtcAudioProcessingSettings::default()
             },
             48_000,
             1,
@@ -3738,7 +3964,12 @@ mod tests {
 
     #[test]
     fn system_share_uses_echo_cancellation_without_voice_gain_or_suppression() {
-        let config = front_config(false, true, NoiseSuppressionMode::Off);
+        let config = front_config(
+            false,
+            true,
+            NoiseSuppressionMode::Off,
+            NoiseSuppressionDepth::default(),
+        );
         assert!(config.echo_canceller.is_some());
         assert!(config.noise_suppression.is_none());
         assert!(config.gain_controller2.is_none());
@@ -3754,6 +3985,7 @@ mod tests {
                 noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: true,
                 auto_gain_control: false,
+                ..WebRtcAudioProcessingSettings::default()
             },
             48_000,
             2,
@@ -4135,7 +4367,11 @@ mod tests {
             )
             .expect("build front")
             .expect("front runs on a microphone");
-            let mut stage = SuppressorStage::new(new_suppressor(mode), 48_000, 1);
+            let mut stage = SuppressorStage::new(
+                new_suppressor(mode, NoiseSuppressionDepth::default()),
+                48_000,
+                1,
+            );
             let mut back =
                 WebRtcApmRuntime::back(&AudioSourceType::Microphone, &settings, 48_000, 1)
                     .expect("build back")
@@ -4144,7 +4380,7 @@ mod tests {
             let mut single = WebRtcApmRuntime::build(
                 ApmConfig {
                     gain_controller2: back_config().gain_controller2,
-                    ..front_config(true, true, mode)
+                    ..front_config(true, true, mode, NoiseSuppressionDepth::default())
                 },
                 48_000,
                 1,
@@ -4225,6 +4461,154 @@ mod tests {
         assert_eq!(processing.reported_latency_samples(), baseline);
     }
 
+    /// Choose Studio with `build` standing in for building the real model.
+    fn choose_studio_with(
+        controls: &Arc<LiveControls>,
+        build: impl FnOnce() -> Result<StudioSuppressors, String> + Send + 'static,
+    ) {
+        controls.noise_suppression.store(3, Ordering::Relaxed);
+        controls.studio.request_with(build);
+    }
+
+    fn runtime(
+        active: NoiseSuppressionMode,
+        fallback: Option<NoiseSuppressionFallback>,
+    ) -> Option<NoiseSuppressionRuntime> {
+        Some(NoiseSuppressionRuntime { active, fallback })
+    }
+
+    /// Run blocks until the capture reports `wanted`, giving the builder thread time to
+    /// deliver. False if it never does.
+    fn run_until(
+        processing: &mut SourceProcessingConfig,
+        wanted: Option<NoiseSuppressionRuntime>,
+    ) -> bool {
+        for _ in 0..1_000 {
+            run_blocks(processing, 1);
+            if processing.suppression_runtime() == wanted {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
+    #[cfg(feature = "studio-noise-suppression")]
+    #[test]
+    fn the_previous_mode_runs_while_studio_starts() {
+        let controls = LiveControls::new(1.0, false);
+        controls.set_noise_suppression(NoiseSuppressionMode::Standard);
+        let mut processing = microphone_processing(&controls);
+        run_blocks(&mut processing, 5);
+
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        choose_studio_with(&controls, move || {
+            let _ = gate.recv();
+            Ok(FakeStudio::suppressors(usize::MAX, Duration::ZERO))
+        });
+        run_blocks(&mut processing, 5);
+        assert_eq!(
+            processing.suppression_runtime(),
+            runtime(
+                NoiseSuppressionMode::Standard,
+                Some(NoiseSuppressionFallback::Starting)
+            )
+        );
+
+        release.send(()).expect("release the build");
+        assert!(run_until(
+            &mut processing,
+            runtime(NoiseSuppressionMode::Studio, None)
+        ));
+    }
+
+    #[cfg(feature = "studio-noise-suppression")]
+    #[test]
+    fn a_studio_that_cannot_keep_up_hands_over_to_strong_and_the_choice_stays_studio() {
+        let controls = LiveControls::new(1.0, false);
+        let mut processing = microphone_processing(&controls);
+        // Past the guard's warm-up, three 11 ms hops trip it.
+        choose_studio_with(&controls, || {
+            Ok(FakeStudio::suppressors(150, Duration::from_millis(11)))
+        });
+        assert!(run_until(
+            &mut processing,
+            runtime(NoiseSuppressionMode::Studio, None)
+        ));
+        assert!(run_until(
+            &mut processing,
+            runtime(
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::TooSlow)
+            )
+        ));
+        assert_eq!(controls.noise_suppression(), NoiseSuppressionMode::Studio);
+        assert_eq!(
+            processing.settings.noise_suppression,
+            NoiseSuppressionMode::Studio
+        );
+
+        // Choosing Studio again during the same capture keeps Strong.
+        controls.noise_suppression.store(2, Ordering::Relaxed);
+        run_blocks(&mut processing, 3);
+        controls.noise_suppression.store(3, Ordering::Relaxed);
+        run_blocks(&mut processing, 3);
+        assert_eq!(
+            processing.suppression_runtime(),
+            runtime(
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::TooSlow)
+            )
+        );
+
+        // The next capture tries Studio again.
+        choose_studio_with(&controls, || {
+            Ok(FakeStudio::suppressors(usize::MAX, Duration::ZERO))
+        });
+        let mut fresh = microphone_processing(&controls);
+        assert!(run_until(
+            &mut fresh,
+            runtime(NoiseSuppressionMode::Studio, None)
+        ));
+    }
+
+    #[cfg(feature = "studio-noise-suppression")]
+    #[test]
+    fn a_studio_that_breaks_hands_over_to_strong_and_the_microphone_keeps_going() {
+        let controls = LiveControls::new(1.0, false);
+        let mut processing = microphone_processing(&controls);
+        choose_studio_with(&controls, || Ok(FakeStudio::failing(20)));
+        assert!(run_until(
+            &mut processing,
+            runtime(NoiseSuppressionMode::Studio, None)
+        ));
+        // `run_blocks` fails the test if a block errors: the stream never sees this.
+        assert!(run_until(
+            &mut processing,
+            runtime(
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::FailedToStart)
+            )
+        ));
+        assert_eq!(controls.noise_suppression(), NoiseSuppressionMode::Studio);
+    }
+
+    #[cfg(feature = "studio-noise-suppression")]
+    #[test]
+    fn a_studio_model_that_fails_to_build_leaves_strong_running() {
+        let controls = LiveControls::new(1.0, false);
+        let mut processing = microphone_processing(&controls);
+        choose_studio_with(&controls, || Err("no model".to_string()));
+        assert!(run_until(
+            &mut processing,
+            runtime(
+                NoiseSuppressionMode::Strong,
+                Some(NoiseSuppressionFallback::FailedToStart)
+            )
+        ));
+    }
+
+    #[cfg(not(feature = "studio-noise-suppression"))]
     #[test]
     fn studio_runs_as_strong_and_says_so() {
         let controls = LiveControls::new(1.0, false);
@@ -4237,6 +4621,46 @@ mod tests {
                 fallback: Some(NoiseSuppressionFallback::NotAvailable),
             })
         );
+    }
+
+    #[test]
+    fn a_depth_chosen_mid_call_changes_the_running_suppressor_in_place() {
+        let controls = LiveControls::new(1.0, false);
+        controls.set_noise_suppression(NoiseSuppressionMode::Strong);
+        let mut processing = microphone_processing(&controls);
+        run_blocks(&mut processing, 5);
+        let delay = processing.reported_latency_samples();
+
+        controls.set_noise_suppression_depth(NoiseSuppressionDepth::Full);
+        run_blocks(&mut processing, 1);
+
+        assert_eq!(
+            processing.settings.noise_suppression_depth,
+            NoiseSuppressionDepth::Full
+        );
+        // Strong ramps its dry mix: no second suppressor fades in, and nothing is added
+        // to the delay.
+        assert!(!processing
+            .suppressor
+            .as_ref()
+            .expect("stage")
+            .is_switching());
+        assert_eq!(processing.reported_latency_samples(), delay);
+    }
+
+    #[test]
+    fn each_depth_sets_standards_own_level() {
+        for (depth, level) in [
+            (NoiseSuppressionDepth::Gentle, NoiseSuppressionLevel::Low),
+            (
+                NoiseSuppressionDepth::Balanced,
+                NoiseSuppressionLevel::Moderate,
+            ),
+            (NoiseSuppressionDepth::Full, NoiseSuppressionLevel::VeryHigh),
+        ] {
+            let config = front_config(true, true, NoiseSuppressionMode::Standard, depth);
+            assert_eq!(config.noise_suppression.map(|ns| ns.level), Some(level));
+        }
     }
 
     struct FailingSuppressor;

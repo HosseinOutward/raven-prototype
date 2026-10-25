@@ -11,6 +11,13 @@ import { stripSidecarIdentity } from "@/lib/mediaIdentity";
 export const SPEAKING_ENTER_RMS_DB = -52;
 export const SPEAKING_EXIT_RMS_DB = -56;
 export const SPEAKING_RELEASE_HOLD_MS = 240;
+/**
+ * Loudness alone lights up for keyboards, clicks and coughs, so a microphone also needs
+ * the voice detector to agree. Without a probability (an older engine, a source that is
+ * not a microphone) the level decides, as it did before.
+ */
+export const SPEAKING_ENTER_VOICE_PROBABILITY = 0.6;
+export const SPEAKING_EXIT_VOICE_PROBABILITY = 0.3;
 export const FALLBACK_SPEAKING_INTENSITY = 0.35;
 
 const FULL_INTENSITY_RMS_DB = -18;
@@ -121,13 +128,14 @@ export class ParticipantVoiceActivityTracker {
     // using it would hide someone you turned down, muted locally, or deafened. A local
     // source's input meter is its level while muted, which nobody hears: never active.
     const rmsDb = (update.sourceId ? update.meter : update.inputMeter ?? update.meter).rmsDb;
+    const voice = update.voiceProbability;
     let active = current?.active ?? false;
     let belowSinceMs = current?.belowSinceMs ?? null;
 
-    if (rmsDb >= SPEAKING_ENTER_RMS_DB) {
+    if (rmsDb >= SPEAKING_ENTER_RMS_DB && (voice == null || voice >= SPEAKING_ENTER_VOICE_PROBABILITY)) {
       active = true;
       belowSinceMs = null;
-    } else if (rmsDb <= SPEAKING_EXIT_RMS_DB) {
+    } else if (rmsDb <= SPEAKING_EXIT_RMS_DB || (voice != null && voice < SPEAKING_EXIT_VOICE_PROBABILITY)) {
       if (active) {
         belowSinceMs ??= nowMs;
         if (nowMs - belowSinceMs >= SPEAKING_RELEASE_HOLD_MS) active = false;

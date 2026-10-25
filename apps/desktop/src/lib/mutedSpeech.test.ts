@@ -36,6 +36,27 @@ describe("talking while muted", () => {
     expect(detector.process(state, unmuted, 360)).toBe(false);
   });
 
+  test("a loud keyboard is not speech, quiet speech is", () => {
+    const detector = new MutedSpeechDetector();
+    const state = mixerState();
+    for (const at of [0, 120, 240, 360, 480]) {
+      expect(detector.process(state, mutedMeter(-25, 0.1), at)).toBe(false);
+    }
+    expect(detector.process(state, mutedMeter(-46, 0.95), 600)).toBe(false);
+    expect(detector.process(state, mutedMeter(-46, 0.95), 720)).toBe(false);
+    expect(detector.process(state, mutedMeter(-46, 0.95), 840)).toBe(true);
+  });
+
+  test("falls back to a louder level when there is no voice probability", () => {
+    const detector = new MutedSpeechDetector();
+    const state = mixerState();
+    for (const at of [0, 120, 240, 360]) {
+      expect(detector.process(state, mutedMeter(-45), at)).toBe(false);
+    }
+    for (const at of [480, 600, 720]) detector.process(state, mutedMeter(-40), at);
+    expect(detector.process(state, mutedMeter(-40), 840)).toBe(true);
+  });
+
   test("only listens to microphones", () => {
     const detector = new MutedSpeechDetector();
     const state = mixerState("systemAudio");
@@ -55,8 +76,9 @@ function mixerState(sourceType: AudioSourceState["sourceType"] = "microphone"): 
   };
 }
 
-function mutedMeter(rmsDb: number): AudioMeterUpdate {
+function mutedMeter(rmsDb: number, voiceProbability?: number): AudioMeterUpdate {
   return {
+    voiceProbability,
     sourceId: "mic-1",
     participantId: null,
     trackId: null,

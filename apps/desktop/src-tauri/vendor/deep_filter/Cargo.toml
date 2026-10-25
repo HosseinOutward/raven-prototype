@@ -1,0 +1,36 @@
+# DeepFilterNet's inference library (libDF), vendored and trimmed for Raven's "Studio"
+# noise suppression. See README.md for where it came from and what was changed.
+[package]
+name = "deep_filter"
+version = "0.5.7-pre+raven.1"
+authors = ["Hendrik Schröter"]
+edition = "2021"
+description = "Noise supression using deep filtering"
+repository = "https://github.com/Rikorose/DeepFilterNet"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "df"
+path = "src/lib.rs"
+
+[features]
+# Upstream's load-time measurement, kept so its cfg blocks still compile.
+timings = []
+
+[dependencies]
+rustfft = "6.1"
+realfft = "3.1"
+itertools = "0.12"
+num-complex = "0.4"
+log = { version = "0.4", features = ["std"] }
+ndarray = "0.15"
+rust-ini = "0.21"
+anyhow = "1.0"
+flate2 = "1.0.24"
+tar = "0.4.38"
+# Pinned to the tract release upstream tested with; 0.21.5+ changed the APIs used here.
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"

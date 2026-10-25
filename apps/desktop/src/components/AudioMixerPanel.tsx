@@ -49,7 +49,7 @@ import {
   subscribeAudioStateChanged,
 } from "@/lib/audio";
 import { cn } from "@/lib/utils";
-import { NoiseSuppressionRow } from "@/components/NoiseSuppressionRow";
+import { NoiseSuppressionDepthRow, NoiseSuppressionRow } from "@/components/NoiseSuppressionRow";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -155,6 +155,7 @@ type ChannelStripView =
       title: string;
       sourceType: AudioSourceType;
       enabled: boolean;
+      noiseCleanup: boolean;
       gainDb: GainDb;
       muted: boolean;
       meterPeakDb: GainDb;
@@ -694,6 +695,9 @@ export function AudioMixerPanel() {
                     onSafetyLimiterCeilingChange={(stripId, ceilingDb) =>
                       runMutation(() => setSafetyLimiterCeilingCommand(stripId, ceilingDb), stripId)
                     }
+                    onNoiseCleanupChange={(participantId, trackId, enabled) =>
+                      runMutation(() => audioCommands.setRemoteNoiseCleanup(participantId, trackId, enabled), strip.id)
+                    }
                     onProcessorParameterChange={draftProcessorParameter}
                     onProcessorParameterCommit={flushProcessorParameter}
                     draftProcessorParams={draftProcessorParams}
@@ -1088,6 +1092,7 @@ function ChannelStrip({
   onSafeDefaultsReset,
   onSafetyLimiterCeilingChange,
   onWebRtcProcessingChange,
+  onNoiseCleanupChange,
   onProcessorParameterChange,
   onProcessorParameterCommit,
   draftProcessorParams = {},
@@ -1119,6 +1124,7 @@ function ChannelStrip({
   onSafeDefaultsReset?: (sourceId: string) => void;
   onSafetyLimiterCeilingChange?: (sourceId: string, ceilingDb: GainDb) => void;
   onWebRtcProcessingChange?: (sourceId: string, processing: WebRtcAudioProcessingSettings) => void;
+  onNoiseCleanupChange?: (participantId: string, trackId: string, enabled: boolean) => void;
   onProcessorParameterChange?: (
     sourceId: string,
     processorId: string,
@@ -1453,6 +1459,7 @@ function ChannelStrip({
           draftProcessorParams={draftProcessorParams}
           onCaptureDeviceChange={onCaptureDeviceChange}
           onWebRtcProcessingChange={onWebRtcProcessingChange}
+          onNoiseCleanupChange={onNoiseCleanupChange}
           onProcessorAdd={onProcessorAdd}
           onProcessorRemove={onProcessorRemove}
           onProcessorReorder={onProcessorReorder}
@@ -1485,6 +1492,7 @@ function ChannelStrip({
 type ChannelToolHandlers = {
   onCaptureDeviceChange?: (sourceId: string, captureDeviceId: string | null) => void;
   onWebRtcProcessingChange?: (sourceId: string, processing: WebRtcAudioProcessingSettings) => void;
+  onNoiseCleanupChange?: (participantId: string, trackId: string, enabled: boolean) => void;
   onProcessorAdd?: (sourceId: string, kind: AudioProcessorKind) => void;
   onProcessorRemove?: (sourceId: string, processorId: string) => void;
   onProcessorReorder?: (sourceId: string, orderedProcessorIds: string[]) => void;
@@ -1545,6 +1553,7 @@ function ChannelTab({
   editable,
   onCaptureDeviceChange,
   onWebRtcProcessingChange,
+  onNoiseCleanupChange,
   onSafetyLimiterCeilingChange,
 }: ChannelToolsProps) {
   const health = useLiveChannelHealth(strip);
@@ -1577,6 +1586,10 @@ function ChannelTab({
           editable={editable}
           onChange={onWebRtcProcessingChange}
         />
+      ) : null}
+
+      {strip.mode === "remote" && strip.sourceType === "microphone" ? (
+        <NoiseCleanupSection strip={strip} editable={editable} onChange={onNoiseCleanupChange} />
       ) : null}
 
       {strip.publishedTrack ? <PublishedTrackDetails track={strip.publishedTrack} /> : null}
@@ -1744,6 +1757,13 @@ function LevelsSection({
           value={health.processorCpuEstimate == null ? "n/a" : `${health.processorCpuEstimate.toFixed(1)}%`}
           danger={health.processorCpuEstimate != null && health.processorCpuEstimate >= 8}
         />
+        {health.suppressorCostMs != null ? (
+          <MetricRow
+            label="Noise suppressor"
+            value={`${health.suppressorCostMs.toFixed(1)} ms / 10 ms`}
+            danger={health.suppressorCostMs >= 5}
+          />
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5">
@@ -1871,6 +1891,14 @@ function VoiceProcessingSection({
         disabled={!editable}
         onChange={(mode) => update({ noiseSuppression: mode })}
       />
+      {processing.noiseSuppression !== "off" ? (
+        <NoiseSuppressionDepthRow
+          className="rounded-xl bg-secondary/50 px-3 py-2"
+          value={processing.noiseSuppressionDepth}
+          disabled={!editable}
+          onChange={(depth) => update({ noiseSuppressionDepth: depth })}
+        />
+      ) : null}
       <ToggleRow
         label="Echo cancellation"
         helper="Stops speaker audio feeding back into this mic."
@@ -1884,6 +1912,28 @@ function VoiceProcessingSection({
         checked={processing.autoGainControl}
         disabled={!editable}
         onChange={(checked) => update({ autoGainControl: checked })}
+      />
+    </ToolSection>
+  );
+}
+
+function NoiseCleanupSection({
+  strip,
+  editable,
+  onChange,
+}: {
+  strip: Extract<ChannelStripView, { mode: "remote" }>;
+  editable: boolean;
+  onChange?: (participantId: string, trackId: string, enabled: boolean) => void;
+}) {
+  return (
+    <ToolSection icon={<SlidersHorizontal />} title="Voice processing">
+      <ToggleRow
+        label="Clean up noise"
+        helper="Only you hear the difference. Adds a slight delay for this person."
+        checked={strip.noiseCleanup}
+        disabled={!editable}
+        onChange={(checked) => onChange?.(strip.remoteParticipantId, strip.remoteTrackId, checked)}
       />
     </ToolSection>
   );
@@ -3181,6 +3231,7 @@ function remoteTrackToStrip(remoteTrack: RemoteAudioTrackState, participantTitle
     title: remoteTrack.track.appName ?? remoteTrack.track.displayName,
     sourceType: remoteTrack.track.sourceType,
     enabled: remoteTrack.subscribed,
+    noiseCleanup: remoteTrack.receiverChannelStrip.noiseCleanup,
     gainDb: remoteTrack.receiverChannelStrip.gainDb,
     muted: remoteTrack.receiverChannelStrip.mute.muted,
     meterPeakDb: remoteTrack.receiverChannelStrip.meter.peakDb,

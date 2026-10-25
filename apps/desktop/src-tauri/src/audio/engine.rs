@@ -42,8 +42,9 @@ use tokio::task::JoinHandle;
 use crate::audio::capture::ProcessedSampleSink;
 use crate::audio::domain::{
     AudioConnectionLoss, AudioConnectionStatus, AudioMeterUpdate, AudioOutputDevice, AudioSourceId,
-    AudioSourceState, AudioSourceType, AudioSubscriptionStatus, GainDb, MeterState, ParticipantId,
-    ProcessorChainState, PublishedTrackId, PublishedTrackMetadata,
+    AudioSourceState, AudioSourceType, AudioSubscriptionStatus, GainDb, MeterState,
+    NoiseSuppressionDepth, NoiseSuppressionMode, ParticipantId, ProcessorChainState,
+    PublishedTrackId, PublishedTrackMetadata,
 };
 pub use crate::audio::playback::{OutputMixer, RenderCursor, RenderReference, UiSound};
 use crate::audio::processor::{
@@ -54,6 +55,8 @@ use crate::audio::resample::StereoResampler;
 use crate::audio::state::{
     SharedAudioEngineState, AUDIO_METER_CHANGED_EVENT, AUDIO_STATE_CHANGED_EVENT,
 };
+use crate::audio::suppression::{new_suppressor, SuppressorStage};
+use crate::audio::voice::VoiceDetector;
 use serde::{Deserialize, Serialize};
 
 /// Per-track metadata the publisher shares with subscribers via LiveKit participant
@@ -1142,6 +1145,7 @@ impl AudioEngine {
                         let app_icon_data_url =
                             track_meta.and_then(|meta| meta.app_icon_data_url.clone());
 
+                        let microphone = source_type == AudioSourceType::Microphone;
                         register_remote_track(
                             &app,
                             &shared,
@@ -1177,8 +1181,7 @@ impl AudioEngine {
                             let mut meter_accum: Vec<f32> = Vec::new();
                             let mut input_level = LevelAccumulator::default();
                             let mut last_meter = Instant::now();
-                            let mut receiver_controls =
-                                (1.0_f32, false, ProcessorChainState::default());
+                            let mut receiver_controls = ReceiverControls::default();
                             let mut last_control_refresh =
                                 Instant::now() - RECEIVER_CONTROL_REFRESH_INTERVAL;
                             // This peer's own processor chain for the incoming track. Setting
@@ -1188,6 +1191,15 @@ impl AudioEngine {
                             let mut chain_def = ProcessorChainState::default();
                             // Receiver gain actually applied to the previous sample.
                             let mut applied_gain: Option<f32> = None;
+                            // Speech detection and noise cleanup are for microphones only:
+                            // cleaning music or an app's sound would eat it. The cleanup
+                            // stage does nothing until the listener turns it on, and
+                            // switching it fades, so it never clicks.
+                            let mut voice =
+                                microphone.then(|| VoiceDetector::new(rate, PUBLISH_CHANNELS));
+                            let mut cleanup = microphone
+                                .then(|| SuppressorStage::new(None, rate, PUBLISH_CHANNELS));
+                            let mut cleanup_on = false;
                             while let Some(frame) = stream.next().await {
                                 // The speaker was reopened at another sample rate (device
                                 // switch): ask WebRTC to resample this track to the new
@@ -1202,6 +1214,12 @@ impl AudioEngine {
                                     );
                                     reader_output.reset_track(&reader_key_str);
                                     chain = None;
+                                    voice = microphone
+                                        .then(|| VoiceDetector::new(rate, PUBLISH_CHANNELS));
+                                    cleanup = microphone.then(|| {
+                                        SuppressorStage::new(None, rate, PUBLISH_CHANNELS)
+                                    });
+                                    cleanup_on = false;
                                     meter_accum.clear();
                                     continue;
                                 }
@@ -1217,22 +1235,59 @@ impl AudioEngine {
                                     }
                                     last_control_refresh = Instant::now();
                                 }
-                                let (gain, muted, def) = receiver_controls.clone();
+                                let ReceiverControls {
+                                    gain,
+                                    muted,
+                                    noise_cleanup,
+                                    noise_suppression_depth,
+                                    chain: def,
+                                } = receiver_controls.clone();
                                 let target_gain = if muted { 0.0 } else { gain };
                                 let mut current_gain = applied_gain.unwrap_or(target_gain);
                                 let gain_step =
                                     RECEIVER_GAIN_SLEW_PER_MS * 1000.0 / rate.max(1) as f32;
-                                let mut samples: Vec<f32> = Vec::with_capacity(frame.data.len());
-                                for stereo in frame.data.chunks(PUBLISH_CHANNELS) {
+                                let mut samples: Vec<f32> = frame
+                                    .data
+                                    .iter()
+                                    .map(|sample| *sample as f32 / 32768.0)
+                                    .collect();
+                                for sample in &samples {
+                                    input_level.add(*sample);
+                                }
+                                // Both look at what was received, before this listener's
+                                // gain and mute, so neither depends on them.
+                                if let Some(voice) = voice.as_mut() {
+                                    voice.process(&samples);
+                                }
+                                if let Some(stage) = cleanup.as_mut() {
+                                    if noise_cleanup != cleanup_on && !stage.is_switching() {
+                                        let suppressor = if noise_cleanup {
+                                            new_suppressor(
+                                                NoiseSuppressionMode::Strong,
+                                                noise_suppression_depth,
+                                            )
+                                        } else {
+                                            None
+                                        };
+                                        stage.switch(suppressor);
+                                        cleanup_on = noise_cleanup;
+                                    }
+                                    stage.set_depth(noise_suppression_depth);
+                                    if let Err(error) = stage.process(&mut samples) {
+                                        // Better to hear this person as they come in than
+                                        // to lose them.
+                                        eprintln!("[audio-engine] noise cleanup stopped: {error}");
+                                        stage.bypass();
+                                    }
+                                }
+                                for stereo in samples.chunks_mut(PUBLISH_CHANNELS) {
                                     current_gain = if current_gain < target_gain {
                                         (current_gain + gain_step).min(target_gain)
                                     } else {
                                         (current_gain - gain_step).max(target_gain)
                                     };
                                     for sample in stereo {
-                                        let received = *sample as f32 / 32768.0;
-                                        input_level.add(received);
-                                        samples.push(received * current_gain);
+                                        *sample *= current_gain;
                                     }
                                 }
                                 applied_gain = Some(current_gain);
@@ -1280,6 +1335,7 @@ impl AudioEngine {
                                         track_id,
                                         meter,
                                         input_level.take(),
+                                        voice.as_mut().map(VoiceDetector::take_probability),
                                     );
                                     meter_accum.clear();
                                     last_meter = Instant::now();
@@ -1888,24 +1944,63 @@ fn reader_key(base_identity: &str, track_id: &str) -> String {
     format!("{base_identity}|{track_id}")
 }
 
+/// The receiver's local settings for a remote track, local only to this peer.
+#[derive(Clone)]
+struct ReceiverControls {
+    /// Linear gain.
+    gain: f32,
+    muted: bool,
+    noise_cleanup: bool,
+    /// How deep the cleanup goes: the depth chosen for this listener's own microphone.
+    noise_suppression_depth: NoiseSuppressionDepth,
+    chain: ProcessorChainState,
+}
+
+impl Default for ReceiverControls {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            muted: false,
+            noise_cleanup: false,
+            noise_suppression_depth: NoiseSuppressionDepth::default(),
+            chain: ProcessorChainState::default(),
+        }
+    }
+}
+
 /// Snapshot the receiver's local settings for a remote track — each peer's own gain, mute,
-/// and processor chain, applied *after* the publisher's chain and local only to this peer.
+/// noise cleanup and processor chain, applied *after* the publisher's chain and local only
+/// to this peer.
 fn try_receiver_snapshot(
     shared: &SharedAudioEngineState,
     participant_id: ParticipantId,
     track_id: PublishedTrackId,
-) -> Option<(f32, bool, ProcessorChainState)> {
+) -> Option<ReceiverControls> {
     let Ok(guard) = shared.try_read() else {
         return None;
     };
     for track in &guard.mixer.remote_tracks {
         if track.track.participant_id == participant_id && track.track.track_id == track_id {
             let strip = &track.receiver_channel_strip;
-            return Some((
-                db_to_linear(strip.gain_db),
-                strip.mute.muted,
-                strip.processor_chain.clone(),
-            ));
+            let noise_suppression_depth = guard
+                .mixer
+                .local_sources
+                .iter()
+                .find(|source| source.source_type == AudioSourceType::Microphone)
+                .map(|source| {
+                    source
+                        .channel_strip
+                        .webrtc_processing
+                        .noise_suppression_depth
+                })
+                .unwrap_or_default();
+            return Some(ReceiverControls {
+                gain: db_to_linear(strip.gain_db),
+                muted: strip.mute.muted,
+                noise_cleanup: strip.noise_cleanup,
+                noise_suppression_depth,
+                chain: strip.processor_chain.clone(),
+            });
         }
     }
     None
@@ -1986,16 +2081,16 @@ fn update_remote_meter(
     track_id: PublishedTrackId,
     meter: MeterState,
     input_meter: MeterState,
+    voice_probability: Option<f32>,
 ) {
     // The strip in the snapshot is best-effort; the event below is what drives the live
     // meters and speaking rings, so it is sent even if the state lock is busy.
     if let Ok(mut guard) = shared.try_write() {
         guard.set_remote_track_meter(participant_id, track_id, meter.clone());
     }
-    let _ = app.emit(
-        AUDIO_METER_CHANGED_EVENT,
-        AudioMeterUpdate::remote(participant_id, track_id, meter, input_meter),
-    );
+    let mut update = AudioMeterUpdate::remote(participant_id, track_id, meter, input_meter);
+    update.voice_probability = voice_probability;
+    let _ = app.emit(AUDIO_METER_CHANGED_EVENT, update);
 }
 
 /// Running peak / RMS of a stream, read out once per meter interval without keeping the

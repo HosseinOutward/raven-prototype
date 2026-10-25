@@ -20,8 +20,16 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
    `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/Cargo.toml` and
    `packages/shared/package.json`.
 2. Optionally write `release-notes-<version>.md`. The app shows it as "What's new".
-3. Commit.
-4. Build and sign both installers:
+3. Regenerate the licence notices and commit them with the version:
+
+   ```powershell
+   cd apps\desktop; bun scripts/third-party-notices.ts
+   ```
+
+   The installer bundles `src-tauri/THIRD-PARTY-NOTICES.md` and Settings › About shows it.
+   `release.ps1` does not run the script yet.
+4. Commit.
+5. Build and sign both installers:
 
    ```powershell
    .\release.ps1 build -Version 0.1.1
@@ -29,7 +37,7 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
 
    They land in `.release\0.1.1\`. These are the files to send a friend for a first
    install. Try them yourself before the next step.
-5. Publish:
+6. Publish:
 
    ```powershell
    .\release.ps1 publish -Version 0.1.1

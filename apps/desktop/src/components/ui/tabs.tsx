@@ -32,7 +32,7 @@ export function Tabs({
           </button>
         ))}
       </div>
-      <div className="mt-4">{current.content}</div>
+      {current.content != null ? <div className="mt-4">{current.content}</div> : null}
     </div>
   );
 }

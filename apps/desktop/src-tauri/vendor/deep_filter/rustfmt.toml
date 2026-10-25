@@ -1,0 +1,4 @@
+# Upstream's layout (its nightly-only options dropped), so `cargo fmt` keeps this copy
+# diffable against DeepFilterNet.
+chain_width = 80
+max_width = 100

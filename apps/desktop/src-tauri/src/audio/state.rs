@@ -122,10 +122,11 @@ pub struct AudioEngineState {
     /// room reconnects, or receiving is paused; the listener's fader, mute and chain for
     /// it must survive that. Not serialized.
     remembered_remote_strips: HashMap<RemoteStripKey, RemoteChannelStripState>,
-    /// The volume this listener chose for each person's microphone, app audio and so on.
-    /// Unlike `remembered_remote_strips` it is saved to disk, so it holds across calls and
-    /// restarts. A remote participant id is the person's user id, which never changes.
-    remembered_volumes: HashMap<(ParticipantId, AudioSourceType), GainDb>,
+    /// The volume this listener chose for each person's microphone, app audio and so on,
+    /// and whether they clean up that person's noise. Unlike `remembered_remote_strips` it
+    /// is saved to disk, so it holds across calls and restarts. A remote participant id is
+    /// the person's user id, which never changes.
+    remembered_volumes: HashMap<(ParticipantId, AudioSourceType), (GainDb, bool)>,
     remembered_volumes_changed: bool,
     /// LiveKit username per remote participant id, used as the Incoming Tracks group header.
     /// Not serialized into the mixer snapshot; it feeds `refresh_remote_participants`.
@@ -133,13 +134,16 @@ pub struct AudioEngineState {
 }
 
 /// One entry of `remembered-volumes.json`: how loud this listener wants one person's
-/// source of a given kind.
+/// source of a given kind, and whether noise is cleaned up on it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RememberedVolume {
     pub participant_id: ParticipantId,
     pub source_type: AudioSourceType,
     pub gain_db: GainDb,
+    /// Absent from files written before cleanup existed.
+    #[serde(default)]
+    pub noise_cleanup: bool,
 }
 
 /// How a remembered receiver strip is found again: by the exact track, or failing that
@@ -791,11 +795,12 @@ impl AudioEngineState {
             let mut remote_track = RemoteAudioTrackState::new(metadata);
             if let Some(strip) = self.recall_remote_strip(&remote_track.track) {
                 remote_track.receiver_channel_strip = strip;
-            } else if let Some(gain_db) = self.remembered_volumes.get(&(
+            } else if let Some((gain_db, noise_cleanup)) = self.remembered_volumes.get(&(
                 remote_track.track.participant_id,
                 remote_track.track.source_type.clone(),
             )) {
                 remote_track.receiver_channel_strip.gain_db = *gain_db;
+                remote_track.receiver_channel_strip.noise_cleanup = *noise_cleanup;
                 remote_track.preference.gain_db = *gain_db;
                 refresh_remote_channel_health(&mut remote_track);
             }
@@ -890,27 +895,30 @@ impl AudioEngineState {
             .map(|volume| {
                 (
                     (volume.participant_id, volume.source_type),
-                    clamp_channel_gain(volume.gain_db),
+                    (clamp_channel_gain(volume.gain_db), volume.noise_cleanup),
                 )
             })
             .collect();
         self.remembered_volumes_changed = false;
     }
 
-    /// Note the volume of every track being heard now, so the same person sounds the same
-    /// in the next call. Unity is forgotten rather than stored. Returns the whole list when
-    /// it changed and should be saved.
+    /// Note the volume and noise cleanup of every track being heard now, so the same person
+    /// sounds the same in the next call. Unity with cleanup off is forgotten rather than
+    /// stored. Returns the whole list when it changed and should be saved.
     pub fn take_changed_remembered_volumes(&mut self) -> Option<Vec<RememberedVolume>> {
         for remote in &self.mixer.remote_tracks {
             let key = (
                 remote.track.participant_id,
                 remote.track.source_type.clone(),
             );
-            let gain_db = remote.receiver_channel_strip.gain_db;
-            let changed = if gain_db == GainDb::UNITY {
+            let choice = (
+                remote.receiver_channel_strip.gain_db,
+                remote.receiver_channel_strip.noise_cleanup,
+            );
+            let changed = if choice == (GainDb::UNITY, false) {
                 self.remembered_volumes.remove(&key).is_some()
             } else {
-                self.remembered_volumes.insert(key, gain_db) != Some(gain_db)
+                self.remembered_volumes.insert(key, choice) != Some(choice)
             };
             self.remembered_volumes_changed |= changed;
         }
@@ -921,10 +929,11 @@ impl AudioEngineState {
             self.remembered_volumes
                 .iter()
                 .map(
-                    |((participant_id, source_type), gain_db)| RememberedVolume {
+                    |((participant_id, source_type), (gain_db, noise_cleanup))| RememberedVolume {
                         participant_id: *participant_id,
                         source_type: source_type.clone(),
                         gain_db: *gain_db,
+                        noise_cleanup: *noise_cleanup,
                     },
                 )
                 .collect(),
@@ -1080,6 +1089,19 @@ impl AudioEngineState {
         remote.receiver_channel_strip.mute.muted_by_user = muted;
         remote.preference.muted = muted;
         refresh_remote_channel_health(remote);
+        let remote = remote.clone();
+        self.refresh_remote_participants();
+        Ok(remote)
+    }
+
+    pub fn set_remote_noise_cleanup(
+        &mut self,
+        remote_participant_id: ParticipantId,
+        remote_track_id: PublishedTrackId,
+        enabled: bool,
+    ) -> Result<RemoteAudioTrackState, AudioStateError> {
+        let remote = self.remote_track_mut(remote_participant_id, remote_track_id)?;
+        remote.receiver_channel_strip.noise_cleanup = enabled;
         let remote = remote.clone();
         self.refresh_remote_participants();
         Ok(remote)
@@ -2426,6 +2448,21 @@ pub async fn audio_set_remote_track_mute(
 }
 
 #[tauri::command]
+pub async fn audio_set_remote_noise_cleanup(
+    app: AppHandle,
+    state: State<'_, SharedAudioEngineState>,
+    remote_participant_id: ParticipantId,
+    remote_track_id: PublishedTrackId,
+    enabled: bool,
+) -> Result<AudioMixerState, AudioStateError> {
+    mutate_audio_state(&app, &state, |engine| {
+        engine.set_remote_noise_cleanup(remote_participant_id, remote_track_id, enabled)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn audio_add_processor_to_remote_track(
     app: AppHandle,
     state: State<'_, SharedAudioEngineState>,
@@ -2789,11 +2826,13 @@ pub async fn add_and_publish_shared_audio_source(
                 // needs the canceller to keep people from hearing themselves.
                 echo_cancellation: cfg!(target_os = "linux"),
                 auto_gain_control: false,
+                ..WebRtcAudioProcessingSettings::default()
             }),
             AudioSourceType::AppAudio => Some(WebRtcAudioProcessingSettings {
                 noise_suppression: NoiseSuppressionMode::Off,
                 echo_cancellation: false,
                 auto_gain_control: false,
+                ..WebRtcAudioProcessingSettings::default()
             }),
             _ => None,
         };
@@ -3682,6 +3721,7 @@ mod tests {
                     noise_suppression: NoiseSuppressionMode::Off,
                     echo_cancellation: true,
                     auto_gain_control: false,
+                    ..WebRtcAudioProcessingSettings::default()
                 },
             )
             .expect("set mic processing");
@@ -4111,6 +4151,79 @@ mod tests {
             restarted.take_changed_remembered_volumes(),
             Some(Vec::new())
         );
+    }
+
+    #[test]
+    fn noise_cleanup_for_a_person_survives_reconnects_and_restarts() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let metadata = remote_metadata(participant_id, AudioSourceType::Microphone);
+        let track_id = metadata.track_id;
+        engine.add_or_update_remote_track(metadata);
+        let cleaned = engine
+            .set_remote_noise_cleanup(participant_id, track_id, true)
+            .expect("turn cleanup on");
+        assert!(cleaned.receiver_channel_strip.noise_cleanup);
+
+        // The person's sidecar reconnects with a new track: cleanup is still on.
+        engine.clear_remote_tracks();
+        let reconnected = engine.add_or_update_remote_track(remote_metadata(
+            participant_id,
+            AudioSourceType::Microphone,
+        ));
+        assert!(reconnected.receiver_channel_strip.noise_cleanup);
+
+        let saved = engine
+            .take_changed_remembered_volumes()
+            .expect("cleanup is saved");
+        assert_eq!(saved.len(), 1);
+        assert!(saved[0].noise_cleanup);
+
+        let mut restarted = AudioEngineState::default();
+        restarted.load_remembered_volumes(saved);
+        let microphone = restarted.add_or_update_remote_track(remote_metadata(
+            participant_id,
+            AudioSourceType::Microphone,
+        ));
+        let app_audio = restarted
+            .add_or_update_remote_track(remote_metadata(participant_id, AudioSourceType::AppAudio));
+        assert!(microphone.receiver_channel_strip.noise_cleanup);
+        assert!(!app_audio.receiver_channel_strip.noise_cleanup);
+
+        // Turned off at unity volume, nothing is left to remember, in memory or on disk.
+        restarted
+            .set_remote_noise_cleanup(participant_id, microphone.track.track_id, false)
+            .expect("turn cleanup off");
+        assert_eq!(
+            restarted.take_changed_remembered_volumes(),
+            Some(Vec::new())
+        );
+        restarted.clear_remote_tracks();
+        let later = restarted.add_or_update_remote_track(remote_metadata(
+            participant_id,
+            AudioSourceType::Microphone,
+        ));
+        assert!(!later.receiver_channel_strip.noise_cleanup);
+    }
+
+    #[test]
+    fn a_remembered_volumes_file_from_before_noise_cleanup_still_loads() {
+        let participant_id = ParticipantId::new();
+        let path =
+            std::env::temp_dir().join(format!("raven-volumes-{}.json", uuid::Uuid::new_v4()));
+        fs::write(
+            &path,
+            format!(
+                r#"[{{"participantId": "{participant_id}", "sourceType": "microphone", "gainDb": -9.0}}]"#
+            ),
+        )
+        .expect("write old file");
+        let loaded = load_remembered_volumes_from_path(&path);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].gain_db, GainDb::new(-9.0));
+        assert!(!loaded[0].noise_cleanup);
     }
 
     #[test]

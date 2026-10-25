@@ -105,6 +105,8 @@ impl ChannelSafetyRuntime {
             short_term_loudness_db: Some(meter.rms_db),
             latency_samples,
             processor_cpu_estimate,
+            suppressor_cost_ms: None,
+            suppressor_worst_ms: None,
             safety_limiter_active: true,
             safety_limiter_ceiling_db: clamp_safety_limiter_ceiling(ceiling_db),
         };
@@ -192,6 +194,8 @@ pub fn health_from_meter(
         short_term_loudness_db: Some(meter.rms_db),
         latency_samples,
         processor_cpu_estimate,
+        suppressor_cost_ms: None,
+        suppressor_worst_ms: None,
         safety_limiter_active: true,
         safety_limiter_ceiling_db: clamp_safety_limiter_ceiling(ceiling_db),
     }

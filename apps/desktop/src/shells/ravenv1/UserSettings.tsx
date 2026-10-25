@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PasswordChangeForm } from "./PasswordChangeForm";
-import { Bell, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
+import { Bell, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
@@ -30,14 +30,14 @@ import {
 } from "./SettingsScaffold";
 import { InfoTooltip } from "./atoms";
 import { ConfirmLeaveSection, DockOrderSection } from "./DockSettings";
-import type { RavenShellData } from "./state";
+import type { RavenShellData, RavenView } from "./state";
 import type {
   NetworkActivityCategory,
   NetworkActivityDirection,
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
 
-export type UserSettingsSection = "profile" | "messages" | "sessions" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates";
+export type UserSettingsSection = "profile" | "messages" | "sessions" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates" | "about";
 
 const GROUPS: SettingsCategoryGroup[] = [
   {
@@ -64,6 +64,7 @@ const GROUPS: SettingsCategoryGroup[] = [
     categories: [
       { id: "server", label: "Server", icon: <ServerIcon /> },
       { id: "updates", label: "Updates", icon: <RefreshCw /> },
+      { id: "about", label: "About", icon: <Info /> },
     ],
   },
 ];
@@ -115,12 +116,15 @@ export function UserSettingsView({
   media,
   updater,
   chat = null,
+  onNavigate,
 }: {
   section: UserSettingsSection;
   data: RavenShellData;
   media: RavenMediaAdapterState;
   updater: RavenUpdater;
   chat?: ChatStore | null;
+  /** Absent where there is nowhere to go, such as while Raven needs an update. */
+  onNavigate?: (view: RavenView) => void;
 }) {
   switch (section) {
     case "profile":
@@ -167,6 +171,21 @@ export function UserSettingsView({
       return (
         <SettingsPage title="Updates">
           <UpdatesSettingsPanel updater={updater} />
+        </SettingsPage>
+      );
+    case "about":
+      return (
+        <SettingsPage title="About">
+          <SettingsRows>
+            <SettingsReadOnlyRow label="Version" value={updater.state?.currentVersion ?? "…"} />
+            {onNavigate ? (
+              <SettingsRow
+                label="Open-source licences"
+                description="The projects Raven is built on."
+                control={<Button variant="secondary" onClick={() => onNavigate({ kind: "licences" })}>Open</Button>}
+              />
+            ) : null}
+          </SettingsRows>
         </SettingsPage>
       );
   }

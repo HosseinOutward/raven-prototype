@@ -51,6 +51,51 @@ describe("participant voice activity", () => {
     });
   });
 
+  test("loud sound that is not a voice does not light a person up", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const state = mixerState([localMicrophone()]);
+
+    // A keyboard: far over the level threshold, nowhere near a voice.
+    expect(tracker.processMeter(state, localMeter(-25, 0.1), 0, "person")["person"]?.speaking).toBe(false);
+    // Between "not a voice" and "a voice": not enough to start.
+    expect(tracker.processMeter(state, localMeter(-25, 0.5), 100, "person")["person"]?.speaking).toBe(false);
+  });
+
+  test("a quiet voice does", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const state = mixerState([localMicrophone()]);
+
+    expect(tracker.processMeter(state, localMeter(-58, 0.9), 0, "person")["person"]?.speaking).toBe(false);
+    expect(tracker.processMeter(state, localMeter(-50, 0.9), 100, "person")["person"]?.speaking).toBe(true);
+  });
+
+  test("stops when the detector no longer hears a voice, after the hold", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const state = mixerState([localMicrophone()]);
+    tracker.processMeter(state, localMeter(-30, 0.9), 0, "person");
+
+    // Typing starts over the end of a sentence: loud, but no longer a voice.
+    expect(tracker.processMeter(state, localMeter(-30, 0.1), 100, "person")["person"]?.speaking).toBe(true);
+    expect(tracker.processMeter(state, localMeter(-30, 0.1), 339, "person")["person"]?.speaking).toBe(true);
+    expect(tracker.processMeter(state, localMeter(-30, 0.1), 340, "person")["person"]?.speaking).toBe(false);
+  });
+
+  test("an uncertain reading keeps the current state", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const state = mixerState([localMicrophone()]);
+    tracker.processMeter(state, localMeter(-30, 0.9), 0, "person");
+
+    expect(tracker.processMeter(state, localMeter(-30, 0.45), 500, "person")["person"]?.speaking).toBe(true);
+  });
+
+  test("hears a remote voice by the probability as received", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const state = mixerState([], [remoteMicrophone("track-1")]);
+
+    expect(tracker.processMeter(state, { ...remoteMeter("track-1", -20), voiceProbability: 0.05 }, 0)["remote-person"]?.speaking).toBe(false);
+    expect(tracker.processMeter(state, { ...remoteMeter("track-1", -20), voiceProbability: 0.9 }, 100)["remote-person"]?.speaking).toBe(true);
+  });
+
   test("cancels a pending release inside the hysteresis band", () => {
     const tracker = new ParticipantVoiceActivityTracker();
     const state = mixerState([localMicrophone()]);
@@ -251,8 +296,9 @@ function remoteMicrophone(trackId: string): RemoteAudioTrackState {
   } as RemoteAudioTrackState;
 }
 
-function localMeter(rmsDb: number): AudioMeterUpdate {
+function localMeter(rmsDb: number, voiceProbability?: number): AudioMeterUpdate {
   return {
+    voiceProbability,
     sourceId: "mic-1",
     participantId: null,
     trackId: null,

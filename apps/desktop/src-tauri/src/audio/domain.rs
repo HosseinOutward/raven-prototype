@@ -420,6 +420,11 @@ pub struct ChannelHealthState {
     pub short_term_loudness_db: Option<GainDb>,
     pub latency_samples: u32,
     pub processor_cpu_estimate: Option<f32>,
+    /// Microphones only: what the noise suppressor's 10 ms hop costs on average, measured
+    /// on the audio thread, in milliseconds. `None` until measured or without a suppressor.
+    pub suppressor_cost_ms: Option<f32>,
+    /// The most one hop has cost since that suppressor started, in milliseconds.
+    pub suppressor_worst_ms: Option<f32>,
     pub safety_limiter_active: bool,
     pub safety_limiter_ceiling_db: GainDb,
 }
@@ -440,6 +445,12 @@ pub struct AudioMeterUpdate {
     /// Local sources: present only while muted, the level before the mute, so the UI can
     /// say "you're talking while muted".
     pub input_meter: Option<MeterState>,
+    /// Microphones: the highest chance, 0 to 1, that the last meter window held a human
+    /// voice. It is computed on this machine from audio this machine already has and is
+    /// never sent anywhere. It answers "is someone speaking", which the speaking ring
+    /// already shows, so keyboards and coughs do not light it. It is not emotion or
+    /// behaviour analysis.
+    pub voice_probability: Option<f32>,
 }
 
 impl AudioMeterUpdate {
@@ -451,6 +462,7 @@ impl AudioMeterUpdate {
             meter,
             health: Some(health),
             input_meter: None,
+            voice_probability: None,
         }
     }
 
@@ -467,6 +479,7 @@ impl AudioMeterUpdate {
             meter,
             health: None,
             input_meter: Some(input_meter),
+            voice_probability: None,
         }
     }
 }
@@ -478,6 +491,7 @@ impl Default for AudioMeterUpdate {
             participant_id: None,
             track_id: None,
             input_meter: None,
+            voice_probability: None,
             meter: MeterState::default(),
             health: None,
         }
@@ -499,6 +513,8 @@ impl Default for ChannelHealthState {
             short_term_loudness_db: None,
             latency_samples: 0,
             processor_cpu_estimate: None,
+            suppressor_cost_ms: None,
+            suppressor_worst_ms: None,
             safety_limiter_active: true,
             safety_limiter_ceiling_db: GainDb::new(-1.0),
         }
@@ -656,8 +672,20 @@ pub enum NoiseSuppressionMode {
     /// RNNoise: also keyboards, clicks and room noise.
     #[default]
     Strong,
-    /// Reserved for the deep-learning tier; runs as `Strong` until it exists.
+    /// DeepFilterNet 3: removes the most, with about 30 ms more delay and more CPU. Falls
+    /// back to `Strong` when the build lacks it or the computer can't keep up.
     Studio,
+}
+
+/// How much a suppression mode takes out. Each mode maps the steps to its own control.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NoiseSuppressionDepth {
+    Gentle,
+    #[default]
+    Balanced,
+    /// No limit; silence between words may sound unnatural.
+    Full,
 }
 
 /// What a microphone's noise suppression is actually doing. The strip keeps the user's
@@ -676,12 +704,18 @@ pub enum NoiseSuppressionFallback {
     NotAvailable,
     /// The chosen mode stopped working, so a simpler one is running.
     FailedToStart,
+    /// Studio's model is still loading; the previous mode runs until it arrives.
+    Starting,
+    /// Studio could not keep up on this computer, so Strong runs for the rest of this
+    /// capture. The next one tries Studio again.
+    TooSlow,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WebRtcAudioProcessingSettings {
     pub noise_suppression: NoiseSuppressionMode,
+    pub noise_suppression_depth: NoiseSuppressionDepth,
     pub echo_cancellation: bool,
     pub auto_gain_control: bool,
 }
@@ -690,6 +724,7 @@ impl Default for WebRtcAudioProcessingSettings {
     fn default() -> Self {
         Self {
             noise_suppression: NoiseSuppressionMode::default(),
+            noise_suppression_depth: NoiseSuppressionDepth::default(),
             echo_cancellation: true,
             auto_gain_control: true,
         }
@@ -738,6 +773,8 @@ pub struct RemoteChannelStripState {
     pub gain_db: GainDb,
     pub mute: MuteState,
     pub pinned: bool,
+    /// Run noise suppression on this person's microphone, for this listener only.
+    pub noise_cleanup: bool,
     pub preset: AudioPreset,
     pub preset_id: Option<String>,
     pub safety_limiter_ceiling_db: GainDb,
@@ -752,6 +789,7 @@ impl Default for RemoteChannelStripState {
             gain_db: GainDb::default(),
             mute: MuteState::default(),
             pinned: false,
+            noise_cleanup: false,
             preset: AudioPreset::default(),
             preset_id: None,
             safety_limiter_ceiling_db: GainDb::new(-1.0),

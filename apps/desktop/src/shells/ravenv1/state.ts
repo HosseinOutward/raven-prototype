@@ -55,6 +55,8 @@ export type RavenView =
   /** Every direct message and group, including archived ones. */
   | { kind: "messages" }
   | { kind: "mixer" }
+  /** The open-source projects Raven is built on, opened from Settings › About. */
+  | { kind: "licences" }
   | { kind: "settings"; section?: string };
 
 export interface ShellPerson {

@@ -12,6 +12,7 @@ import type { NestEntryController } from "../useNestEntry";
 import { resolveUserSettingsSection, UserSettingsView } from "../UserSettings";
 import { ChatView } from "./ChatView";
 import { HomeView } from "./HomeView";
+import { LicencesView } from "./LicencesView";
 import { MessagesView } from "./MessagesView";
 import { NestView } from "./NestView";
 import { ViewHeader } from "./shared";
@@ -81,7 +82,7 @@ export function MainView({
       );
     }
     case "settings":
-      return <UserSettingsView section={resolveUserSettingsSection(view.section)} data={data} media={media} updater={updater} chat={chat} />;
+      return <UserSettingsView section={resolveUserSettingsSection(view.section)} data={data} media={media} updater={updater} chat={chat} onNavigate={onNavigate} />;
     case "user": {
       const lastName = knownNames.current.get(view.id);
       const person = data.getPerson(view.id) ?? view.person ?? (lastName ? strangerNamed(view.id, lastName) : undefined);
@@ -102,6 +103,8 @@ export function MainView({
     }
     case "mixer":
       return <MixerView onClose={onBack} />;
+    case "licences":
+      return <LicencesView onBack={onBack} />;
   }
 }
 

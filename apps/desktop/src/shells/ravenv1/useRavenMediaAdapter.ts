@@ -8,6 +8,7 @@ import {
   AudioOutputDevice,
   AudioSourceState,
   NativeAudioCapabilityReport,
+  NoiseSuppressionDepth,
   NoiseSuppressionMode,
   NoiseSuppressionRuntime,
   subscribeAudioDevicesChanged,
@@ -47,6 +48,7 @@ import {
 import { normalizeSelectedDeviceId, selectedDeviceIdForSource } from "@/lib/mediaDevicePreference";
 import { DeviceSwitchWatcher, devicesInUse } from "@/lib/deviceSwitch";
 import { toast } from "@/components/ui/toast";
+import { studioJustFellBack, studioTooSlowNotice } from "@/lib/noiseSuppression";
 import { presenceForActiveNest } from "./state";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
@@ -246,6 +248,8 @@ export function useRavenMediaAdapter(
   deafenRef.current = { deafened, mode: deafenMode };
   const reconnectLoopRef = useRef<Promise<void> | null>(null);
   const mediaLossRef = useRef(false);
+  /** The microphone whose processing has been restored from the remembered settings. */
+  const restoredMicRef = useRef<string | null>(null);
   const joiningRef = useRef<Promise<void> | null>(null);
   const leavingRef = useRef<Promise<void> | null>(null);
   const activeNestRef = useRef<string | null>(null);
@@ -432,6 +436,33 @@ export function useRavenMediaAdapter(
   );
   const localAudioProcessing = micSources[0]?.channelStrip.webrtcProcessing ?? null;
   const localNoiseSuppression = micSources[0]?.runtime.noiseSuppression ?? null;
+  // Studio handing over to Strong mid-call is said once, so nobody wonders whether they
+  // went silent. The caption under the mode says it for as long as it lasts.
+  const noiseSuppressionSeenRef = useRef(localNoiseSuppression);
+  const localMicMuted = micSources[0]?.channelStrip.mute.muted ?? true;
+  useEffect(() => {
+    if (studioJustFellBack(noiseSuppressionSeenRef.current, localNoiseSuppression)) {
+      toast(studioTooSlowNotice(localMicMuted));
+    }
+    noiseSuppressionSeenRef.current = localNoiseSuppression;
+  }, [localNoiseSuppression, localMicMuted]);
+  // Whichever surface changes the microphone's processing, the next run starts from it.
+  // Not before the remembered settings were applied to the source, or the engine's defaults
+  // would overwrite them.
+  const restoredMicId = micSources[0]?.id;
+  const noiseSuppressionMode = localAudioProcessing?.noiseSuppression;
+  const noiseSuppressionDepth = localAudioProcessing?.noiseSuppressionDepth;
+  const echoCancellation = localAudioProcessing?.echoCancellation;
+  const autoGainControl = localAudioProcessing?.autoGainControl;
+  useEffect(() => {
+    if (!restoredMicId || restoredMicId !== restoredMicRef.current) return;
+    saveMediaSettings({
+      noiseSuppression: noiseSuppressionMode,
+      noiseSuppressionDepth,
+      echoCancellation,
+      autoGainControl,
+    });
+  }, [restoredMicId, noiseSuppressionMode, noiseSuppressionDepth, echoCancellation, autoGainControl, saveMediaSettings]);
   const participantMedia = useMemo<ParticipantMediaState[]>(() => {
     const tracks = videoState?.remoteTracks ?? [];
     return (videoState?.participants ?? []).map((participant) => ({
@@ -748,16 +779,16 @@ export function useRavenMediaAdapter(
       );
       const mics = state.localSources.filter((source) => source.sourceType === "microphone");
       mic = mics[mics.length - 1];
-      // Like the device below, the remembered noise suppression is applied once, when the
+      // Like the device below, the remembered voice processing is applied once, when the
       // source is created; no capture is running yet, so nothing reopens.
-      const noiseSuppression = readMediaSettings().noiseSuppression;
-      if (mic && noiseSuppression && noiseSuppression !== mic.channelStrip.webrtcProcessing.noiseSuppression) {
+      if (mic) {
         const micId = mic.id;
-        state = await audioCommands.setLocalWebRtcProcessing(micId, { ...mic.channelStrip.webrtcProcessing, noiseSuppression });
+        state = await audioCommands.setLocalWebRtcProcessing(micId, rememberedProcessing(mic.channelStrip.webrtcProcessing));
         mic = state.localSources.find((source) => source.id === micId) ?? mic;
       }
     }
     if (!mic) throw new Error("No microphone source is available.");
+    restoredMicRef.current = mic.id;
 
     // A microphone source is created lazily, so apply the persisted native device
     // before the first publish/processing operation. Existing sources retain their
@@ -1108,13 +1139,10 @@ export function useRavenMediaAdapter(
     try {
       const mic = await ensureDefaultMic();
       setAudioState(await audioCommands.setLocalWebRtcProcessing(mic.id, processing));
-      if (processing.noiseSuppression !== mic.channelStrip.webrtcProcessing.noiseSuppression) {
-        saveMediaSettings({ noiseSuppression: processing.noiseSuppression });
-      }
     } catch (err) {
       setSafeError(messageFromError(err, "Microphone processing could not be changed"), "publish_failure", "Try again from the mixer or leave and rejoin media.");
     }
-  }, [ensureDefaultMic, saveMediaSettings, setSafeError]);
+  }, [ensureDefaultMic, setSafeError]);
 
   const retryIncomingAudio = useCallback(async () => {
     setError("");
@@ -1323,6 +1351,9 @@ type MediaSettings = {
   selectedMic?: string | null;
   selectedOutput?: string | null;
   noiseSuppression?: NoiseSuppressionMode;
+  noiseSuppressionDepth?: NoiseSuppressionDepth;
+  echoCancellation?: boolean;
+  autoGainControl?: boolean;
   deafenMode?: DeafenMode;
   networkActivity?: NetworkActivitySettings;
   selfMediaPreviewMode?: SelfMediaPreviewMode;
@@ -1335,7 +1366,7 @@ const DEFAULT_NETWORK_ACTIVITY_SETTINGS: NetworkActivitySettings = {
   categories: ["total"],
 };
 
-function readMediaSettings(): MediaSettings {
+export function readMediaSettings(): MediaSettings {
   try {
     const raw = window.localStorage.getItem(MEDIA_SETTINGS_KEY);
     if (!raw) return {};
@@ -1344,6 +1375,9 @@ function readMediaSettings(): MediaSettings {
       selectedMic: normalizeSelectedDeviceId(parsed.selectedMic),
       selectedOutput: typeof parsed.selectedOutput === "string" ? parsed.selectedOutput : null,
       noiseSuppression: isNoiseSuppressionMode(parsed.noiseSuppression) ? parsed.noiseSuppression : undefined,
+      noiseSuppressionDepth: isNoiseSuppressionDepth(parsed.noiseSuppressionDepth) ? parsed.noiseSuppressionDepth : undefined,
+      echoCancellation: typeof parsed.echoCancellation === "boolean" ? parsed.echoCancellation : undefined,
+      autoGainControl: typeof parsed.autoGainControl === "boolean" ? parsed.autoGainControl : undefined,
       deafenMode: isDeafenMode(parsed.deafenMode) ? parsed.deafenMode : "instant",
       networkActivity: normalizeNetworkActivitySettings(parsed.networkActivity),
       selfMediaPreviewMode: isSelfMediaPreviewMode(parsed.selfMediaPreviewMode) ? parsed.selfMediaPreviewMode : "local",
@@ -1364,6 +1398,21 @@ function writeMediaSettings(settings: MediaSettings) {
 
 function isNoiseSuppressionMode(value: unknown): value is NoiseSuppressionMode {
   return value === "off" || value === "standard" || value === "strong" || value === "studio";
+}
+
+function isNoiseSuppressionDepth(value: unknown): value is NoiseSuppressionDepth {
+  return value === "gentle" || value === "balanced" || value === "full";
+}
+
+/** The microphone's processing with whatever the user last chose laid over it; what was never chosen keeps the engine's default. */
+function rememberedProcessing(current: WebRtcAudioProcessingSettings): WebRtcAudioProcessingSettings {
+  const saved = readMediaSettings();
+  return {
+    noiseSuppression: saved.noiseSuppression ?? current.noiseSuppression,
+    noiseSuppressionDepth: saved.noiseSuppressionDepth ?? current.noiseSuppressionDepth,
+    echoCancellation: saved.echoCancellation ?? current.echoCancellation,
+    autoGainControl: saved.autoGainControl ?? current.autoGainControl,
+  };
 }
 
 function isDeafenMode(value: unknown): value is DeafenMode {

@@ -14,6 +14,13 @@ rust-version = "1.77.2"
 name = "raven_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["studio-noise-suppression"]
+# The "Studio" noise suppression mode: DeepFilterNet 3 through tract, with its model
+# (about 8 MB) compiled in. Without it, choosing Studio runs Strong and says so. Turn it
+# off (`--no-default-features`) on a platform where tract does not build.
+studio-noise-suppression = ["dep:deep_filter", "dep:ndarray"]
+
 [build-dependencies]
 tauri-build = { version = "2.2.0", features = [] }
 
@@ -35,8 +42,16 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
 ringbuf = "0.4"
 futures-util = "0.3"
 sonora = "0.1"
+# The voice detector inside sonora's gain control, used on its own to tell speech from
+# keyboards. Same versions sonora already depends on.
+sonora-agc2 = "0.1"
+sonora-simd = "0.1"
 # RNNoise in pure Rust: the "Strong" noise suppression mode.
 nnnoiseless = { version = "0.5", default-features = false }
+# DeepFilterNet 3: the "Studio" mode. Vendored and trimmed to the inference path; see
+# vendor/deep_filter/README.md. ndarray is the version its API takes.
+deep_filter = { path = "vendor/deep_filter", optional = true }
+ndarray = { version = "0.15", optional = true }
 # Native camera capture (MSMF on Windows, AVFoundation on macOS, V4L2 on Linux).
 nokhwa = { version = "0.10", features = ["input-native"] }
 
@@ -84,3 +99,47 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 # Native macOS display/window and system/app audio capture via ScreenCaptureKit.
 screencapturekit = { version = "8.0.0", features = ["macos_13_0"] }
+
+# Studio's model is far too slow unoptimised: in a dev build it would never keep up and
+# would always fall back to Strong. Optimise the inference path even there. tract also
+# runs graph checks under debug assertions that reject DeepFilterNet's model ("duplicate
+# name /convt3/Conv.bias"); release builds never run them, so dev builds don't either.
+[profile.dev.package.deep_filter]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-core]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-data]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-linalg]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-hir]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-onnx]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-onnx-opl]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-nnef]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-pulse]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.tract-pulse-opl]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.ndarray]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.rustfft]
+opt-level = 3
+debug-assertions = false
+[profile.dev.package.realfft]
+opt-level = 3
+debug-assertions = false
