@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
 import { StreamInfo } from "./StreamInfo";
+import { WatcherStack, WatchingMark } from "./WatcherStack";
 import type { NativeMediaTile } from "./useNativeMediaTiles";
 
 export type MediaFit = "fit" | "fill";
@@ -290,9 +291,11 @@ export function MediaTile({
         {isShare ? <MonitorUp className="h-3.5 w-3.5 shrink-0" /> : null}
         <span className="min-w-0 truncate">{label}</span>
         {!isShare && tile.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
+        {!isShare ? <WatchingMark targets={tile.watchedShares} onVideo /> : null}
         {pinned ? <Pin className="h-3 w-3 shrink-0 opacity-70" aria-label="Pinned" /> : null}
         <ConnectionNote quality={tile.connectionQuality} weak={weak} lost={lost} />
       </div>
+      {isShare ? <WatcherStack watchers={tile.shareWatchers} onVideo className="absolute bottom-2 right-2" /> : null}
     </div>
   );
 }

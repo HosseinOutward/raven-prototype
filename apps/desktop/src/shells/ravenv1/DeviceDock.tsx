@@ -45,7 +45,7 @@ import type {
   NetworkActivitySnapshot,
   NetworkTransferRate,
 } from "./networkActivity";
-import { receivedScreenShareQualityNotice, screenShareQualityNotice } from "./networkActivity";
+import { connectionNeedsAttention, connectionText, receivedScreenShareQualityNotice, screenShareQualityNotice } from "./networkActivity";
 import { useNetworkActivity } from "./useNetworkActivity";
 import {
   DEFAULT_DOCK_ORDER,
@@ -1299,25 +1299,35 @@ function NetworkActivityIndicator({
   sendQuality?: { quality: SendQuality; reading: SendQualityReading | null };
   onOpenChange?: (open: boolean) => void;
 }) {
-  const visibleCategories = activity.categories.filter((category) => category !== "other");
+  const rateCategories = activity.categories.filter(
+    (category): category is Exclude<NetworkActivityCategory, "connection" | "other"> => category !== "connection" && category !== "other",
+  );
+  const showRates = rateCategories.length > 0 && activity.directions.length > 0;
+  const showConnection = activity.categories.includes("connection");
   // Outside a call there is nothing to measure, so there is nothing to show.
-  if (!activity.enabled || !activity.active || visibleCategories.length === 0 || activity.directions.length === 0) return null;
+  if (!activity.enabled || !activity.active || (!showRates && !showConnection)) return null;
 
+  const connectionLine = connectionText(activity.connection);
+  const connectionWarning = connectionNeedsAttention(activity.connection);
   const summary = selectedNetworkSummary(activity);
   const summaryText = networkSummaryText(activity, summary);
   const sendingShareQuality = screenShareQualityNotice(activity.screenShareQuality, activity.screenShareCaptureFps);
   const receivingShareQuality = receivedScreenShareQualityNotice(activity.screenShareQuality);
   const measuring = !activity.active || !summary || activity.updatedAt == null;
+  const triggerLabel = [showConnection ? `Connection ${connectionLine}` : null, showRates ? summaryText : null].filter(Boolean).join(", ");
   return (
     <Popover onOpenChange={onOpenChange}>
       <Tooltip label="Network activity">
         <PopoverTrigger asChild>
           <button
             type="button"
-            aria-label={`Network activity: ${summaryText}`}
+            aria-label={`Network activity: ${triggerLabel}`}
             className="hidden h-9 shrink-0 items-center gap-2 rounded-control px-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground data-[state=open]:bg-secondary min-[1100px]:flex"
           >
-            {measuring ? (
+            {showConnection ? (
+              <span className={cn("rv-mono whitespace-nowrap text-caption tabular-nums", connectionWarning && "text-warning")}>{connectionLine}</span>
+            ) : null}
+            {!showRates ? null : measuring ? (
               <span className="text-caption">{summaryText}</span>
             ) : (
               <span className="rv-mono flex flex-col items-start text-caption leading-[14px] tabular-nums">
@@ -1341,9 +1351,15 @@ function NetworkActivityIndicator({
           </p>
         ) : null}
         <div className="mt-2 divide-y divide-border/70">
-          {visibleCategories.map((category) => (
+          {showConnection ? (
+            <div className="flex items-center justify-between gap-4 py-2">
+              <span className="text-small">{NETWORK_CATEGORY_LABELS.connection}</span>
+              <span className={cn("rv-mono text-caption tabular-nums", connectionWarning ? "text-warning" : "text-muted-foreground")}>{connectionLine}</span>
+            </div>
+          ) : null}
+          {showRates ? rateCategories.map((category) => (
             <NetworkActivityRow key={category} category={category} activity={activity} />
-          ))}
+          )) : null}
         </div>
         {sendingShareQuality || receivingShareQuality ? (
           <div className="mt-3 rounded-control bg-warning/10 px-3 py-2 text-caption text-muted-foreground">
@@ -1361,7 +1377,7 @@ function NetworkActivityRow({
   category,
   activity,
 }: {
-  category: NetworkActivityCategory;
+  category: Exclude<NetworkActivityCategory, "connection">;
   activity: NetworkActivitySnapshot;
 }) {
   const label = NETWORK_CATEGORY_LABELS[category];
@@ -1383,11 +1399,12 @@ const NETWORK_CATEGORY_LABELS: Record<NetworkActivityCategory, string> = {
   screenShare: "Screen share",
   other: "Other",
   total: "Total",
+  connection: "Connection",
 };
 
 function selectedNetworkSummary(activity: NetworkActivitySnapshot): NetworkTransferRate | null {
   const measurable = activity.categories.filter(
-    (category): category is MeasuredNetworkCategory => category !== "total" && category !== "other",
+    (category): category is MeasuredNetworkCategory => category !== "total" && category !== "other" && category !== "connection",
   );
   if (activity.categories.includes("total")) return activity.rates.total;
   if (measurable.length === 0) return null;

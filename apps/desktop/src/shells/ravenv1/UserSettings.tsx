@@ -553,6 +553,7 @@ const NETWORK_CATEGORIES: Array<{ id: NetworkActivityCategory; label: string; de
   { id: "video", label: "Video" },
   { id: "screenShare", label: "Screen share" },
   { id: "total", label: "Total" },
+  { id: "connection", label: "Connection", description: "Your round trip to the server and how the link is holding, like “42 ms · Good”." },
 ];
 
 function toggleSelection<T extends string>(values: T[], value: T, checked: boolean): T[] {

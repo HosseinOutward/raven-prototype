@@ -12,6 +12,7 @@ import { speakingGlowStyle, type ParticipantVoiceActivityMap } from "@/lib/speak
 import { EMPTY_SATELLITES, type AudioSatellites, type SatelliteActions } from "./audioSatellites";
 import { SatelliteCluster } from "./SatelliteCluster";
 import { MediaTile, type MediaFit } from "./MediaTile";
+import { WatcherStack, WatchingMark } from "./WatcherStack";
 import { motionClass, useMotionArmed, useStageMotion, type MotionEntry } from "./stageMotion";
 import { bestGridColumns, newestScreenShareKey, newShareKeys, partitionStageTiles, resolveStageFocusKeys } from "./stageState";
 import { useNativeMediaTiles, type NativeMediaTile } from "./useNativeMediaTiles";
@@ -449,7 +450,7 @@ function LayoutButton({ active, label, onClick, children }: { active: boolean; l
   );
 }
 
-const SHARE_CARD_CLASS = "flex h-12 min-w-0 max-w-sm items-center gap-2.5 rounded-card bg-secondary/50 pl-2 pr-1.5";
+const SHARE_CARD_CLASS = "flex h-12 min-w-0 max-w-md items-center gap-2.5 rounded-card bg-secondary/50 pl-2 pr-1.5";
 
 /** Someone is sharing and you have not chosen to watch. Nothing is downloaded until you do. */
 function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) {
@@ -469,10 +470,13 @@ function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) 
       ) : (
         <span className="min-w-0 flex-1 truncate text-small">{tile.displayName} is sharing their screen</span>
       )}
-      <Button variant="secondary" size="xs" aria-label={`Watch ${tile.displayName}’s screen`} onClick={onWatch}>
-        <Eye />
-        Watch
-      </Button>
+      <WatcherStack watchers={tile.shareWatchers} />
+      <Tooltip label="Others in the room will see you’re watching" side="top">
+        <Button variant="secondary" size="xs" aria-label={`Watch ${tile.displayName}’s screen`} onClick={onWatch}>
+          <Eye />
+          Watch
+        </Button>
+      </Tooltip>
     </div>
   );
 }
@@ -492,6 +496,7 @@ function OwnShareCard({ tile, onPreview, onStop }: { tile: StageTile; onPreview:
       ) : (
         <span className="min-w-0 flex-1 truncate text-small">You’re sharing your screen</span>
       )}
+      <WatcherStack watchers={tile.shareWatchers} />
       <Button variant="ghost" size="xs" aria-label="Preview your screen" onClick={onPreview}>Preview</Button>
       {onStop ? <Button variant="secondary" size="xs" aria-label="Stop sharing your screen" onClick={onStop}>Stop</Button> : null}
     </div>
@@ -558,7 +563,10 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
                 className="absolute left-full top-1/2 ml-1.5 -translate-y-1/2"
               />
             </span>
-            <span className="mt-3 max-w-full truncate text-small font-medium">{person.isLocal ? "You" : person.displayName}</span>
+            <span className="mt-3 flex max-w-full items-center justify-center gap-1.5">
+              <span className="min-w-0 truncate text-small font-medium">{person.isLocal ? "You" : person.displayName}</span>
+              <WatchingMark targets={person.watchedShares} />
+            </span>
             <ConnectionCaption person={person} />
           </div>
         );
@@ -586,6 +594,7 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
               <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className="h-7 w-7" />
             </span>
             <span className="max-w-[140px] truncate text-small">{person.isLocal ? "You" : person.displayName}</span>
+            <WatchingMark targets={person.watchedShares} />
             {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="-mr-1.5 h-6 w-6 shrink-0 rounded-full" /> : null}
             {person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
             <SatelliteCluster

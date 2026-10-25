@@ -9,6 +9,7 @@ import {
   videoStreamUrl,
 } from "@/lib/video";
 import { stripSidecarIdentity } from "@/lib/mediaIdentity";
+import { sharesWatchedBy, watchersOfShare, type WatchPerson, type WatchTarget } from "./watchers";
 import {
   resolveParticipantVoicePresentation,
   type ParticipantVoiceActivityMap,
@@ -44,6 +45,10 @@ export type NativeMediaTile = {
   sharePaused?: VideoPauseReason | null;
   /** Your own window share's app, to say which app is minimized. */
   shareAppName?: string;
+  /** On a person's tile: the shares they are watching, for the eye beside their name. */
+  watchedShares: WatchTarget[];
+  /** On a share's tile: the other people watching it, for the avatar stack. */
+  shareWatchers: WatchPerson[];
 };
 
 export function useNativeMediaTiles(
@@ -127,6 +132,8 @@ export function useNativeMediaTiles(
         videoAvailable: Boolean(cameraStreamUrl),
         receiving: cameraReceiving,
         loading: cameraEnabled && cameraReceiving && !cameraStreamUrl,
+        watchedShares: sharesWatchedBy(state.participants, participant.participantId),
+        shareWatchers: [],
       });
 
       if (screenSharing) {
@@ -160,6 +167,8 @@ export function useNativeMediaTiles(
             ? localScreen?.runtime.status === "paused" ? localScreen.runtime.pausedReason ?? "minimized" : null
             : screenTrack?.pausedReason ?? null,
           shareAppName: participant.isLocal && localScreen?.kind === "window" ? localScreen.displayName : undefined,
+          watchedShares: [],
+          shareWatchers: watchersOfShare(state.participants, participant.participantId),
         });
       }
     }
