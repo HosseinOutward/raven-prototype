@@ -230,7 +230,7 @@ function Invoke-Build {
   Invoke-Sign $artifacts["linux-x86_64"]
 
   $notesPath = if ($NotesFile) { $NotesFile } else { Join-Path $Root "release-notes-$Version.md" }
-  $notes = if (Test-Path -LiteralPath $notesPath) { (Get-Content -Raw -LiteralPath $notesPath).Trim() } else { "" }
+  $notes = if (Test-Path -LiteralPath $notesPath) { (Get-Content -Raw -Encoding UTF8 -LiteralPath $notesPath).Trim() } else { "" }
   $platforms = [ordered]@{}
   foreach ($entry in $artifacts.GetEnumerator()) {
     $platforms[$entry.Key] = [ordered]@{
