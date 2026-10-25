@@ -401,7 +401,13 @@ export interface AudioNetworkTotals {
   /** The worst round trip and jitter the server reports for your audio. */
   sentRoundTripMs?: number | null;
   sentJitterMs?: number | null;
+  /** Round trip to the server on the connection's active path. */
+  roundTripMs?: number | null;
+  /** LiveKit's verdict on your connection. */
+  connectionQuality?: AudioConnectionQuality | null;
 }
+
+export type AudioConnectionQuality = "excellent" | "good" | "poor" | "lost";
 
 export type AudioStateUnsubscribe = () => void;
 

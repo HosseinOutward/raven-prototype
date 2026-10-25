@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::{
-    LocalAudioTrack, LocalTrack, Participant, RemoteParticipant, RemoteTrack,
+    ConnectionQuality, LocalAudioTrack, LocalTrack, Participant, RemoteParticipant, RemoteTrack,
     RemoteTrackPublication, Room, RoomEvent, RoomOptions, TrackKind, TrackPublication, TrackSid,
     TrackSource,
 };
@@ -32,7 +32,7 @@ use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::audio_stream::native::NativeAudioStream;
-use livekit::webrtc::stats::RtcStats;
+use livekit::webrtc::stats::{IceCandidatePairState, RtcStats};
 use livekit::DisconnectReason;
 use tauri::{AppHandle, Emitter};
 use tokio::runtime::{Handle, Runtime};
@@ -354,6 +354,36 @@ pub struct AudioNetworkTotals {
     /// The worst round trip and jitter the server reports for this peer's audio.
     pub sent_round_trip_ms: Option<f64>,
     pub sent_jitter_ms: Option<f64>,
+    /// Round trip to the server on the connection's active ICE pair, in milliseconds.
+    pub round_trip_ms: Option<f64>,
+    /// LiveKit's own verdict on this connection: excellent, good, poor or lost.
+    pub connection_quality: Option<&'static str>,
+}
+
+/// The round trip, in milliseconds, of the first in-use candidate pair that has a
+/// measurement. Publisher stats come first: that connection is the one carrying the mic.
+pub fn active_pair_round_trip_ms<'a>(
+    stats: impl IntoIterator<Item = &'a RtcStats>,
+) -> Option<f64> {
+    stats.into_iter().find_map(|stat| match stat {
+        RtcStats::CandidatePair(pair)
+            if pair.candidate_pair.nominated
+                && pair.candidate_pair.state == Some(IceCandidatePairState::Succeeded)
+                && pair.candidate_pair.current_round_trip_time > 0.0 =>
+        {
+            Some(pair.candidate_pair.current_round_trip_time * 1_000.0)
+        }
+        _ => None,
+    })
+}
+
+fn quality_word(quality: ConnectionQuality) -> &'static str {
+    match quality {
+        ConnectionQuality::Excellent => "excellent",
+        ConnectionQuality::Good => "good",
+        ConnectionQuality::Poor => "poor",
+        ConnectionQuality::Lost => "lost",
+    }
 }
 
 pub async fn measure_audio_network_totals(room: Arc<Room>) -> Result<AudioNetworkTotals, String> {
@@ -378,6 +408,9 @@ pub async fn measure_audio_network_totals(room: Arc<Room>) -> Result<AudioNetwor
             _ => {}
         }
     }
+    totals.round_trip_ms =
+        active_pair_round_trip_ms(stats.publisher_stats.iter().chain(&stats.subscriber_stats));
+    totals.connection_quality = Some(quality_word(room.local_participant().connection_quality()));
     totals.received_bytes = stats
         .subscriber_stats
         .iter()
@@ -2244,5 +2277,39 @@ mod shared_meta_tests {
             .values()
             .all(|entry| entry.app_icon_data_url.is_none()
                 && entry.app_name.as_deref() == Some("EXCEL")));
+    }
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+    use livekit::webrtc::stats::CandidatePairStats;
+
+    fn pair(nominated: bool, state: IceCandidatePairState, seconds: f64) -> RtcStats {
+        let mut stats = CandidatePairStats::default();
+        stats.candidate_pair.nominated = nominated;
+        stats.candidate_pair.state = Some(state);
+        stats.candidate_pair.current_round_trip_time = seconds;
+        RtcStats::CandidatePair(stats)
+    }
+
+    #[test]
+    fn round_trip_comes_from_the_active_pair_only() {
+        let stats = [
+            pair(false, IceCandidatePairState::Succeeded, 0.5),
+            pair(true, IceCandidatePairState::Failed, 0.4),
+            pair(true, IceCandidatePairState::Succeeded, 0.0),
+            pair(true, IceCandidatePairState::Succeeded, 0.042),
+        ];
+        let rtt = active_pair_round_trip_ms(&stats).expect("an active pair");
+        assert!((rtt - 42.0).abs() < 1e-9);
+        assert_eq!(active_pair_round_trip_ms(&stats[..3]), None);
+        assert_eq!(active_pair_round_trip_ms(&[]), None);
+    }
+
+    #[test]
+    fn quality_words_are_stable() {
+        assert_eq!(quality_word(ConnectionQuality::Excellent), "excellent");
+        assert_eq!(quality_word(ConnectionQuality::Lost), "lost");
     }
 }

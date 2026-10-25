@@ -124,6 +124,50 @@ impl VideoPauseReason {
 /// paused, and why. An empty value (LiveKit's way of deleting an attribute) means live.
 pub const SHARE_PAUSED_ATTRIBUTE: &str = "raven.share.paused";
 
+/// Participant attribute on the native viewer (`<userId>`) listing whose screen shares the
+/// user is watching, as a comma-separated list of user ids. It lives and dies with the
+/// viewer's connection, so a closed app stops "watching" at once. An empty value means none.
+pub const WATCHING_ATTRIBUTE: &str = "raven.watching";
+
+const MAX_WATCHED_SHARES: usize = 32;
+const MAX_WATCHED_ID_LEN: usize = 64;
+
+/// The attribute value for a set of watched sharers: sorted, unique, comma-separated.
+pub fn encode_watching<S: AsRef<str>>(sharers: &[S]) -> String {
+    let mut ids: Vec<&str> = sharers
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|id| is_watchable_id(id))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.truncate(MAX_WATCHED_SHARES);
+    ids.join(",")
+}
+
+/// Read a [`WATCHING_ATTRIBUTE`] value from another client. Anything that is not a plain
+/// user id is dropped, so a malformed or hostile value cannot grow or confuse the list.
+pub fn decode_watching(value: &str) -> Vec<String> {
+    let mut ids: Vec<String> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|id| is_watchable_id(id))
+        .map(str::to_string)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.truncate(MAX_WATCHED_SHARES);
+    ids
+}
+
+fn is_watchable_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_WATCHED_ID_LEN
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct VideoSourceRuntimeState {
@@ -556,6 +600,9 @@ pub struct VideoParticipantState {
     pub audio_muted: bool,
     pub speaking: bool,
     pub connection_quality: VideoConnectionQuality,
+    /// Ids of the people whose screen shares this participant is watching, as they
+    /// published it. Empty for you: your own choices are the `desired` flags on `remoteTracks`.
+    pub watching: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -633,6 +680,36 @@ pub struct WindowTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watching_round_trips_sorted_and_unique() {
+        let value = encode_watching(&["b2", "a1", "b2", "c3"]);
+        assert_eq!(value, "a1,b2,c3");
+        assert_eq!(decode_watching(&value), vec!["a1", "b2", "c3"]);
+        assert_eq!(encode_watching::<&str>(&[]), "");
+        assert!(decode_watching("").is_empty());
+    }
+
+    #[test]
+    fn watching_drops_values_that_are_not_user_ids() {
+        assert_eq!(
+            decode_watching(" a1 ,,b 2,c3#video,<script>,d-4_x "),
+            vec!["a1", "d-4_x"]
+        );
+        let long = "x".repeat(MAX_WATCHED_ID_LEN + 1);
+        assert!(decode_watching(&long).is_empty());
+        assert_eq!(encode_watching(&["ok", "not ok", ""]), "ok");
+    }
+
+    #[test]
+    fn watching_is_capped() {
+        let ids: Vec<String> = (0..100).map(|index| format!("u{index:03}")).collect();
+        assert_eq!(decode_watching(&ids.join(",")).len(), MAX_WATCHED_SHARES);
+        assert_eq!(
+            encode_watching(&ids).split(',').count(),
+            MAX_WATCHED_SHARES
+        );
+    }
 
     #[test]
     fn presentation_profile_reserves_a_text_readable_screen_share_budget() {

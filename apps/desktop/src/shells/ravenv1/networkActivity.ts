@@ -1,15 +1,23 @@
-import { audioCommands } from "@/lib/audio";
+import { audioCommands, type AudioConnectionQuality } from "@/lib/audio";
 import { type VideoQualityReport, videoCommands } from "@/lib/video";
 
 export type NetworkActivityDirection = "incoming" | "outgoing";
-export type NetworkActivityCategory = "audio" | "video" | "screenShare" | "other" | "total";
-export type MeasuredNetworkCategory = Exclude<NetworkActivityCategory, "total">;
+export type NetworkActivityCategory = "audio" | "video" | "screenShare" | "other" | "total" | "connection";
+/** Categories that are a transfer rate. Connection is a reading, and Total does not include it. */
+export type MeasuredNetworkCategory = Exclude<NetworkActivityCategory, "total" | "connection">;
 
 export interface NetworkActivitySettings {
   enabled: boolean;
   directions: NetworkActivityDirection[];
   categories: NetworkActivityCategory[];
 }
+
+/** Where the readout starts: off, and Total once someone turns it on. Connection is opt-in. */
+export const DEFAULT_NETWORK_ACTIVITY_SETTINGS: NetworkActivitySettings = {
+  enabled: false,
+  directions: ["incoming", "outgoing"],
+  categories: ["total"],
+};
 
 export interface NetworkTransferRate {
   incoming: number;
@@ -23,6 +31,14 @@ export interface NetworkActivitySnapshot extends NetworkActivitySettings {
   screenShareQuality: VideoQualityReport | null;
   /** Frames per second the share capture delivered between the last two samples. */
   screenShareCaptureFps: number | null;
+  /** The latest round trip and quality; null until measured, or when Connection is not shown. */
+  connection: ConnectionReading | null;
+}
+
+/** Your link to the server: round trip on the audio connection, and LiveKit's verdict on it. */
+export interface ConnectionReading {
+  roundTripMs: number | null;
+  quality: AudioConnectionQuality | null;
 }
 
 export type NetworkCounters = Record<MeasuredNetworkCategory, NetworkTransferRate>;
@@ -30,12 +46,80 @@ export type NetworkCounters = Record<MeasuredNetworkCategory, NetworkTransferRat
 export interface NetworkSample {
   counters: NetworkCounters;
   screenShareQuality: VideoQualityReport | null;
+  connection: ConnectionReading | null;
 }
 
 export interface NetworkSamplingPlan {
   audio: boolean;
   video: boolean;
   screenShare: boolean;
+  connection: boolean;
+}
+
+/** A category that is a transfer rate is selected, with a direction to show it in. */
+export function showsThroughput(settings: NetworkActivitySettings) {
+  return settings.directions.length > 0 && settings.categories.some((category) => category !== "connection" && category !== "other");
+}
+
+export function showsConnection(settings: NetworkActivitySettings) {
+  return settings.categories.includes("connection");
+}
+
+/** Whether anything is worth measuring: in a call, switched on, and something selected. */
+export function networkReadoutActive(connected: boolean, settings: NetworkActivitySettings) {
+  return connected && settings.enabled && (showsThroughput(settings) || showsConnection(settings));
+}
+
+/** Read saved settings defensively; unknown or retired categories are dropped. */
+export function normalizeNetworkActivitySettings(value: Partial<NetworkActivitySettings> | undefined | null): NetworkActivitySettings {
+  if (!value || typeof value !== "object") {
+    return {
+      ...DEFAULT_NETWORK_ACTIVITY_SETTINGS,
+      directions: [...DEFAULT_NETWORK_ACTIVITY_SETTINGS.directions],
+      categories: [...DEFAULT_NETWORK_ACTIVITY_SETTINGS.categories],
+    };
+  }
+  return {
+    enabled: value.enabled === true,
+    directions: Array.isArray(value.directions)
+      ? value.directions.filter((direction): direction is NetworkActivityDirection => direction === "incoming" || direction === "outgoing")
+      : [...DEFAULT_NETWORK_ACTIVITY_SETTINGS.directions],
+    categories: Array.isArray(value.categories)
+      ? value.categories.filter((category): category is NetworkActivityCategory => isNetworkActivityCategory(category) && category !== "other")
+      : [...DEFAULT_NETWORK_ACTIVITY_SETTINGS.categories],
+  };
+}
+
+function isNetworkActivityCategory(value: unknown): value is NetworkActivityCategory {
+  return value === "audio" || value === "video" || value === "screenShare" || value === "other" || value === "total" || value === "connection";
+}
+
+const QUALITY_WORDS: Record<AudioConnectionQuality, string> = {
+  excellent: "Excellent",
+  good: "Good",
+  poor: "Poor",
+  lost: "Lost",
+};
+
+/** "42 ms", or "<1 ms" for a link so close it rounds to nothing. */
+export function formatRoundTrip(milliseconds: number) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "";
+  if (milliseconds < 1) return "<1 ms";
+  return `${Math.round(milliseconds)} ms`;
+}
+
+/** The Connection line: "42 ms · Good". Either half may be missing; nothing yet reads "Measuring…". */
+export function connectionText(reading: ConnectionReading | null) {
+  const parts = [
+    reading?.roundTripMs != null ? formatRoundTrip(reading.roundTripMs) : "",
+    reading?.quality ? QUALITY_WORDS[reading.quality] : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Measuring…";
+}
+
+/** Poor and lost are the departures from a calm call; everything else stays quiet. */
+export function connectionNeedsAttention(reading: ConnectionReading | null) {
+  return reading?.quality === "poor" || reading?.quality === "lost";
 }
 
 export function createZeroNetworkCounters(): NetworkCounters {
@@ -67,6 +151,7 @@ export function createNetworkSamplingPlan(settings: NetworkActivitySettings): Ne
     // received and published video without browser RTC statistics polling.
     video,
     screenShare,
+    connection: showsConnection(settings),
   };
 }
 
@@ -81,11 +166,12 @@ export async function collectNetworkSample(
   const counters = createZeroNetworkCounters();
 
   const [audioTotals, videoTotals, screenShareQuality] = await Promise.all([
-    plan.audio ? audioCommands.getNetworkTotals() : Promise.resolve(null),
+    // The audio connection is always up in a call, so it answers for Connection too.
+    plan.audio || plan.connection ? audioCommands.getNetworkTotals() : Promise.resolve(null),
     plan.video || plan.screenShare ? videoCommands.getNetworkTotals() : Promise.resolve(null),
     plan.screenShare ? videoCommands.getQualityReport() : Promise.resolve(null),
   ]);
-  if (audioTotals) {
+  if (audioTotals && plan.audio) {
     counters.audio.incoming = audioTotals.receivedBytes;
     counters.audio.outgoing = audioTotals.sentBytes;
   }
@@ -99,7 +185,10 @@ export async function collectNetworkSample(
       counters.screenShare.outgoing = videoTotals.screenShareSentBytes;
     }
   }
-  return { counters, screenShareQuality };
+  const connection: ConnectionReading | null = plan.connection && audioTotals
+    ? { roundTripMs: audioTotals.roundTripMs ?? null, quality: audioTotals.connectionQuality ?? null }
+    : null;
+  return { counters, screenShareQuality, connection };
 }
 
 export function screenShareQualityNotice(

@@ -2,8 +2,14 @@ import { describe, expect, test } from "bun:test";
 import type { VideoOutboundQuality, VideoQualityReport } from "@/lib/video";
 import {
   codecImplementationNotice,
+  connectionNeedsAttention,
+  connectionText,
   createNetworkSamplingPlan,
   createZeroNetworkCounters,
+  DEFAULT_NETWORK_ACTIVITY_SETTINGS,
+  formatRoundTrip,
+  networkReadoutActive,
+  normalizeNetworkActivitySettings,
   ratesFromNetworkSamples,
   receivedScreenShareQualityNotice,
   screenShareCaptureFps,
@@ -32,6 +38,7 @@ const outbound = (
 const sample = (): NetworkSample => ({
   counters: createZeroNetworkCounters(),
   screenShareQuality: null,
+  connection: null,
 });
 
 describe("network activity sampling", () => {
@@ -40,6 +47,7 @@ describe("network activity sampling", () => {
       audio: true,
       video: false,
       screenShare: false,
+      connection: false,
     });
   });
 
@@ -48,6 +56,7 @@ describe("network activity sampling", () => {
       audio: false,
       video: true,
       screenShare: false,
+      connection: false,
     });
   });
 
@@ -141,5 +150,56 @@ describe("network activity sampling", () => {
         powerEfficientDecoder: false,
       },
     })).toBe("Receiving 1920×1080 @ 10 FPS · packet loss 0.5%. Decoder: libvpx (software).");
+  });
+});
+
+describe("connection readout", () => {
+  test("is off by default: the readout is off and Connection is not among its categories", () => {
+    expect(DEFAULT_NETWORK_ACTIVITY_SETTINGS.enabled).toBe(false);
+    expect(DEFAULT_NETWORK_ACTIVITY_SETTINGS.categories).not.toContain("connection");
+    expect(normalizeNetworkActivitySettings(undefined).categories).not.toContain("connection");
+    // Settings saved before Connection existed keep exactly what they had.
+    expect(normalizeNetworkActivitySettings({ enabled: true, directions: ["incoming"], categories: ["audio", "total"] })).toEqual({
+      enabled: true,
+      directions: ["incoming"],
+      categories: ["audio", "total"],
+    });
+  });
+
+  test("keeps Connection when saved and drops unknown or retired categories", () => {
+    const saved = { enabled: true, directions: ["outgoing", "sideways"], categories: ["connection", "other", "bogus", "video"] } as unknown as NetworkActivitySettings;
+    expect(normalizeNetworkActivitySettings(saved)).toEqual({ enabled: true, directions: ["outgoing"], categories: ["connection", "video"] });
+  });
+
+  test("measures the connection only when it is chosen, and Total does not include it", () => {
+    expect(createNetworkSamplingPlan(settings(["total"])).connection).toBe(false);
+    expect(createNetworkSamplingPlan(settings(["connection"]))).toEqual({ audio: false, video: false, screenShare: false, connection: true });
+    expect(createNetworkSamplingPlan(settings(["connection", "audio"]))).toEqual({ audio: true, video: false, screenShare: false, connection: true });
+  });
+
+  test("a connection-only readout needs no direction and does not sample while off or outside a call", () => {
+    expect(networkReadoutActive(true, settings(["connection"], []))).toBe(true);
+    expect(networkReadoutActive(true, settings(["audio"], []))).toBe(false);
+    expect(networkReadoutActive(true, settings([]))).toBe(false);
+    expect(networkReadoutActive(false, settings(["connection"]))).toBe(false);
+    expect(networkReadoutActive(true, { ...settings(["connection"]), enabled: false })).toBe(false);
+  });
+
+  test("reads as round trip and a quality word", () => {
+    expect(connectionText({ roundTripMs: 42.4, quality: "good" })).toBe("42 ms · Good");
+    expect(connectionText({ roundTripMs: 0.3, quality: "excellent" })).toBe("<1 ms · Excellent");
+    expect(connectionText({ roundTripMs: 180, quality: "poor" })).toBe("180 ms · Poor");
+    expect(connectionText({ roundTripMs: null, quality: "lost" })).toBe("Lost");
+    expect(connectionText({ roundTripMs: 55, quality: null })).toBe("55 ms");
+    expect(connectionText(null)).toBe("Measuring…");
+    expect(formatRoundTrip(Number.NaN)).toBe("");
+    expect(formatRoundTrip(-3)).toBe("");
+  });
+
+  test("only a poor or lost link asks for attention", () => {
+    expect(connectionNeedsAttention({ roundTripMs: 40, quality: "good" })).toBe(false);
+    expect(connectionNeedsAttention({ roundTripMs: 400, quality: "poor" })).toBe(true);
+    expect(connectionNeedsAttention({ roundTripMs: null, quality: "lost" })).toBe(true);
+    expect(connectionNeedsAttention(null)).toBe(false);
   });
 });

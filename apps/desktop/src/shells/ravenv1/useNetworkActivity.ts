@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   collectNetworkSample,
   createZeroNetworkRates,
+  networkReadoutActive,
   ratesFromNetworkSamples,
   screenShareCaptureFps,
   type NetworkActivitySettings,
@@ -10,19 +11,14 @@ import {
 
 const NETWORK_SAMPLE_INTERVAL_MS = 2000;
 
-type Measurement = Pick<NetworkActivitySnapshot, "rates" | "updatedAt" | "screenShareQuality" | "screenShareCaptureFps">;
+type Measurement = Pick<NetworkActivitySnapshot, "rates" | "updatedAt" | "screenShareQuality" | "screenShareCaptureFps" | "connection">;
 
 export function useNetworkActivity(
   connected: boolean,
   settings: NetworkActivitySettings,
 ): NetworkActivitySnapshot {
   const [measurement, setMeasurement] = useState<Measurement>(() => emptyMeasurement());
-  const active = Boolean(
-    connected
-      && settings.enabled
-      && settings.directions.length > 0
-      && settings.categories.length > 0,
-  );
+  const active = networkReadoutActive(connected, settings);
   useEffect(() => {
     setMeasurement((current) => current.updatedAt === null ? current : emptyMeasurement());
     if (!active) return;
@@ -55,7 +51,11 @@ export function useNetworkActivity(
             updatedAt: Date.now(),
             screenShareQuality: next.screenShareQuality,
             screenShareCaptureFps: screenShareCaptureFps(previous.sample.screenShareQuality, next.screenShareQuality, seconds),
+            connection: next.connection,
           });
+        } else if (next.connection) {
+          // A rate needs two samples; the connection reading is ready after one.
+          setMeasurement((current) => ({ ...current, connection: next.connection }));
         }
         previous = { at, sample: next };
       } catch {
@@ -84,5 +84,5 @@ export function useNetworkActivity(
 }
 
 function emptyMeasurement(): Measurement {
-  return { rates: createZeroNetworkRates(), updatedAt: null, screenShareQuality: null, screenShareCaptureFps: null };
+  return { rates: createZeroNetworkRates(), updatedAt: null, screenShareQuality: null, screenShareCaptureFps: null, connection: null };
 }

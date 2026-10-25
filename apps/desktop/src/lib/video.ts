@@ -126,6 +126,11 @@ export interface VideoParticipantState {
   audioMuted: boolean;
   speaking: boolean;
   connectionQuality: VideoConnectionQuality;
+  /**
+   * Ids of the people whose screen shares this person is watching. Others only: your own
+   * choices are the `desired` flags on `remoteTracks`.
+   */
+  watching?: string[];
 }
 
 export interface RemoteVideoTrackState {

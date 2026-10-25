@@ -39,7 +39,7 @@ use crate::video::domain::{
     PublishedVideoTrackId, RemoteVideoTrackState, SelfPreviewMode, VideoConnectionQuality,
     VideoParticipantState, VideoPauseReason, VideoPresentationSettings, VideoQualityProfile,
     VideoSourceId, VideoSourceRuntimeStatus, VideoSourceState, VideoTrackSource,
-    SHARE_PAUSED_ATTRIBUTE,
+    decode_watching, encode_watching, SHARE_PAUSED_ATTRIBUTE, WATCHING_ATTRIBUTE,
 };
 use crate::video::state::{SharedVideoEngineState, VIDEO_STATE_CHANGED_EVENT};
 use crate::video::stream::{PresentationCounters, VideoFrameHub, VideoFramePublisher};
@@ -143,6 +143,82 @@ struct ViewerConnection {
     room: Arc<Room>,
     event_loop: JoinHandle<()>,
     readers: RemoteReaders,
+    watching: Arc<WatchingSync>,
+}
+
+/// What the viewer last told the room it is watching ([`WATCHING_ATTRIBUTE`]); `None` when
+/// that is unknown (a failed send, a reconnect), which forces the next sync to send.
+/// A new connection starts without attributes, which is the same as "".
+struct WatchingSync {
+    sent: tokio::sync::Mutex<Option<String>>,
+}
+
+impl WatchingSync {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            sent: tokio::sync::Mutex::new(Some(String::new())),
+        })
+    }
+}
+
+/// Make the viewer's [`WATCHING_ATTRIBUTE`] match the screen shares it is set to receive.
+/// Cheap to call on every room event: it sends only on a change, and sends are serialized
+/// so the last one always reflects the room as it is then. Best effort: a failure just
+/// leaves others without the avatar until the next event.
+fn sync_watching(handle: &Handle, room: &Arc<Room>, watching: &Arc<WatchingSync>) {
+    let desired = encode_watching(&watched_share_owners(room));
+    if let Ok(sent) = watching.sent.try_lock() {
+        if sent.as_deref() == Some(desired.as_str()) {
+            return;
+        }
+    }
+    let room = Arc::clone(room);
+    let watching = Arc::clone(watching);
+    handle.spawn(async move {
+        let mut sent = watching.sent.lock().await;
+        let desired = encode_watching(&watched_share_owners(&room));
+        if sent.as_deref() == Some(desired.as_str()) {
+            return;
+        }
+        let attributes = HashMap::from([(WATCHING_ATTRIBUTE.to_string(), desired.clone())]);
+        *sent = room
+            .local_participant()
+            .set_attributes(attributes)
+            .await
+            .ok()
+            .map(|()| desired);
+    });
+}
+
+/// Whose screen shares `room` is set to receive (other people only; the self preview is
+/// not watching).
+fn watched_share_owners(room: &Room) -> Vec<String> {
+    let local = room.local_participant().identity().0;
+    watched_owners(
+        &local,
+        room.remote_participants().values().map(|participant| {
+            let watching_share = participant.track_publications().values().any(|publication| {
+                publication.kind() == TrackKind::Video
+                    && video_track_source(publication.source()) == Some(VideoTrackSource::Screenshare)
+                    && publication.is_desired()
+            });
+            (participant.identity().0, watching_share)
+        }),
+    )
+}
+
+/// The pure half of [`watched_share_owners`]: `(identity, has a watched share)` pairs to
+/// the sorted, unique base ids of the owners, minus the local user.
+fn watched_owners(local_identity: &str, shares: impl Iterator<Item = (String, bool)>) -> Vec<String> {
+    let local = base_participant_identity(local_identity);
+    let mut owners: Vec<String> = shares
+        .filter(|(_, watched)| *watched)
+        .map(|(identity, _)| base_participant_identity(&identity).to_string())
+        .filter(|id| id != local)
+        .collect();
+    owners.sort_unstable();
+    owners.dedup();
+    owners
 }
 
 /// Connection flags shared with the state snapshot, so reading "are we connected" never
@@ -805,6 +881,7 @@ impl VideoEngine {
         let readers = Arc::new(Mutex::new(HashMap::new()));
         let viewer_connected = Arc::clone(&self.link.viewer_connected);
         viewer_connected.store(true, Ordering::Release);
+        let watching = WatchingSync::new();
         let viewer_event_loop = self.spawn_viewer_event_loop(
             app,
             shared,
@@ -812,11 +889,13 @@ impl VideoEngine {
             viewer_events,
             &readers,
             &viewer_connected,
+            &watching,
         );
         self.viewer = Some(ViewerConnection {
             room: Arc::clone(&viewer_room),
             event_loop: viewer_event_loop,
             readers,
+            watching,
         });
         self.apply_viewer_subscriptions(SelfPreviewMode::Local, remote_preferences);
         Ok(())
@@ -855,6 +934,7 @@ impl VideoEngine {
             return;
         };
         let room = Arc::clone(&viewer.room);
+        let watching = Arc::clone(&viewer.watching);
         let local_identity =
             base_participant_identity(&room.local_participant().identity().0).to_string();
         let updates: Vec<_> = room
@@ -894,6 +974,8 @@ impl VideoEngine {
         for (publication, desired) in updates {
             publication.set_subscribed(desired);
         }
+        // Tell the room at once, instead of when the track arrives.
+        sync_watching(runtime.handle(), &room, &watching);
     }
 
     /// Sink map handed to the capture manager so it knows where to push captured frames.
@@ -1079,8 +1161,10 @@ impl VideoEngine {
         mut events: mpsc::UnboundedReceiver<RoomEvent>,
         readers: &RemoteReaders,
         connected: &Arc<AtomicBool>,
+        watching: &Arc<WatchingSync>,
     ) -> JoinHandle<()> {
         let app = app.clone();
+        let watching = Arc::clone(watching);
         // A weak state reference prevents `state -> engine -> task -> state` from
         // forming a cycle if the app shuts down without an explicit leave command.
         let shared = Arc::downgrade(shared);
@@ -1179,6 +1263,8 @@ impl VideoEngine {
                     }
                     RoomEvent::Reconnected => {
                         connected.store(true, Ordering::Release);
+                        // A full reconnect is a new participant with no attributes.
+                        *watching.sent.lock().await = None;
                     }
                     RoomEvent::Disconnected { reason } => {
                         connected.store(false, Ordering::Release);
@@ -1195,6 +1281,7 @@ impl VideoEngine {
                     _ => {}
                 }
                 reflect_viewer_state(&app, &shared_state, &room);
+                sync_watching(&runtime, &room, &watching);
             }
             connected.store(false, Ordering::Release);
             if let Some(shared_state) = shared.upgrade() {
@@ -1345,6 +1432,7 @@ fn reflect_viewer_state(app: &AppHandle, shared: &SharedVideoEngineState, room: 
             audio_muted: true,
             speaking: room.local_participant().is_speaking(),
             connection_quality: connection_quality(room.local_participant().connection_quality()),
+            watching: Vec::new(),
         },
     );
     let mut tracks = Vec::new();
@@ -1366,11 +1454,20 @@ fn reflect_viewer_state(app: &AppHandle, shared: &SharedVideoEngineState, room: 
                 audio_muted: true,
                 speaking: false,
                 connection_quality: VideoConnectionQuality::Unknown,
+                watching: Vec::new(),
             });
         if entry.display_name.is_empty() || entry.display_name == entry.participant_id {
             entry.display_name = display_name.clone();
         }
         entry.speaking |= participant.is_speaking();
+        if let Some(value) = participant.attributes().get(WATCHING_ATTRIBUTE) {
+            for sharer in decode_watching(value) {
+                if sharer != participant_id && !entry.watching.contains(&sharer) {
+                    entry.watching.push(sharer);
+                }
+            }
+            entry.watching.sort_unstable();
+        }
         let share_paused = participant
             .attributes()
             .get(SHARE_PAUSED_ATTRIBUTE)
@@ -1530,6 +1627,22 @@ fn worse_quality(
 mod tests {
     use super::*;
     use crate::video::domain::{VideoSourceKind, VideoSourceRuntimeState};
+
+    #[test]
+    fn watched_owners_are_other_people_sorted_and_unique() {
+        let shares = vec![
+            ("bob".to_string(), true),
+            ("alice#video".to_string(), true),
+            ("alice".to_string(), true),
+            ("carol".to_string(), false),
+            ("me#video".to_string(), true),
+        ];
+        assert_eq!(
+            watched_owners("me", shares.into_iter()),
+            vec!["alice".to_string(), "bob".to_string()]
+        );
+        assert!(watched_owners("me", std::iter::empty()).is_empty());
+    }
 
     fn share(kind: VideoSourceKind, status: VideoSourceRuntimeStatus) -> VideoSourceState {
         let mut source = VideoSourceState::new(kind, "Notepad", "1234");

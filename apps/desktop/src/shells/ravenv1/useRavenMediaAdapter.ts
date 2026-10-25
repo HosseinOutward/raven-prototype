@@ -36,6 +36,7 @@ import {
   type SourceActivityMap,
   useVoiceActivity,
 } from "@/lib/speakingActivity";
+import { DEFAULT_NETWORK_ACTIVITY_SETTINGS, normalizeNetworkActivitySettings } from "./networkActivity";
 import type { NetworkActivityCategory, NetworkActivityDirection, NetworkActivitySettings } from "./networkActivity";
 import {
   isConfirmedMicrophoneActive,
@@ -1360,12 +1361,6 @@ type MediaSettings = {
   videoPresentationProfile?: VideoPresentationProfile;
 };
 
-const DEFAULT_NETWORK_ACTIVITY_SETTINGS: NetworkActivitySettings = {
-  enabled: false,
-  directions: ["incoming", "outgoing"],
-  categories: ["total"],
-};
-
 export function readMediaSettings(): MediaSettings {
   try {
     const raw = window.localStorage.getItem(MEDIA_SETTINGS_KEY);
@@ -1427,23 +1422,3 @@ function isVideoPresentationProfile(value: unknown): value is VideoPresentationP
   return value === "efficiency" || value === "balanced" || value === "quality";
 }
 
-function normalizeNetworkActivitySettings(value: NetworkActivitySettings | undefined): NetworkActivitySettings {
-  if (!value || typeof value !== "object") return { ...DEFAULT_NETWORK_ACTIVITY_SETTINGS };
-  return {
-    enabled: value.enabled === true,
-    directions: Array.isArray(value.directions)
-      ? value.directions.filter(isNetworkActivityDirection)
-      : [...DEFAULT_NETWORK_ACTIVITY_SETTINGS.directions],
-    categories: Array.isArray(value.categories)
-      ? value.categories.filter((category): category is NetworkActivityCategory => isNetworkActivityCategory(category) && category !== "other")
-      : [...DEFAULT_NETWORK_ACTIVITY_SETTINGS.categories],
-  };
-}
-
-function isNetworkActivityDirection(value: unknown): value is NetworkActivityDirection {
-  return value === "incoming" || value === "outgoing";
-}
-
-function isNetworkActivityCategory(value: unknown): value is NetworkActivityCategory {
-  return value === "audio" || value === "video" || value === "screenShare" || value === "other" || value === "total";
-}
