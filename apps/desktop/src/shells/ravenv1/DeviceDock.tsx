@@ -17,7 +17,14 @@ import {
 } from "@/components/nest/VideoPickers";
 import { customDraftFromProfile, profileFromSelection } from "@/components/nest/customQuality";
 import { NoiseSuppressionRow } from "@/components/NoiseSuppressionRow";
-import { buildVoiceOverlaySnapshot, EMPTY_VOICE_OVERLAY_SNAPSHOT, voiceOverlayCommands } from "@/lib/voiceOverlay";
+import { volumePercentToGainDb } from "@/components/media/audioSatellites";
+import {
+  buildVoiceOverlaySnapshot,
+  EMPTY_VOICE_OVERLAY_SNAPSHOT,
+  remoteMicTracks,
+  subscribeVoiceOverlayActions,
+  voiceOverlayCommands,
+} from "@/lib/voiceOverlay";
 import { mediaHotkeyCommands, subscribeMediaHotkeys, type MediaHotkeySettings } from "@/lib/mediaHotkeys";
 import { useTalkingWhileMuted } from "@/lib/mutedSpeech";
 import {
@@ -128,6 +135,12 @@ export function DeviceDock({
   const sendQuality = useSendQuality(media.phase === "connected" && media.activeNestId != null);
   const connected = media.phase === "connected" && media.activeNestId != null;
   const signedIn = Boolean(data.user);
+  // "You're muted" once per mute: the dock callout and the voice overlay show the same signal.
+  const talkingWhileMuted = useTalkingWhileMuted(
+    media.audioState,
+    connected && media.audioSupported && !media.localMicEnabled && !media.localDeafened,
+  );
+  const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const mixerOpen = view.kind === "mixer";
 
   const runCallAction = useCallback((action: ThumbnailToolbarAction) => {
@@ -171,6 +184,45 @@ export function DeviceDock({
       void operation.catch(() => undefined).finally(() => hotkeyActionRef.current.delete(action));
     }).then((nextUnlisten) => { unlisten = nextUnlisten; }).catch(() => undefined);
     return () => unlisten?.();
+  }, [runCallAction]);
+
+  // The overlay's buttons and volume scrolls arrive here, so they run through the same
+  // path as the hotkeys and the taskbar buttons (the guards and the error toasts included).
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    subscribeVoiceOverlayActions((action) => {
+      if (!active) return;
+      if (action.kind === "mic" || action.kind === "deafen") {
+        runCallAction(action.kind);
+        return;
+      }
+      const current = mediaRef.current;
+      if (action.kind === "away") {
+        // A failure is shown by the adapter; the next snapshot carries the real state.
+        void current.setAway(action.away).catch(() => undefined);
+        return;
+      }
+      const gainDb = volumePercentToGainDb(action.percent);
+      for (const { track } of remoteMicTracks(current.audioState, action.userId)) {
+        void current.setRemoteTrackVolume(track.participantId, track.trackId, gainDb).catch((error: unknown) => {
+          toast({
+            title: "Couldn’t change the volume",
+            description: error instanceof Error ? error.message : typeof error === "string" ? error : undefined,
+            tone: "error",
+          });
+        });
+      }
+    })
+      .then((nextUnlisten) => {
+        if (active) unlisten = nextUnlisten;
+        else nextUnlisten();
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unlisten?.();
+    };
   }, [runCallAction]);
 
   // Keep the native listener ready before exposing its buttons. The dock unmounts
@@ -306,6 +358,29 @@ export function DeviceDock({
     };
   }, [mixerOpen, media.setLocalPreviewSurfaceVisible, screenPickerOpen]);
 
+  // Show when I join a call: shown on joining, hidden again on leaving, but only if this
+  // is what showed it.
+  const shownByJoinRef = useRef(false);
+  useEffect(() => {
+    if (connected) {
+      let cancelled = false;
+      void voiceOverlayCommands
+        .getSettings()
+        .then((settings) => (settings.showOnJoin ? voiceOverlayCommands.show() : false))
+        .then((showed) => {
+          if (!cancelled && showed) shownByJoinRef.current = true;
+        })
+        .catch(() => undefined);
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (shownByJoinRef.current) {
+      shownByJoinRef.current = false;
+      void voiceOverlayCommands.hide().catch(() => undefined);
+    }
+  }, [connected]);
+
   // The overlay's avatar URLs carry each picture's version; a change re-sends the snapshot.
   const avatarRevision = useAvatarVersions();
   useEffect(() => {
@@ -326,6 +401,8 @@ export function DeviceDock({
       speakingActivity: media.speakingActivity,
       screenSharingUserIds: media.screenSharingUserIds,
       locationLabel: data.labels.nestSingular,
+      reconnecting: media.reconnecting,
+      localMutedHint: mutedHint,
       localCallState: { away: media.localAway, deafened: media.localDeafened },
     });
     const serialized = JSON.stringify(snapshot);
@@ -345,6 +422,8 @@ export function DeviceDock({
     media.localAway,
     media.localDeafened,
     media.phase,
+    media.reconnecting,
+    mutedHint,
     media.screenSharingUserIds,
     media.speakingActivity,
     media.videoState,
@@ -356,6 +435,8 @@ export function DeviceDock({
     <DockDeviceControls
       data={data}
       media={media}
+      mutedHint={mutedHint}
+      dismissMutedHint={dismissMutedHint}
       hotkeys={hotkeys}
       micLevel={micLevel}
       onScreenPicker={() => setScreenPickerOpen(true)}
@@ -580,9 +661,13 @@ function DockDeviceControls({
   arranging,
   onArrange,
   onArrangeEnd,
+  mutedHint,
+  dismissMutedHint,
 }: {
   data: RavenShellData;
   media: RavenMediaAdapterState;
+  mutedHint: boolean;
+  dismissMutedHint: () => void;
   hotkeys: MediaHotkeySettings | null;
   micLevel: number | null;
   onScreenPicker: () => void;
@@ -605,11 +690,6 @@ function DockDeviceControls({
   }, [arranging]);
   const inCall = media.phase === "connected" && media.activeNestId != null;
   const nest = data.labels.nestSingular.toLowerCase();
-  const talkingWhileMuted = useTalkingWhileMuted(
-    media.audioState,
-    inCall && media.audioSupported && !media.localMicEnabled && !media.localDeafened,
-  );
-  const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const micShortcut = hotkeyLabel(hotkeys?.mic);
   const sharePausedLine = media.screenSharePause === "minimized"
     ? `Sharing is paused while ${media.sharedAppName ?? "the app"} is minimized.`

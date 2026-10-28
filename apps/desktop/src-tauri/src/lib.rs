@@ -46,8 +46,9 @@ use media_hotkeys::{
     media_hotkeys_get_settings, media_hotkeys_update_settings, new_media_hotkey_state,
 };
 use overlay::{
-    new_voice_overlay_state, overlay_get_settings, overlay_get_snapshot, overlay_hide,
-    overlay_is_supported, overlay_save_position, overlay_show, overlay_toggle,
+    new_voice_overlay_state, overlay_action, overlay_drag, overlay_get_layout,
+    overlay_get_settings, overlay_get_snapshot, overlay_hide, overlay_is_supported,
+    overlay_reset_position, overlay_set_content_size, overlay_show, overlay_toggle,
     overlay_update_settings, overlay_update_snapshot,
 };
 use video::state::{
@@ -165,9 +166,13 @@ pub fn run() {
             overlay_toggle,
             overlay_show,
             overlay_hide,
-            overlay_save_position,
+            overlay_set_content_size,
+            overlay_drag,
+            overlay_reset_position,
+            overlay_get_layout,
             overlay_get_snapshot,
             overlay_update_snapshot,
+            overlay_action,
             media_hotkeys_get_settings,
             media_hotkeys_update_settings,
             thumbnail_toolbar::thumbnail_toolbar_update,

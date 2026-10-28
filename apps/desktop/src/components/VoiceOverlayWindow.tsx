@@ -1,40 +1,260 @@
-import { useEffect, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { GripHorizontal, MicOff, MonitorUp, Radio, Video, VolumeX } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Headphones, HeadphoneOff, Mic, MicOff, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
+import { mediaHotkeyCommands } from "@/lib/mediaHotkeys";
 import {
-  DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND,
+  DEFAULT_VOICE_OVERLAY_BACKGROUND,
   EMPTY_VOICE_OVERLAY_SNAPSHOT,
+  type VoiceOverlayAction,
+  type VoiceOverlayBackground,
   type VoiceOverlayLayout,
-  type VoiceOverlayNameBackground,
   type VoiceOverlayParticipant,
+  type VoiceOverlayResolvedShape,
+  type VoiceOverlaySettings,
+  type VoiceOverlaySize,
   type VoiceOverlaySnapshot,
+  subscribeVoiceOverlayInteraction,
+  subscribeVoiceOverlayLayout,
   subscribeVoiceOverlaySettings,
   subscribeVoiceOverlaySnapshot,
-  visibleHorizontalVoiceOverlayParticipants,
   voiceOverlayCommands,
 } from "@/lib/voiceOverlay";
+import {
+  VOLUME_SEND_INTERVAL_MS,
+  cardButtons,
+  createLatestThrottle,
+  steppedVolumePercent,
+  takeWheelNotches,
+  volumeReadout,
+  type CardButton,
+  type LatestThrottle,
+} from "@/lib/voiceOverlayControls";
+import {
+  JOINED_CAPTION_MS,
+  LEFT_ROW_MS,
+  QUIET_AFTER_MS,
+  advanceTalkState,
+  diffRoster,
+  isTalkActive,
+  localSaying,
+  nextTalkExpiry,
+  orderByJoin,
+  quietOpacity,
+  rowStatus,
+  selectCardRows,
+  showsName,
+  type LocalSaying,
+  type RosterMemory,
+  type RowStatus,
+  type TalkState,
+} from "@/lib/voiceOverlayView";
 
-const CHROME_HIDE_DELAY_MS = 1500;
+/** Room around the card for the speaking ring; it stays click-through. */
+const CARD_MARGIN = 8;
+/** How long a leaving row takes to fold away (matches `animate-pop-out`). */
+const POP_OUT_MS = 160;
 
-// A pill behind the name, sized by its text so it adds no height to the row (the window's
-// size is fixed natively). The text turns white on a fill so it reads over a bright game.
-const NAME_BACKGROUND_CLASS: Record<VoiceOverlayNameBackground, string> = {
-  off: "",
-  light: "rounded-md bg-black/45 px-2 py-0.5 text-white",
-  strong: "rounded-md bg-black/75 px-2 py-0.5 text-white",
+const DEFAULT_LAYOUT: VoiceOverlayLayout = {
+  shape: "column",
+  size: "medium",
+  interact: "hover",
+  interactive: false,
+  maxCardWidth: 640,
+  maxCardHeight: 480,
 };
+
+type Display = Pick<
+  VoiceOverlaySettings,
+  | "names"
+  | "background"
+  | "view"
+  | "lingerSeconds"
+  | "quietFade"
+  | "mutedHint"
+  | "showWeakConnections"
+  | "showJoinsAndLeaves"
+  | "overlayButtons"
+  | "scrollVolume"
+>;
+
+// An older build of the app does not send every field; these are the defaults.
+const DEFAULT_DISPLAY: Display = {
+  names: "always",
+  background: DEFAULT_VOICE_OVERLAY_BACKGROUND,
+  view: "everyone",
+  lingerSeconds: 3,
+  quietFade: "none",
+  mutedHint: true,
+  showWeakConnections: true,
+  showJoinsAndLeaves: true,
+  overlayButtons: { mute: true, deafen: true, away: true },
+  scrollVolume: true,
+};
+
+/** How long a changed volume is kept on the overlay before the main window's value takes over. */
+const VOLUME_DRAFT_MS = 2500;
+/** A pending button press gives up after this long even if nothing it changes arrives. */
+const PENDING_BUTTON_MS = 2000;
+
+interface VolumeDraft {
+  percent: number;
+  changedAt: number;
+}
+
+/** Text and avatar sizes per Size setting. Small never goes under the 12px floor. */
+const SIZE_SCALE: Record<VoiceOverlaySize, { text: number; avatar: number }> = {
+  small: { text: 12, avatar: 20 },
+  medium: { text: 13, avatar: 24 },
+  large: { text: 15, avatar: 30 },
+};
+const FOLDED_AVATAR = SIZE_SCALE.small.avatar;
+
+const FILL_CLASS: Record<VoiceOverlayBackground, string> = {
+  off: "bg-transparent",
+  light: "bg-black/55",
+  strong: "bg-black/80",
+};
+
+/** With no fill, text gets a soft dark shadow so it stays readable over a bright game. */
+const TEXT_SHADOW_CLASS = "[text-shadow:0_1px_3px_rgb(0_0_0/0.85)]";
+const ICON_SHADOW_CLASS = "[filter:drop-shadow(0_1px_2px_rgb(0_0_0/0.85))]";
+
+interface Ghost {
+  participant: VoiceOverlayParticipant;
+  leaving: boolean;
+}
+
+/** A person's volume row: present for everyone but you, while scrolling is on. */
+interface PersonVolume {
+  show: boolean;
+  flashing: boolean;
+  percent: number;
+  onReset: () => void;
+}
 
 export function VoiceOverlayWindow() {
   const [snapshot, setSnapshot] = useState<VoiceOverlaySnapshot>(EMPTY_VOICE_OVERLAY_SNAPSHOT);
-  const [layout, setLayout] = useState<VoiceOverlayLayout>("vertical");
-  const [showNames, setShowNames] = useState(true);
-  const [nameBackground, setNameBackground] = useState<VoiceOverlayNameBackground>(DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
-  const [chromeVisible, setChromeVisible] = useState(false);
-  const saveTimerRef = useRef<number | null>(null);
-  const chromeTimerRef = useRef<number | null>(null);
+  const [layout, setLayout] = useState<VoiceOverlayLayout>(DEFAULT_LAYOUT);
+  const [display, setDisplay] = useState<Display>(DEFAULT_DISPLAY);
+  const [talk, setTalk] = useState<TalkState>({});
+  const [tick, setTick] = useState(0);
+  const [arrivals, setArrivals] = useState<Record<string, true>>({});
+  const [ghosts, setGhosts] = useState<Ghost[]>([]);
+  const [quiet, setQuiet] = useState(false);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const lastSizeRef = useRef("");
+  const draggingRef = useRef(false);
+  const rosterRef = useRef<RosterMemory | null>(null);
+  const displayRef = useRef(display);
+  displayRef.current = display;
+  const timersRef = useRef(new Set<number>());
+  // Changed volumes and pending presses. The wheel listener reads the refs between renders.
+  const [volumeDrafts, setVolumeDrafts] = useState<Record<string, VolumeDraft>>({});
+  const draftsRef = useRef<Record<string, VolumeDraft>>({});
+  const throttlesRef = useRef(new Map<string, LatestThrottle<number>>());
+  const wheelCarryRef = useRef(new Map<string, number>());
+  const interactiveRef = useRef(false);
+  const scrollVolumeRef = useRef(display.scrollVolume);
+  const snapshotRef = useRef(snapshot);
+  interactiveRef.current = layout.interactive;
+  scrollVolumeRef.current = display.scrollVolume;
+  snapshotRef.current = snapshot;
+  const [pendingButtons, setPendingButtons] = useState<Partial<Record<CardButton, boolean>>>({});
+  const [hotkeys, setHotkeys] = useState({ mic: "", deafen: "" });
+
+  const later = (callback: () => void, ms: number) => {
+    const timer = window.setTimeout(() => {
+      timersRef.current.delete(timer);
+      callback();
+    }, ms);
+    timersRef.current.add(timer);
+  };
+
+  const currentVolume = (userId: string) =>
+    draftsRef.current[userId]?.percent ??
+    snapshotRef.current.participants.find((participant) => participant.userId === userId)?.volumePercent ??
+    100;
+
+  const throttleFor = (userId: string) => {
+    let throttle = throttlesRef.current.get(userId);
+    if (!throttle) {
+      throttle = createLatestThrottle<number>((percent) => {
+        void voiceOverlayCommands.action({ kind: "volume", userId, percent }).catch(() => undefined);
+      }, VOLUME_SEND_INTERVAL_MS);
+      throttlesRef.current.set(userId, throttle);
+    }
+    return throttle;
+  };
+
+  // Shows the new volume at once and asks the main window for it (at most every 80 ms).
+  const setVolumeFor = (userId: string, percent: number) => {
+    const changedAt = Date.now();
+    draftsRef.current = { ...draftsRef.current, [userId]: { percent, changedAt } };
+    setVolumeDrafts(draftsRef.current);
+    later(() => {
+      if (draftsRef.current[userId]?.changedAt !== changedAt) return;
+      const { [userId]: _gone, ...rest } = draftsRef.current;
+      draftsRef.current = rest;
+      setVolumeDrafts(rest);
+    }, VOLUME_DRAFT_MS);
+    throttleFor(userId).push(percent);
+  };
+
+  const resetVolume = (userId: string) => {
+    wheelCarryRef.current.delete(userId);
+    setVolumeFor(userId, 100);
+  };
+
+  // Hotkeys are shown in the button titles, so the overlay reads them once.
+  useEffect(() => {
+    let active = true;
+    mediaHotkeyCommands
+      .getSettings()
+      .then((settings) => {
+        if (active) setHotkeys({ mic: settings.mic, deafen: settings.deafen });
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Scrolling on a person changes their volume while the card is interactive. The listener
+  // is not passive so the card does not scroll under the cursor.
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!interactiveRef.current || !scrollVolumeRef.current) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const userId = target?.closest("[data-volume-user]")?.getAttribute("data-volume-user");
+      if (!userId) return;
+      event.preventDefault();
+      const step = takeWheelNotches(wheelCarryRef.current.get(userId) ?? 0, event.deltaY, event.deltaMode);
+      wheelCarryRef.current.set(userId, step.carry);
+      if (step.notches === 0) return;
+      setVolumeFor(userId, steppedVolumePercent(currentVolume(userId), step.notches));
+    };
+    card.addEventListener("wheel", onWheel, { passive: false });
+    return () => card.removeEventListener("wheel", onWheel);
+    // The handler reads only refs and stable setters, so it is attached once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const throttles = throttlesRef.current;
+    return () => throttles.forEach((throttle) => throttle.cancel());
+  }, []);
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     const previousWindow = document.body.dataset.ravenWindow;
@@ -72,217 +292,614 @@ export function VoiceOverlayWindow() {
 
   useEffect(() => {
     let active = true;
-    let unlisten: (() => void) | undefined;
-    const applySettings = (settings: { layout: VoiceOverlayLayout; showNames: boolean; nameBackground?: VoiceOverlayNameBackground }) => {
+    const unlisteners: Array<() => void> = [];
+    const applySettings = (settings: Partial<Display>) => {
       if (!active) return;
-      setLayout(settings.layout);
-      setShowNames(settings.showNames);
-      // An older build of the app does not send this; the default is on.
-      setNameBackground(settings.nameBackground ?? DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND);
+      setDisplay({
+        names: settings.names ?? DEFAULT_DISPLAY.names,
+        background: settings.background ?? DEFAULT_DISPLAY.background,
+        view: settings.view ?? DEFAULT_DISPLAY.view,
+        lingerSeconds: settings.lingerSeconds ?? DEFAULT_DISPLAY.lingerSeconds,
+        quietFade: settings.quietFade ?? DEFAULT_DISPLAY.quietFade,
+        mutedHint: settings.mutedHint ?? DEFAULT_DISPLAY.mutedHint,
+        showWeakConnections: settings.showWeakConnections ?? DEFAULT_DISPLAY.showWeakConnections,
+        showJoinsAndLeaves: settings.showJoinsAndLeaves ?? DEFAULT_DISPLAY.showJoinsAndLeaves,
+        overlayButtons: settings.overlayButtons ?? DEFAULT_DISPLAY.overlayButtons,
+        scrollVolume: settings.scrollVolume ?? DEFAULT_DISPLAY.scrollVolume,
+      });
+    };
+    const keep = (promise: Promise<() => void>) => {
+      promise
+        .then((unlisten) => {
+          if (active) unlisteners.push(unlisten);
+          else unlisten();
+        })
+        .catch(() => undefined);
     };
     voiceOverlayCommands.getSettings().then(applySettings).catch(() => undefined);
-    subscribeVoiceOverlaySettings(applySettings)
-      .then((nextUnlisten) => {
-        unlisten = nextUnlisten;
+    voiceOverlayCommands
+      .getLayout()
+      .then((nextLayout) => {
+        if (active) setLayout(nextLayout);
       })
       .catch(() => undefined);
+    keep(subscribeVoiceOverlaySettings(applySettings));
+    keep(
+      subscribeVoiceOverlayLayout((nextLayout) => {
+        if (active) setLayout(nextLayout);
+      }),
+    );
+    keep(
+      subscribeVoiceOverlayInteraction((interactive) => {
+        if (!active) return;
+        setLayout((current) => (current.interactive === interactive ? current : { ...current, interactive }));
+      }),
+    );
     return () => {
       active = false;
-      unlisten?.();
+      unlisteners.forEach((unlisten) => unlisten());
     };
   }, []);
+
+  const lingerMs = display.lingerSeconds * 1000;
+
+  // Who is talking, and for how long a name is kept after they stop.
+  useEffect(() => {
+    setTalk((current) => advanceTalkState(current, snapshot.participants, Date.now(), lingerMs));
+  }, [snapshot.participants, lingerMs]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const currentWindow = tryGetCurrentWindow();
-    if (!currentWindow) return;
-    currentWindow
-      .onMoved((event) => {
-        const position = event.payload as { x: number; y: number };
-        if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = window.setTimeout(() => {
-          void voiceOverlayCommands
-            .savePosition({ x: Math.round(position.x), y: Math.round(position.y) })
-            .catch(() => undefined);
-        }, 180);
-      })
-      .then((nextUnlisten) => {
-        unlisten = nextUnlisten;
-      })
-      .catch(() => undefined);
+    const expiry = nextTalkExpiry(talk, Date.now(), lingerMs);
+    if (expiry == null) return;
+    const timer = window.setTimeout(() => setTick((value) => value + 1), Math.max(0, expiry - Date.now()) + 20);
+    return () => window.clearTimeout(timer);
+  }, [talk, lingerMs, tick]);
 
-    return () => {
-      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-      unlisten?.();
+  // Who arrived and who left, from one snapshot to the next.
+  useEffect(() => {
+    const diff = diffRoster(rosterRef.current, snapshot);
+    rosterRef.current = diff.memory;
+    if (!diff.memory) {
+      setArrivals((current) => (Object.keys(current).length ? {} : current));
+      setGhosts((current) => (current.length ? [] : current));
+      return;
+    }
+    const returned = new Set(snapshot.participants.map((participant) => participant.userId));
+    setGhosts((current) => {
+      const kept = current.filter((ghost) => !returned.has(ghost.participant.userId));
+      return kept.length === current.length ? current : kept;
+    });
+    for (const joined of diff.joined) {
+      const id = joined.userId;
+      setArrivals((current) => ({ ...current, [id]: true }));
+      later(
+        () =>
+          setArrivals((current) => {
+            const { [id]: _gone, ...rest } = current;
+            return rest;
+          }),
+        JOINED_CAPTION_MS,
+      );
+    }
+    for (const left of diff.left) {
+      const id = left.userId;
+      setGhosts((current) => [...current.filter((ghost) => ghost.participant.userId !== id), { participant: left, leaving: false }]);
+      later(
+        () => {
+          setGhosts((current) =>
+            current.map((ghost) => (ghost.participant.userId === id ? { ...ghost, leaving: true } : ghost)),
+          );
+          later(() => setGhosts((current) => current.filter((ghost) => ghost.participant.userId !== id)), POP_OUT_MS);
+        },
+        displayRef.current.showJoinsAndLeaves ? LEFT_ROW_MS : 0,
+      );
+    }
+    // `later` only touches refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot]);
+
+  const now = Date.now();
+  const participants = snapshot.participants;
+  const shape: VoiceOverlayResolvedShape = layout.shape;
+  const scale = SIZE_SCALE[layout.size] ?? SIZE_SCALE.medium;
+  const inCall = snapshot.nestId != null;
+  const cards = selectCardRows({ view: display.view, participants, talk, now, lingerMs });
+  const local = cards.local;
+  const saying = local
+    ? localSaying({
+        snapshot,
+        local,
+        mutedHint: display.mutedHint,
+        showWeakConnections: display.showWeakConnections,
+      })
+    : null;
+
+  const localMuted = local?.muted ?? false;
+  const localDeafened = local?.deafened ?? false;
+  const localAway = local?.away ?? false;
+  // A press stays pending until the thing it changes changes, so a second press cannot
+  // send the same action twice.
+  useEffect(() => {
+    const flags: Record<CardButton, boolean> = { mute: localMuted, deafen: localDeafened, away: localAway };
+    setPendingButtons((current) => {
+      const settled = (Object.keys(current) as CardButton[]).filter((kind) => current[kind] !== flags[kind]);
+      if (settled.length === 0) return current;
+      const next = { ...current };
+      for (const kind of settled) delete next[kind];
+      return next;
+    });
+  }, [localMuted, localDeafened, localAway]);
+
+  const press = (kind: CardButton) => {
+    const was = { mute: localMuted, deafen: localDeafened, away: localAway }[kind];
+    setPendingButtons((current) => ({ ...current, [kind]: was }));
+    later(
+      () =>
+        setPendingButtons((current) => {
+          if (!(kind in current)) return current;
+          const { [kind]: _gone, ...rest } = current;
+          return rest;
+        }),
+      PENDING_BUTTON_MS,
+    );
+    const action: VoiceOverlayAction =
+      kind === "mute"
+        ? { kind: "mic" }
+        : kind === "deafen"
+          ? { kind: "deafen" }
+          : { kind: "away", away: !localAway };
+    void voiceOverlayCommands.action(action).catch(() => undefined);
+  };
+
+  // The buttons under your row. They slide out (fade) when interaction ends, like a leaving row.
+  const barKinds = cardButtons({
+    inCall: inCall && local != null,
+    interactive: layout.interactive,
+    buttons: display.overlayButtons,
+    awaySupported: snapshot.awaySupported,
+  });
+  const barKey = barKinds.join(",");
+  const [bar, setBar] = useState<{ kinds: CardButton[]; leaving: boolean } | null>(null);
+  useEffect(() => {
+    if (barKinds.length > 0) {
+      setBar({ kinds: barKinds, leaving: false });
+      return;
+    }
+    setBar((current) => (current && !current.leaving ? { ...current, leaving: true } : current));
+    const timer = window.setTimeout(() => setBar(null), POP_OUT_MS);
+    return () => window.clearTimeout(timer);
+    // The key stands in for the array so a new array each render does not restart this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [barKey]);
+
+  const volumeFor = (participant: VoiceOverlayParticipant, ghost: Ghost | null): PersonVolume | null => {
+    if (ghost || participant.isLocal || !display.scrollVolume) return null;
+    const draft = volumeDrafts[participant.userId];
+    const percent = draft?.percent ?? participant.volumePercent;
+    const readout = volumeReadout({
+      percent,
+      changedAt: draft?.changedAt ?? null,
+      now,
+      interactive: layout.interactive,
+    });
+    return { ...readout, percent, onReset: () => resetVolume(participant.userId) };
+  };
+
+  const rowModels = cards.rows.map((participant) => ({ participant, ghost: null as Ghost | null }));
+  const ghostModels = ghosts.map((ghost) => ({ participant: ghost.participant, ghost }));
+  const rowList =
+    display.view === "everyone"
+      ? orderByJoin([...rowModels.map((row) => row.participant), ...ghostModels.map((row) => row.participant)]).map(
+          (participant) => ({ participant, ghost: ghosts.find((ghost) => ghost.participant.userId === participant.userId) ?? null }),
+        )
+      : [...rowModels, ...ghostModels];
+
+  const anyoneTalking = participants.some(
+    (participant) => participant.speaking || isTalkActive(talk[participant.userId], now, lingerMs),
+  );
+  const headsUp =
+    snapshot.reconnecting ||
+    Boolean(saying?.words || saying?.caption) ||
+    ghosts.length > 0 ||
+    (display.showJoinsAndLeaves && Object.keys(arrivals).length > 0);
+  const stayFull = !inCall || display.quietFade === "none" || anyoneTalking || headsUp || layout.interactive;
+
+  // After a few quiet seconds the card steps back; anything happening brings it back at once.
+  useEffect(() => {
+    if (stayFull) {
+      setQuiet(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setQuiet(true), QUIET_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  }, [stayFull]);
+
+  // The window is exactly the card plus its margin; Rust keeps the anchored corner put.
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    if (!card) return;
+    const report = () => {
+      const rect = card.getBoundingClientRect();
+      const width = Math.ceil(rect.width);
+      const height = Math.ceil(rect.height);
+      if (width <= 0 || height <= 0) return;
+      const size = {
+        width: width + CARD_MARGIN * 2,
+        height: height + CARD_MARGIN * 2,
+        card: { x: CARD_MARGIN, y: CARD_MARGIN, width, height },
+      };
+      const key = JSON.stringify(size);
+      if (key === lastSizeRef.current) return;
+      lastSizeRef.current = key;
+      void voiceOverlayCommands.setContentSize(size).catch(() => undefined);
     };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(card);
+    return () => observer.disconnect();
   }, []);
 
-  const clearChromeTimer = () => {
-    if (chromeTimerRef.current === null) return;
-    window.clearTimeout(chromeTimerRef.current);
-    chromeTimerRef.current = null;
-  };
-  const revealChrome = () => {
-    clearChromeTimer();
-    setChromeVisible(true);
-  };
-  const scheduleChromeHide = () => {
-    clearChromeTimer();
-    chromeTimerRef.current = window.setTimeout(() => {
-      chromeTimerRef.current = null;
-      setChromeVisible(false);
-    }, CHROME_HIDE_DELAY_MS);
+  const fillOff = display.background === "off" && !layout.interactive;
+  const dimmed = quiet && !stayFull;
+  const cardStyle: CSSProperties = {
+    left: CARD_MARGIN,
+    top: CARD_MARGIN,
+    maxWidth: layout.maxCardWidth,
+    maxHeight: layout.maxCardHeight,
+    fontSize: scale.text,
+    opacity: dimmed ? quietOpacity(display.quietFade) : 1,
+    // Out slowly, back at once.
+    transition: `opacity ${dimmed ? 600 : 120}ms ease-out, background-color 150ms, border-color 150ms`,
   };
 
-  useEffect(() => () => clearChromeTimer(), []);
+  const hasOthers = rowList.length > 0 || cards.folded.length > 0 || cards.hiddenOthers > 0;
+  const personProps = { shape, avatarSize: scale.avatar, shadow: fillOff };
 
-  const participants = snapshot.participants;
-  const locationLabel = snapshot.locationLabel || "nest";
-  const horizontalParticipants = visibleHorizontalVoiceOverlayParticipants(participants);
+  const others: ReactNode[] = rowList.map(({ participant, ghost }) => {
+    const active = isTalkActive(talk[participant.userId], now, lingerMs);
+    const arrived = Boolean(arrivals[participant.userId]);
+    const caption = ghost ? (display.showJoinsAndLeaves ? "left" : null) : arrived && display.showJoinsAndLeaves ? "joined" : null;
+    return (
+      <PersonItem
+        key={participant.userId}
+        {...personProps}
+        participant={participant}
+        active={active && !ghost}
+        showName={showsName({ names: display.names, active: active && !ghost, shape }) || (ghost != null && display.names !== "never" && shape === "column")}
+        status={ghost ? null : rowStatus(participant, display.showWeakConnections)}
+        caption={caption}
+        animateIn={arrived}
+        leaving={ghost?.leaving ?? false}
+        volume={volumeFor(participant, ghost)}
+      />
+    );
+  });
+
+  const folded = cards.folded.length ? (
+    <div key="folded" className="flex flex-wrap items-center gap-1 px-1.5 py-1">
+      {cards.folded.map((participant) => (
+        <div key={participant.userId} className="relative" title={participant.displayName} aria-label={participant.displayName}>
+          <ParticipantAvatar participant={participant} size={FOLDED_AVATAR} />
+          <StatusBadge status={rowStatus(participant, display.showWeakConnections)} shadow={fillOff} />
+        </div>
+      ))}
+    </div>
+  ) : null;
+
+  const hidden = cards.hiddenOthers > 0 ? (
+    <div key="hidden" className="whitespace-nowrap px-1.5 py-1 text-muted-foreground">
+      {cards.hiddenOthers === 1 ? "1 other here" : `${cards.hiddenOthers} others here`}
+    </div>
+  ) : null;
+
+  const localItem = local ? (
+    <PersonItem
+      key={local.userId}
+      {...personProps}
+      participant={local}
+      active={local.speaking || isTalkActive(talk[local.userId], now, lingerMs)}
+      showName={display.names !== "never" && (shape === "column" || display.names === "always")}
+      status={null}
+      caption={null}
+      saying={saying}
+      animateIn={false}
+      leaving={false}
+    />
+  ) : null;
+
+  const barNode = bar ? (
+    <div
+      role="group"
+      aria-label="Call controls"
+      className={cn(
+        "flex items-center gap-1",
+        shape === "row" ? "shrink-0 pl-1" : "px-1.5 pb-1",
+        bar.leaving ? "animate-pop-out" : "animate-pop-in",
+      )}
+    >
+      {bar.kinds.includes("mute") ? (
+        <CardControl
+          kind="mute"
+          active={localMuted}
+          label={localMuted ? "Unmute" : "Mute"}
+          hotkey={hotkeys.mic}
+          disabled={pendingButtons.mute != null}
+          icon={localMuted ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
+          onPress={() => press("mute")}
+        />
+      ) : null}
+      {bar.kinds.includes("deafen") ? (
+        <CardControl
+          kind="deafen"
+          active={localDeafened}
+          label={localDeafened ? "Hear people again" : "Stop hearing people"}
+          hotkey={hotkeys.deafen}
+          disabled={pendingButtons.deafen != null}
+          icon={localDeafened ? <HeadphoneOff className="h-3.5 w-3.5" /> : <Headphones className="h-3.5 w-3.5" />}
+          onPress={() => press("deafen")}
+        />
+      ) : null}
+      {bar.kinds.includes("away") ? (
+        <CardControl
+          kind="away"
+          active={false}
+          label={localAway ? "I’m back" : "Back in a bit"}
+          hotkey=""
+          wide
+          disabled={pendingButtons.away != null}
+          icon={null}
+          onPress={() => press("away")}
+        />
+      ) : null}
+    </div>
+  ) : null;
 
   return (
-    <div
-      className="h-screen w-screen overflow-hidden bg-transparent p-2 text-foreground"
-      onMouseEnter={revealChrome}
-      onMouseLeave={scheduleChromeHide}
-      onFocusCapture={revealChrome}
-      onBlurCapture={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) scheduleChromeHide();
-      }}
-    >
+    <div className="relative h-screen w-screen overflow-hidden bg-transparent text-foreground">
       <div
+        ref={cardRef}
+        style={cardStyle}
+        aria-label={snapshot.nestName ?? "Raven voice"}
         className={cn(
-          "relative h-full min-h-0 overflow-hidden rounded-lg border transition-[background-color,border-color,box-shadow] duration-200",
-          chromeVisible
-            ? "border-white/10 bg-black/45 shadow-2xl shadow-black/45 backdrop-blur-xl"
-            : "border-transparent bg-transparent shadow-none",
+          "absolute w-max overflow-y-auto overflow-x-hidden rounded-lg border p-1 [scrollbar-width:none]",
+          layout.interactive ? "cursor-move border-white/10 bg-black/80" : cn("border-transparent", FILL_CLASS[display.background]),
+          fillOff && TEXT_SHADOW_CLASS,
         )}
+        onPointerDown={(event) => {
+          if (!layout.interactive || event.button !== 0) return;
+          if ((event.target as HTMLElement).closest("button, a, input")) return;
+          if (draggingRef.current) return;
+          // Rust moves the window while the button is held; the system's own move loop
+          // would activate the window and take focus from the game.
+          draggingRef.current = true;
+          void voiceOverlayCommands
+            .drag()
+            .catch(() => undefined)
+            .finally(() => {
+              draggingRef.current = false;
+            });
+        }}
       >
-        <div
-          className={cn(
-            "absolute inset-x-0 top-0 z-20 flex h-10 cursor-move items-center gap-2 border-b border-white/10 bg-background/88 px-3 backdrop-blur-xl transition-opacity duration-200",
-            chromeVisible ? "opacity-100" : "pointer-events-none opacity-0",
-          )}
-          onPointerDown={(event) => {
-            if (event.button !== 0) return;
-            revealChrome();
-            void tryGetCurrentWindow()?.startDragging();
-          }}
-        >
-          <GripHorizontal className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <div
-            className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
-              snapshot.connected ? "bg-live" : "bg-muted-foreground/50",
-            )}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-semibold">{snapshot.nestName ?? "Raven Voice"}</div>
-            <div className="truncate text-[10px] text-muted-foreground">
-              {participants.length ? `${participants.length} in ${locationLabel}` : `No active ${locationLabel}`}
-            </div>
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            "h-full min-h-0 pt-12",
-            layout === "horizontal" ? "flex items-end overflow-hidden px-2 pb-2" : "overflow-y-auto p-2 pt-12",
-          )}
-        >
-          {participants.length ? (
-            <div className={cn(layout === "horizontal" ? "flex items-end gap-1.5" : "space-y-1.5")}>
-              {(layout === "horizontal" ? horizontalParticipants.participants : participants).map((participant) => (
-                <OverlayParticipantRow
-                  key={participant.userId}
-                  participant={participant}
-                  layout={layout}
-                  showName={layout === "vertical" && showNames}
-                  nameBackground={nameBackground}
-                />
-              ))}
-              {layout === "horizontal" && horizontalParticipants.hiddenCount > 0 ? (
-                <div
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
-                  aria-label={`${horizontalParticipants.hiddenCount} more participants`}
-                >
-                  +{horizontalParticipants.hiddenCount}
-                </div>
-              ) : null}
+        {participants.length || rowList.length ? (
+          shape === "row" ? (
+            <div className="flex items-center gap-1.5">
+              {localItem}
+              {barNode}
+              {hasOthers && localItem ? <div className="mx-0.5 h-5 w-px shrink-0 bg-white/15" aria-hidden /> : null}
+              {others}
+              {folded}
+              {hidden}
             </div>
           ) : (
-            <div className="flex h-full flex-1 items-center justify-center px-4 text-center text-xs text-muted-foreground">
-              <div>
-                <Radio className="mx-auto mb-2 h-4 w-4 opacity-70" />
-                No one in {locationLabel}
-              </div>
+            <div className="space-y-0.5">
+              {others}
+              {folded}
+              {hidden}
+              {hasOthers && localItem ? <div className="mx-1.5 my-1 h-px bg-white/15" aria-hidden /> : null}
+              {localItem}
+              {barNode}
             </div>
-          )}
-        </div>
+          )
+        ) : (
+          <div className="whitespace-nowrap px-2 py-1.5 text-muted-foreground">
+            {inCall ? `No one in ${snapshot.locationLabel || "call"}` : "Not in a call"}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function OverlayParticipantRow({
+function PersonItem({
   participant,
-  layout,
+  shape,
+  avatarSize,
+  shadow,
+  active,
   showName,
-  nameBackground,
+  status,
+  caption,
+  saying = null,
+  animateIn,
+  leaving,
+  volume = null,
 }: {
   participant: VoiceOverlayParticipant;
-  layout: VoiceOverlayLayout;
+  shape: VoiceOverlayResolvedShape;
+  avatarSize: number;
+  shadow: boolean;
+  active: boolean;
   showName: boolean;
-  nameBackground: VoiceOverlayNameBackground;
+  status: RowStatus | null;
+  caption: "joined" | "left" | null;
+  saying?: LocalSaying | null;
+  animateIn: boolean;
+  leaving: boolean;
+  volume?: PersonVolume | null;
 }) {
-  const icons = [
-    participant.muted ? <MicOff key="muted" className="h-3.5 w-3.5" /> : null,
-    participant.deafened ? <VolumeX key="deafened" className="h-3.5 w-3.5" /> : null,
-    participant.cameraOn ? <Video key="camera" className="h-3.5 w-3.5 text-primary" /> : null,
-    participant.screenSharing ? <MonitorUp key="screen" className="h-3.5 w-3.5" /> : null,
-  ].filter(Boolean);
-
-  if (layout === "horizontal") {
-    return (
-      <div
-        className="relative flex h-12 w-10 shrink-0 items-start justify-center pt-1"
-        aria-label={`${participant.displayName}${participant.isLocal ? ", you" : ""}${participant.speaking ? ", speaking" : ""}`}
+  const name = participant.isLocal ? "You" : participant.displayName;
+  const motion = cn(animateIn && "animate-pop-in", leaving && "animate-pop-out");
+  const label = `${name}${participant.speaking ? ", speaking" : ""}`;
+  // Scrolling on a person (while interactive) adds their volume here; it is the only
+  // thing that identifies the row to the wheel listener.
+  const volumeUser = volume ? participant.userId : undefined;
+  const readout =
+    volume?.show ? (
+      <button
+        type="button"
+        onClick={volume.onReset}
+        title="Reset to 100%"
+        aria-label={`Reset ${name}’s volume to 100%`}
+        className={cn(
+          "shrink-0 rounded-control px-1 tabular-nums text-caption focus-visible:-outline-offset-2 transition-colors",
+          volume.flashing ? "text-foreground" : "text-muted-foreground",
+        )}
       >
-        <ParticipantAvatar participant={participant} />
-        {icons.length ? (
-          <div className="absolute -bottom-0.5 left-1/2 flex max-w-[42px] -translate-x-1/2 items-center gap-0.5 px-1 py-0.5 text-muted-foreground">
-            {icons}
-          </div>
-        ) : null}
+        {volume.percent}%
+      </button>
+    ) : null;
+  // A thin bar under the name, only while the volume is changing (as in the prototype).
+  const volumeBar =
+    volume?.flashing && shape !== "row" ? (
+      <div className="mx-1.5 mb-1 h-[3px] overflow-hidden rounded-full bg-white/10" aria-hidden>
+        <div className="h-full rounded-full bg-foreground" style={{ width: `${Math.min(100, volume.percent / 2)}%` }} />
+      </div>
+    ) : null;
+  const nameNode = showName ? (
+    <span
+      className={cn(
+        "min-w-0 max-w-[16em] truncate font-medium leading-snug transition-colors duration-150",
+        active ? "text-foreground" : "text-muted-foreground",
+      )}
+    >
+      {name}
+    </span>
+  ) : null;
+
+  if (shape === "row") {
+    return (
+      <div className={cn("flex shrink-0 items-center gap-1.5", motion)} aria-label={label} data-volume-user={volumeUser}>
+        <div className="relative">
+          <ParticipantAvatar participant={participant} size={avatarSize} />
+          {saying ? null : <StatusBadge status={status} shadow={shadow} />}
+        </div>
+        {nameNode}
+        {readout}
+        {caption ? <span className="text-muted-foreground">{caption}</span> : null}
+        {saying ? <SayingLine saying={saying} shadow={shadow} /> : null}
       </div>
     );
   }
 
   return (
     <div
-      className={cn(
-        "flex min-w-0 items-center gap-2 px-2 py-1.5 text-sm",
-        !showName && "w-fit",
-      )}
-      aria-label={!showName ? `${participant.displayName}${participant.isLocal ? ", you" : ""}` : undefined}
+      className={cn("min-w-0", !showName && !saying && !caption && !status && "w-fit", motion)}
+      aria-label={label}
+      data-volume-user={volumeUser}
     >
-      <ParticipantAvatar participant={participant} />
-      {showName ? (
-        <div className="min-w-0 flex-1">
-          <div className={cn("w-fit max-w-full truncate text-xs font-medium leading-4", NAME_BACKGROUND_CLASS[nameBackground])}>
-            {participant.displayName}
-            {participant.isLocal ? <span className={cn("ml-1 text-[10px]", nameBackground === "off" ? "text-muted-foreground" : "text-white/70")}>(you)</span> : null}
-          </div>
+      <div className="flex min-w-0 items-center gap-2 px-1.5 py-1">
+        <ParticipantAvatar participant={participant} size={avatarSize} />
+        {nameNode}
+        <div className={cn("flex shrink-0 items-center gap-1", showName && "ml-auto pl-3")}>
+          {readout}
+          {saying ? (
+            <SayingLine saying={saying} shadow={shadow} />
+          ) : caption ? (
+            <span className="text-muted-foreground">{caption}</span>
+          ) : (
+            <StatusIcon status={status} shadow={shadow} />
+          )}
         </div>
-      ) : null}
-      {icons.length ? (
-        <div className="flex shrink-0 items-center gap-1 text-muted-foreground">{icons}</div>
-      ) : null}
+      </div>
+      {volumeBar}
     </div>
   );
 }
 
-function ParticipantAvatar({ participant }: { participant: VoiceOverlayParticipant }) {
+/** Mute, deafen and Back in a bit, under your row while the card is interactive. */
+function CardControl({
+  kind,
+  active,
+  label,
+  hotkey,
+  disabled,
+  icon,
+  wide = false,
+  onPress,
+}: {
+  kind: CardButton;
+  active: boolean;
+  label: string;
+  hotkey: string;
+  disabled: boolean;
+  icon: ReactNode;
+  wide?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-card-button={kind}
+      aria-label={label}
+      title={hotkey ? `${label} (${hotkey})` : label}
+      disabled={disabled}
+      onClick={onPress}
+      className={cn(
+        "inline-flex h-7 items-center justify-center gap-1.5 whitespace-nowrap rounded-control px-2 text-caption transition-colors focus-visible:-outline-offset-2 disabled:opacity-50",
+        wide ? "flex-[3]" : "flex-1",
+        active ? "bg-destructive/20 text-destructive hover:bg-destructive/30" : "bg-white/10 text-foreground hover:bg-white/15",
+      )}
+    >
+      {icon}
+      {wide ? label : null}
+    </button>
+  );
+}
+
+function SayingLine({ saying, shadow }: { saying: LocalSaying; shadow: boolean }) {
+  const tone = saying.tone === "warning" ? "text-warning" : saying.tone === "destructive" ? "text-destructive" : "text-muted-foreground";
+  const icon = saying.icon;
+  return (
+    <div className="flex flex-col items-end">
+      <div className={cn("flex items-center gap-1 whitespace-nowrap", tone)}>
+        {icon === "muted" ? <MicOff className={cn("h-3.5 w-3.5", shadow && ICON_SHADOW_CLASS)} aria-label="Muted" /> : null}
+        {icon === "deafened" ? <HeadphoneOff className={cn("h-3.5 w-3.5", shadow && ICON_SHADOW_CLASS)} aria-label="Deafened" /> : null}
+        {icon === "weak" ? <WifiLow className={cn("h-3.5 w-3.5", shadow && ICON_SHADOW_CLASS)} /> : null}
+        {saying.words}
+      </div>
+      {saying.caption ? <div className="whitespace-nowrap text-muted-foreground">{saying.caption}</div> : null}
+    </div>
+  );
+}
+
+const STATUS_LABEL: Record<RowStatus, string> = {
+  lost: "Connection lost",
+  deafened: "Deafened",
+  muted: "Muted",
+  weak: "Weak connection",
+};
+
+function StatusIcon({ status, shadow }: { status: RowStatus | null; shadow: boolean }) {
+  if (!status) return null;
+  const className = cn("h-3.5 w-3.5 shrink-0", shadow && ICON_SHADOW_CLASS);
+  const label = STATUS_LABEL[status];
+  if (status === "muted") return <MicOff className={cn(className, "text-destructive")} aria-label={label} />;
+  if (status === "deafened") return <HeadphoneOff className={cn(className, "text-destructive")} aria-label={label} />;
+  if (status === "lost") return <WifiOff className={cn(className, "text-warning")} aria-label={label} />;
+  return <WifiLow className={cn(className, "text-warning")} aria-label={label} />;
+}
+
+/** The same status as a small mark on an avatar, where there is no room for a trailing icon. */
+function StatusBadge({ status, shadow }: { status: RowStatus | null; shadow: boolean }) {
+  if (!status) return null;
+  return (
+    <span className="absolute -bottom-1 -right-1 flex rounded-full bg-black/80 p-0.5">
+      <StatusIcon status={status} shadow={shadow} />
+    </span>
+  );
+}
+
+function ParticipantAvatar({ participant, size }: { participant: VoiceOverlayParticipant; size: number }) {
   return (
     <div
       className={cn(
@@ -291,15 +908,9 @@ function ParticipantAvatar({ participant }: { participant: VoiceOverlayParticipa
       )}
       style={speakingGlowStyle(participant.speakingLevel / 100, "avatar")}
     >
-      <Avatar name={participant.displayName} src={participant.avatarUrl ?? undefined} className="h-8 w-8 text-[10px]" />
+      <div style={{ width: size, height: size }}>
+        <Avatar name={participant.displayName} src={participant.avatarUrl ?? undefined} className="h-full w-full text-caption" />
+      </div>
     </div>
   );
-}
-
-function tryGetCurrentWindow() {
-  try {
-    return getCurrentWindow();
-  } catch {
-    return null;
-  }
 }

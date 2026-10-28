@@ -18,7 +18,6 @@ const {
   cameraUserIdsForOverlay,
   formatHotkeyEvent,
   normalizeVoiceOverlayLocationLabel,
-  visibleHorizontalVoiceOverlayParticipants,
 } = await import("./voiceOverlay");
 
 function participant(userId: string, speaking = false): VoiceOverlayParticipant {
@@ -34,33 +33,12 @@ function participant(userId: string, speaking = false): VoiceOverlayParticipant 
     away: false,
     screenSharing: false,
     cameraOn: false,
+    connectionQuality: "unknown",
+    joinedAt: null,
   };
 }
 
 describe("voice overlay presentation", () => {
-  test("prioritizes current speakers before applying the five-person limit", () => {
-    const people = [
-      participant("one"),
-      participant("two"),
-      participant("three", true),
-      participant("four"),
-      participant("five", true),
-      participant("six"),
-      participant("seven"),
-    ];
-
-    const visible = visibleHorizontalVoiceOverlayParticipants(people);
-
-    expect(visible.participants.map((person) => person.userId)).toEqual([
-      "three",
-      "five",
-      "one",
-      "two",
-      "four",
-    ]);
-    expect(visible.hiddenCount).toBe(2);
-  });
-
   test("detects local and normalized remote camera publishers", () => {
     const videoMixer = {
       localSources: [

@@ -2,8 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, type NestDetails, type SessionSummary, type User } from "@/lib/api";
 import { callStatesByUser, callStateSupported } from "@/lib/callState";
-import type { AudioMixerState } from "@/lib/audio";
-import type { VideoMixerState } from "@/lib/video";
+import type { AudioMixerState, RemoteAudioTrackState } from "@/lib/audio";
+import { gainDbToVolumePercent } from "@/components/media/audioSatellites";
+import type { VideoConnectionQuality, VideoMixerState } from "@/lib/video";
 import { connectedPeerIds } from "@/lib/callArrivals";
 import { stripSidecarIdentity } from "@/lib/mediaIdentity";
 import {
@@ -14,38 +15,103 @@ import {
 
 export const VOICE_OVERLAY_STATE_CHANGED_EVENT = "voice-overlay-state-changed";
 export const VOICE_OVERLAY_SETTINGS_CHANGED_EVENT = "voice-overlay-settings-changed";
+export const VOICE_OVERLAY_INTERACTION_CHANGED_EVENT = "voice-overlay-interaction-changed";
+export const VOICE_OVERLAY_LAYOUT_CHANGED_EVENT = "voice-overlay-layout-changed";
+export const VOICE_OVERLAY_ACTION_EVENT = "voice-overlay-action";
 export const DEFAULT_VOICE_OVERLAY_HOTKEY = "Alt+F8";
-export const HORIZONTAL_VOICE_OVERLAY_LIMIT = 5;
-
-export interface VoiceOverlayPosition {
-  x: number;
-  y: number;
-}
 
 export interface VoiceOverlaySettings {
   supported: boolean;
   enabled: boolean;
   hotkey: string;
-  layout: VoiceOverlayLayout;
-  showNames: boolean;
-  nameBackground: VoiceOverlayNameBackground;
-  position: VoiceOverlayPosition | null;
+  shape: VoiceOverlayShape;
+  /** The shape the card is drawn in now: Follow edge resolved against where it sits. */
+  effectiveShape: VoiceOverlayResolvedShape;
+  size: VoiceOverlaySize;
+  interact: VoiceOverlayInteract;
+  names: VoiceOverlayNames;
+  background: VoiceOverlayBackground;
+  view: VoiceOverlayView;
+  /** Seconds a name stays after someone stops talking: 0 (off), 3 or 6. */
+  lingerSeconds: number;
+  quietFade: VoiceOverlayQuietFade;
+  mutedHint: boolean;
+  showWeakConnections: boolean;
+  showJoinsAndLeaves: boolean;
+  showOnJoin: boolean;
+  overlayButtons: VoiceOverlayButtons;
+  /** Scroll on a person's row to change their volume while the card is interactive. */
+  scrollVolume: boolean;
   registrationError: string | null;
 }
 
-export type VoiceOverlayLayout = "vertical" | "horizontal";
+/** Which buttons the card shows under your row while it is interactive. */
+export interface VoiceOverlayButtons {
+  mute: boolean;
+  deafen: boolean;
+  away: boolean;
+}
 
-/** The fill behind each name, so it stays readable over any game. */
-export type VoiceOverlayNameBackground = "off" | "light" | "strong";
+/** A button or scroll on the card. The main window carries it out. */
+export type VoiceOverlayAction =
+  | { kind: "mic" }
+  | { kind: "deafen" }
+  | { kind: "away"; away: boolean }
+  | { kind: "volume"; userId: string; percent: number };
 
-export const DEFAULT_VOICE_OVERLAY_NAME_BACKGROUND: VoiceOverlayNameBackground = "light";
+/** A row along the top or bottom edge and a column elsewhere, or always one of them. */
+export type VoiceOverlayShape = "followEdge" | "column" | "row";
+export type VoiceOverlayResolvedShape = "column" | "row";
+export type VoiceOverlaySize = "small" | "medium" | "large";
+/** How clicks reach the overlay; otherwise they go through to the app underneath. */
+export type VoiceOverlayInteract = "hover" | "hold" | "never";
+
+/** The card's fill, so it stays readable over any game. */
+export type VoiceOverlayBackground = "off" | "light" | "strong";
+export const DEFAULT_VOICE_OVERLAY_BACKGROUND: VoiceOverlayBackground = "light";
+
+export type VoiceOverlayNames = "always" | "whileTalking" | "never";
+/** Who the card lists. */
+export type VoiceOverlayView = "everyone" | "talkersFirst" | "onlyTalking";
+/** How far the card fades after a few seconds with nobody talking. */
+export type VoiceOverlayQuietFade = "none" | "some" | "lots";
+export type VoiceOverlayConnectionQuality = "good" | "poor" | "lost" | "unknown";
 
 export interface VoiceOverlaySettingsPatch {
   enabled?: boolean;
   hotkey?: string;
-  layout?: VoiceOverlayLayout;
-  showNames?: boolean;
-  nameBackground?: VoiceOverlayNameBackground;
+  shape?: VoiceOverlayShape;
+  size?: VoiceOverlaySize;
+  interact?: VoiceOverlayInteract;
+  names?: VoiceOverlayNames;
+  background?: VoiceOverlayBackground;
+  view?: VoiceOverlayView;
+  lingerSeconds?: number;
+  quietFade?: VoiceOverlayQuietFade;
+  mutedHint?: boolean;
+  showWeakConnections?: boolean;
+  showJoinsAndLeaves?: boolean;
+  showOnJoin?: boolean;
+  overlayButtons?: VoiceOverlayButtons;
+  scrollVolume?: boolean;
+}
+
+/** What the overlay window lays itself out with; Rust works it out from the monitor. */
+export interface VoiceOverlayLayout {
+  shape: VoiceOverlayResolvedShape;
+  size: VoiceOverlaySize;
+  interact: VoiceOverlayInteract;
+  /** Clicks land on the overlay right now (pointing at it, or holding its key). */
+  interactive: boolean;
+  maxCardWidth: number;
+  maxCardHeight: number;
+}
+
+/** The window the overlay wants and the card inside it, in CSS px. */
+export interface VoiceOverlayContentSize {
+  width: number;
+  height: number;
+  card: { x: number; y: number; width: number; height: number };
 }
 
 export interface VoiceOverlayParticipant {
@@ -61,6 +127,11 @@ export interface VoiceOverlayParticipant {
   away: boolean;
   screenSharing: boolean;
   cameraOn: boolean;
+  connectionQuality: VoiceOverlayConnectionQuality;
+  /** When they joined the call (ISO 8601); the card keeps people in this order. */
+  joinedAt: string | null;
+  /** Their volume for you, 0–200. 100 when you have not changed it or it does not apply. */
+  volumePercent: number;
 }
 
 export interface VoiceOverlaySnapshot {
@@ -68,6 +139,10 @@ export interface VoiceOverlaySnapshot {
   nestName: string | null;
   locationLabel: string;
   connected: boolean;
+  /** Your own connection is being re-made; the card always says so. */
+  reconnecting: boolean;
+  /** You are talking while muted (once per mute, for a few seconds). */
+  localMutedHint: boolean;
   /** False against a server that predates the shared call state: no Back in a bit button. */
   awaySupported: boolean;
   participants: VoiceOverlayParticipant[];
@@ -78,6 +153,8 @@ export const EMPTY_VOICE_OVERLAY_SNAPSHOT: VoiceOverlaySnapshot = {
   nestName: null,
   locationLabel: "nest",
   connected: false,
+  reconnecting: false,
+  localMutedHint: false,
   awaySupported: false,
   participants: [],
 };
@@ -88,10 +165,16 @@ export const voiceOverlayCommands = {
   updateSettings: (patch: VoiceOverlaySettingsPatch) =>
     invoke<VoiceOverlaySettings>("overlay_update_settings", { patch }),
   toggle: () => invoke<boolean>("overlay_toggle"),
-  show: () => invoke<void>("overlay_show"),
+  /** Resolves true when this call made the overlay appear (it was hidden before). */
+  show: () => invoke<boolean>("overlay_show"),
   hide: () => invoke<void>("overlay_hide"),
-  savePosition: (position: VoiceOverlayPosition) =>
-    invoke<VoiceOverlaySettings>("overlay_save_position", { position }),
+  setContentSize: (size: VoiceOverlayContentSize) => invoke<void>("overlay_set_content_size", { size }),
+  /** A button or scroll on the card; the main window runs it through the dock's own path. */
+  action: (action: VoiceOverlayAction) => invoke<void>("overlay_action", { action }),
+  /** The button went down on the card: follow the cursor until release, then snap and anchor. */
+  drag: () => invoke<VoiceOverlaySettings>("overlay_drag"),
+  resetPosition: () => invoke<VoiceOverlaySettings>("overlay_reset_position"),
+  getLayout: () => invoke<VoiceOverlayLayout>("overlay_get_layout"),
   getSnapshot: () => invoke<VoiceOverlaySnapshot>("overlay_get_snapshot"),
   updateSnapshot: (snapshot: VoiceOverlaySnapshot) =>
     invoke<void>("overlay_update_snapshot", { snapshot }),
@@ -113,6 +196,20 @@ export async function subscribeVoiceOverlaySettings(
   );
 }
 
+export async function subscribeVoiceOverlayLayout(onLayout: (layout: VoiceOverlayLayout) => void) {
+  return listen<VoiceOverlayLayout>(VOICE_OVERLAY_LAYOUT_CHANGED_EVENT, (event) => onLayout(event.payload));
+}
+
+export async function subscribeVoiceOverlayInteraction(onInteraction: (interactive: boolean) => void) {
+  return listen<{ interactive: boolean }>(VOICE_OVERLAY_INTERACTION_CHANGED_EVENT, (event) =>
+    onInteraction(event.payload.interactive),
+  );
+}
+
+export async function subscribeVoiceOverlayActions(onAction: (action: VoiceOverlayAction) => void) {
+  return listen<VoiceOverlayAction>(VOICE_OVERLAY_ACTION_EVENT, (event) => onAction(event.payload));
+}
+
 export function buildVoiceOverlaySnapshot({
   user,
   details,
@@ -123,6 +220,8 @@ export function buildVoiceOverlaySnapshot({
   speakingActivity,
   screenSharingUserIds,
   locationLabel,
+  reconnecting,
+  localMutedHint,
   localCallState,
 }: {
   user: User;
@@ -134,6 +233,8 @@ export function buildVoiceOverlaySnapshot({
   speakingActivity: ParticipantVoiceActivityMap;
   screenSharingUserIds: string[];
   locationLabel: string;
+  reconnecting: boolean;
+  localMutedHint: boolean;
   /** What you just set; the server's echo of it arrives a moment later. */
   localCallState?: { away: boolean; deafened: boolean };
 }): VoiceOverlaySnapshot {
@@ -157,12 +258,16 @@ export function buildVoiceOverlaySnapshot({
     if (userId && !names.has(userId) && track.displayName) names.set(userId, track.displayName);
   }
 
-  const participants = new Map<string, { userId: string; displayName: string; isLocal: boolean }>();
+  const participants = new Map<
+    string,
+    { userId: string; displayName: string; isLocal: boolean; joinedAt: string | null }
+  >();
   for (const participant of activeSession?.participants ?? []) {
     participants.set(participant.userId, {
       userId: participant.userId,
       displayName: names.get(participant.userId) ?? participant.userId,
       isLocal: participant.userId === user.id,
+      joinedAt: participant.joinedAt ?? null,
     });
   }
 
@@ -171,12 +276,18 @@ export function buildVoiceOverlaySnapshot({
       userId: user.id,
       displayName: participants.get(user.id)?.displayName ?? user.displayName ?? user.username,
       isLocal: true,
+      joinedAt: participants.get(user.id)?.joinedAt ?? null,
     });
   }
 
   for (const userId of connectedIds) {
     if (participants.has(userId)) continue;
-    participants.set(userId, { userId, displayName: names.get(userId) ?? userId, isLocal: userId === user.id });
+    participants.set(userId, {
+      userId,
+      displayName: names.get(userId) ?? userId,
+      isLocal: userId === user.id,
+      joinedAt: null,
+    });
   }
 
   const screenSharing = new Set(screenSharingUserIds.map(stripSidecarIdentity).filter(Boolean));
@@ -195,12 +306,21 @@ export function buildVoiceOverlaySnapshot({
     const userId = stripSidecarIdentity(participant.participantId);
     liveKitSpeaking.set(userId, Boolean(liveKitSpeaking.get(userId) || participant.speaking));
   }
+  const connectionQuality = new Map<string, VoiceOverlayConnectionQuality>();
+  for (const participant of videoMixer?.participants ?? []) {
+    connectionQuality.set(
+      stripSidecarIdentity(participant.participantId),
+      overlayConnectionQuality(participant.connectionQuality),
+    );
+  }
 
   return {
     nestId: details.nest.id,
     nestName: details.nest.name,
     locationLabel: normalizeVoiceOverlayLocationLabel(locationLabel),
     connected,
+    reconnecting,
+    localMutedHint,
     awaySupported: callStateSupported(activeSession),
     participants: Array.from(participants.values()).map((participant) => {
       const voice = resolveParticipantVoicePresentation(
@@ -221,9 +341,16 @@ export function buildVoiceOverlaySnapshot({
         away: callStates.get(participant.userId)?.away ?? false,
         screenSharing: screenSharing.has(participant.userId),
         cameraOn: cameraUsers.has(participant.userId),
+        connectionQuality: connectionQuality.get(participant.userId) ?? "unknown",
+        joinedAt: participant.joinedAt,
+        volumePercent: participant.isLocal ? 100 : personVolumePercent(mixerState, participant.userId),
       };
     }),
   };
+}
+
+function overlayConnectionQuality(quality: VideoConnectionQuality): VoiceOverlayConnectionQuality {
+  return quality === "excellent" ? "good" : quality;
 }
 
 export function normalizeVoiceOverlayLocationLabel(locationLabel: string) {
@@ -248,20 +375,6 @@ export function cameraUserIdsForOverlay(videoMixer: VideoMixerState | null, loca
     if (userId && userId !== localUserId) cameraUsers.add(userId);
   }
   return cameraUsers;
-}
-
-export function visibleHorizontalVoiceOverlayParticipants(
-  participants: VoiceOverlayParticipant[],
-  limit = HORIZONTAL_VOICE_OVERLAY_LIMIT,
-) {
-  const prioritized = [
-    ...participants.filter((participant) => participant.speaking),
-    ...participants.filter((participant) => !participant.speaking),
-  ];
-  return {
-    participants: prioritized.slice(0, limit),
-    hiddenCount: Math.max(0, prioritized.length - limit),
-  };
 }
 
 export function formatHotkeyEvent(event: Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey">): string | null {
@@ -295,12 +408,20 @@ function isRemoteMuted(mixerState: AudioMixerState | null, participantId: string
   return tracks.every((track) => track.track.muted);
 }
 
-function remoteMicTracks(mixerState: AudioMixerState | null, participantId: string) {
+/** Every microphone track of one other person, as the Mixer lists them. */
+export function remoteMicTracks(mixerState: AudioMixerState | null, participantId: string): RemoteAudioTrackState[] {
   return (mixerState?.remoteTracks ?? []).filter(
     (track) =>
       stripSidecarIdentity(track.track.participantId) === participantId &&
       track.track.sourceType === "microphone",
   );
+}
+
+/** The volume you have set for someone, read from their first microphone track. */
+function personVolumePercent(mixerState: AudioMixerState | null, participantId: string) {
+  const first = remoteMicTracks(mixerState, participantId)[0];
+  if (!first) return 100;
+  return gainDbToVolumePercent(first.receiverChannelStrip.gainDb);
 }
 
 function normalizeHotkeyKey(key: string, code: string) {
