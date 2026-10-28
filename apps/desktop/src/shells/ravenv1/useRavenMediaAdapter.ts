@@ -58,6 +58,7 @@ import { normalizeSelectedDeviceId, selectedDeviceIdForSource } from "@/lib/medi
 import { DeviceSwitchWatcher, devicesInUse } from "@/lib/deviceSwitch";
 import { toast } from "@/components/ui/toast";
 import { studioJustFellBack, studioTooSlowNotice } from "@/lib/noiseSuppression";
+import { NestEntryCancelled } from "./nestEntry";
 import { presenceForActiveNest } from "./state";
 import { rememberActiveNest } from "@/lib/crashRecovery";
 
@@ -82,6 +83,17 @@ export function mediaReconnectDelayMs(attempt: number) {
   return MEDIA_RECONNECT_DELAYS_MS[index];
 }
 const MEDIA_SETTINGS_KEY = "raven.mediaSettings";
+
+/** One run of `joinMediaSession`, so a Cancel only ever ends the join it was meant for. */
+interface JoinAttempt {
+  cancelled: boolean;
+  /** Connected: too late to cancel, leaving is the way out. */
+  committed: boolean;
+  aborted: Promise<never>;
+  /** The step in flight, settled either way. */
+  last: Promise<void>;
+  cancel: () => void;
+}
 
 export type MediaAdapterPhase = "idle" | "joining" | "connected" | "leaving" | "error";
 export type DeafenMode = "instant" | "bandwidthSaver";
@@ -182,6 +194,8 @@ export interface RavenMediaAdapterState {
   screenShareSupported: boolean;
   busy: boolean;
   joinMediaSession: (nestId: string) => Promise<void>;
+  /** Abandon a join that is still connecting; the pending `joinMediaSession` rejects with `NestEntryCancelled`. */
+  cancelMediaJoin: () => void;
   leaveMediaSession: () => Promise<void>;
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
@@ -267,6 +281,7 @@ export function useRavenMediaAdapter(
   /** The microphone whose processing has been restored from the remembered settings. */
   const restoredMicRef = useRef<string | null>(null);
   const joiningRef = useRef<Promise<void> | null>(null);
+  const joinAttemptRef = useRef<JoinAttempt | null>(null);
   const leavingRef = useRef<Promise<void> | null>(null);
   const activeNestRef = useRef<string | null>(null);
   const alwaysJoinMutedRef = useRef(Boolean(options.alwaysJoinMuted));
@@ -690,25 +705,34 @@ export function useRavenMediaAdapter(
    * its session. Used for the first join and for every automatic rejoin; local sources
    * keep their desired state, so whatever was live is published again by the engines.
    */
-  const connectMedia = useCallback(async (nestId: string) => {
+  const connectMedia = useCallback(async (nestId: string, attempt?: JoinAttempt) => {
+    // The native connects cannot be interrupted, so a cancelled join stops at the next gap.
+    const checkpoint = () => {
+      if (attempt?.cancelled) throw new NestEntryCancelled();
+    };
     const viewerToken = await api.liveKitToken(nestId);
     const audioToken = await api.liveKitToken(nestId, "audio");
+    checkpoint();
     let nextAudioState = await audioCommands.connectRoom(rtcServerUrl || audioToken.url, audioToken.token);
+    checkpoint();
     const deafen = deafenRef.current;
     nextAudioState = await audioCommands.setRemoteAudioReceiving(!(deafen.deafened && deafen.mode === "bandwidthSaver"));
     nextAudioState = await audioCommands.setOutputMuted(deafen.deafened);
     setAudioState(nextAudioState);
 
     const videoToken = await api.liveKitToken(nestId, "video");
+    checkpoint();
     let nextVideoState = await videoCommands.connectRoom(
       rtcServerUrl || videoToken.url || viewerToken.url,
       videoToken.token,
       viewerToken.token,
     );
+    checkpoint();
     nextVideoState = await videoCommands.setSelfPreviewMode(selfMediaPreviewModeRef.current);
     setVideoState(nextVideoState);
 
     await api.joinSession(nestId);
+    checkpoint();
     await api.joinNestPresence(nestId);
     const nextPresence = presenceForActiveNest(presenceRef.current);
     await api.updatePresence(nextPresence.state, nextPresence.reachability, nestId);
@@ -716,28 +740,58 @@ export function useRavenMediaAdapter(
 
   const joinMediaSession = useCallback(
     async (nestId: string) => {
-      if (joiningRef.current) return joiningRef.current;
-      joiningRef.current = (async () => {
+      // A cancelled join still tears its media down; wait for that before starting over.
+      while (joiningRef.current) {
+        if (!joinAttemptRef.current?.cancelled) return joiningRef.current;
+        await joiningRef.current.catch(() => undefined);
+      }
+
+      let abort!: () => void;
+      const aborted = new Promise<never>((_, reject) => {
+        abort = () => reject(new NestEntryCancelled());
+      });
+      aborted.catch(() => undefined);
+      const attempt: JoinAttempt = {
+        cancelled: false,
+        committed: false,
+        aborted,
+        last: Promise.resolve(),
+        cancel: () => {
+          if (attempt.cancelled || attempt.committed) return;
+          attempt.cancelled = true;
+          abort();
+        },
+      };
+      joinAttemptRef.current = attempt;
+      // Each step races the cancel, so Cancel answers at once even while a native connect
+      // is still working. The step itself finishes (or fails) in the background.
+      const guard = <T,>(step: Promise<T>): Promise<T> => {
+        attempt.last = step.then(() => undefined, () => undefined);
+        return Promise.race([step, aborted]);
+      };
+
+      const work = (async () => {
         setPhase("joining");
         setError("");
         try {
           if (activeNestRef.current && activeNestRef.current !== nestId) {
-            await leaveMediaSession();
+            await guard(leaveMediaSession());
             setPhase("joining");
           }
 
           // Native sidecars reconcile and publish existing sources as soon as they
           // connect, so join defaults must be enforced before either sidecar joins.
-          await applyVideoJoinDefaults();
-          if (alwaysJoinMutedRef.current) await muteLocalMicrophones();
+          await guard(applyVideoJoinDefaults());
+          if (alwaysJoinMutedRef.current) await guard(muteLocalMicrophones());
 
           // Open local capture before connecting, so a microphone kept from an earlier
           // call is already running when its track is published. A device that fails to
           // open is reported on its strip and retried; it must not fail the join.
-          await audioCommands.setCallActive(true).catch(() => undefined);
-          await connectMedia(nestId);
-          await prepareMicrophoneRef.current().catch(() => undefined);
+          await guard(audioCommands.setCallActive(true).catch(() => undefined));
+          await guard(connectMedia(nestId, attempt));
+          await guard(prepareMicrophoneRef.current().catch(() => undefined));
 
+          attempt.committed = true;
           activeNestRef.current = nestId;
           setActiveNestId(nestId);
           setPhase("connected");
@@ -745,10 +799,17 @@ export function useRavenMediaAdapter(
           await refreshMediaDevices();
           await onStateChanged?.();
         } catch (err) {
+          // Let whatever step was in flight finish before taking its work apart.
+          if (attempt.cancelled) await attempt.last;
           await cleanupMediaOnly();
           activeNestRef.current = null;
           setActiveNestId(null);
           await Promise.allSettled([api.leaveSession(nestId), api.leaveNestPresence(nestId)]);
+          if (attempt.cancelled) {
+            if (joinAttemptRef.current === attempt) setPhase("idle");
+            await onStateChanged?.();
+            throw new NestEntryCancelled();
+          }
           setSafeError(
             messageFromError(err, `Could not join media for this ${nestLabel}`),
             "rtc_failure",
@@ -760,10 +821,20 @@ export function useRavenMediaAdapter(
           joiningRef.current = null;
         }
       })();
-      return joiningRef.current;
+      joiningRef.current = work;
+      work.catch(() => undefined);
+      return Promise.race([work, aborted]);
     },
     [applyVideoJoinDefaults, cleanupMediaOnly, connectMedia, leaveMediaSession, muteLocalMicrophones, nestLabel, onStateChanged, refreshMediaDevices, refreshNativeState, setSafeError],
   );
+
+  const cancelMediaJoin = useCallback(() => {
+    const attempt = joinAttemptRef.current;
+    if (!attempt || attempt.cancelled || attempt.committed) return;
+    attempt.cancel();
+    // The teardown continues in the background; the call is already not "joining".
+    setPhase((current) => (current === "joining" ? "idle" : current));
+  }, []);
 
   // --- Session supervisor --------------------------------------------------------------
   // LiveKit retries a dropped connection by itself for a while. When it gives up, or the
@@ -1311,6 +1382,7 @@ export function useRavenMediaAdapter(
     screenShareSupported: Boolean(videoCapabilities?.supportsDisplayCapture || videoCapabilities?.supportsWindowCapture),
     busy: phase === "joining" || phase === "leaving",
     joinMediaSession,
+    cancelMediaJoin,
     leaveMediaSession,
     toggleMic,
     toggleCamera,

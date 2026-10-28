@@ -23,6 +23,14 @@ export interface NestEntryRun {
 
 const COUNTDOWN_TICK_MS = 200;
 
+/** Thrown by `joinMedia` when the person cancelled while media was still connecting. */
+export class NestEntryCancelled extends Error {
+  constructor() {
+    super("Entry cancelled");
+    this.name = "NestEntryCancelled";
+  }
+}
+
 /**
  * Enter a Nest the polite way: tell the people inside that you are coming, give them a
  * moment, then join. The wait only happens when someone is actually inside, and it can
@@ -48,6 +56,10 @@ export async function runNestEntry(
   const notice = await announcement;
   const announced = Boolean(notice && notice.notified > 0);
 
+  if (run.cancelled) {
+    if (announced) void deps.withdraw(nestId).catch(() => undefined);
+    return "cancelled";
+  }
   if (status !== "joined") {
     if (announced) void deps.withdraw(nestId).catch(() => undefined);
     return "waiting";
@@ -76,6 +88,7 @@ export async function runNestEntry(
   } catch (error) {
     // The people inside are being told "connecting"; tell them it is off.
     if (announced) void deps.withdraw(nestId).catch(() => undefined);
+    if (error instanceof NestEntryCancelled) return "cancelled";
     throw error;
   }
   return "joined";

@@ -54,7 +54,7 @@ export function RavenShellV1() {
     presenceReachability: data.presence?.reachability,
     localUserId: data.user?.id,
   });
-  const entry = useNestEntry(data.joinNest, media.joinMediaSession);
+  const entry = useNestEntry(data.joinNest, media.joinMediaSession, media.cancelMediaJoin);
   const leaveCall = media.leaveMediaSession;
   const leaveFromFallback = media.activeNestId ? () => void leaveCall().catch(() => undefined) : undefined;
   const chat = useChat(data);

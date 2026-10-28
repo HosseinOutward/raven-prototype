@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { runNestEntry, type NestEntryDeps, type NestEntryRun } from "./nestEntry";
+import { NestEntryCancelled, runNestEntry, type NestEntryDeps, type NestEntryRun } from "./nestEntry";
 
 /** Deterministic harness: time only advances when the entry flow sleeps. */
 function harness(overrides: Partial<NestEntryDeps> = {}) {
@@ -129,6 +129,34 @@ describe("entering a Nest", () => {
     await expect(entry.start()).rejects.toThrow("offline");
 
     expect(entry.calls).not.toContain("withdraw");
+  });
+
+  test("cancelling while media is connecting ends the entry and takes the notice back", async () => {
+    const entry = harness({
+      joinMedia: async () => {
+        entry.calls.push("joinMedia");
+        throw new NestEntryCancelled();
+      },
+    });
+
+    expect(await entry.start()).toBe("cancelled");
+
+    expect(entry.calls).toEqual(["announce", "joinNest", "joinMedia", "withdraw"]);
+  });
+
+  test("cancelling while membership is being requested never joins media", async () => {
+    const entry = harness({
+      joinNest: async () => {
+        entry.calls.push("joinNest");
+        entry.run.cancelled = true;
+        return "joined";
+      },
+    });
+
+    expect(await entry.start()).toBe("cancelled");
+
+    expect(entry.calls).toContain("withdraw");
+    expect(entry.calls).not.toContain("joinMedia");
   });
 
   test("counts the wait from when the notice went out, not from when membership finished", async () => {

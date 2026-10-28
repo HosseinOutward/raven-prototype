@@ -16,6 +16,7 @@ export interface NestEntryController {
 export function useNestEntry(
   joinNest: (nestId: string) => Promise<"joined" | "waiting">,
   joinMediaSession: (nestId: string) => Promise<void>,
+  cancelMediaJoin: () => void,
 ): NestEntryController {
   const [pending, setPending] = useState<NestEntryPending | null>(null);
   const [enteringNestId, setEnteringNestId] = useState<string | null>(null);
@@ -27,7 +28,9 @@ export function useNestEntry(
     if (!run) return;
     run.cancelled = true;
     run.wake?.();
-  }, []);
+    // Past the heads-up, the entry is waiting on media: stop that too.
+    cancelMediaJoin();
+  }, [cancelMediaJoin]);
 
   const enter = useCallback(async (nestId: string): Promise<NestEntryResult> => {
     // One entry at a time; a second click while one is running is ignored.

@@ -255,7 +255,9 @@ function NestThreshold({
                   {failed ? "Try again" : requested ? "Ask again" : `Join ${nestLabel}`}
                 </Button>
               )}
-              {enteringHere ? null : (
+              {enteringHere ? (
+                countdown ? null : <Button size="lg" variant="ghost" onClick={entry.cancel}>Cancel</Button>
+              ) : (
                 <Button size="lg" variant="ghost" onClick={onBack}>Not now</Button>
               )}
             </div>
