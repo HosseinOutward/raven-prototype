@@ -30,6 +30,9 @@ import type { RavenShellData } from "./ravenv1/state";
 import type { RavenMediaAdapterState } from "./ravenv1/useRavenMediaAdapter";
 import { resolveUserSettingsSection, UserSettingsNav, UserSettingsView, type UserSettingsSection } from "./ravenv1/UserSettings";
 import { api } from "@/lib/api";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { takeNestToRejoin } from "@/lib/crashRecovery";
+import { RegionFallback } from "./ravenv1/RegionFallback";
 
 export function RavenShellV1() {
   const [history, setHistory] = useState<{ entries: RavenView[]; index: number }>({ entries: [{ kind: "home" }], index: 0 });
@@ -52,6 +55,8 @@ export function RavenShellV1() {
     localUserId: data.user?.id,
   });
   const entry = useNestEntry(data.joinNest, media.joinMediaSession);
+  const leaveCall = media.leaveMediaSession;
+  const leaveFromFallback = media.activeNestId ? () => void leaveCall().catch(() => undefined) : undefined;
   const chat = useChat(data);
   const pendingCallFlow = data.pending.some((item) => item.kind === "knock");
 
@@ -63,6 +68,27 @@ export function RavenShellV1() {
     if (signedIn || !media.activeNestId) return;
     void media.leaveMediaSession().catch(() => undefined);
   }, [signedIn, media.activeNestId, media.leaveMediaSession]);
+
+  // The page was reloaded in the middle of a call (it failed to draw, or its WebView
+  // process died; the call ended with it). Go back in, without the arrival heads-up:
+  // the others saw this person drop a moment ago.
+  const readyToRejoin = signedIn && !data.loading && !updater.loading && !updater.updateRequired;
+  const joinNestForRejoin = data.joinNest;
+  const joinMediaForRejoin = media.joinMediaSession;
+  useEffect(() => {
+    if (!readyToRejoin) return;
+    const nestId = takeNestToRejoin();
+    if (!nestId) return;
+    void (async () => {
+      try {
+        if ((await joinNestForRejoin(nestId)) !== "joined") return;
+        await joinMediaForRejoin(nestId);
+        toast({ title: "Raven reopened its window and joined your call again" });
+      } catch {
+        // A failed join is reported by the shell data and the media adapter.
+      }
+    })();
+  }, [readyToRejoin, joinNestForRejoin, joinMediaForRejoin]);
 
   // Heads-up for the room this client is in: a short chime per arrival.
   const activeEntryNotices = useMemo(
@@ -291,21 +317,24 @@ export function RavenShellV1() {
 
   return (
     <div className="ravenv1-scope flex h-screen flex-col overflow-hidden bg-background text-foreground">
-      <TopBar
-        data={data}
-        onNavigate={navigation.navigate}
-        canGoBack={navigation.canGoBack}
-        canGoForward={navigation.canGoForward}
-        onBack={navigation.goBack}
-        onForward={navigation.goForward}
-        update={updater.state}
-      />
+      <ErrorBoundary name="title bar" fallback={() => <BareTopBar />}>
+        <TopBar
+          data={data}
+          onNavigate={navigation.navigate}
+          canGoBack={navigation.canGoBack}
+          canGoForward={navigation.canGoForward}
+          onBack={navigation.goBack}
+          onForward={navigation.goForward}
+          update={updater.state}
+        />
+      </ErrorBoundary>
 
       <div
         ref={shellGridRef}
         className="relative grid min-h-0 flex-1 grid-cols-[var(--sidebar-w)_minmax(0,1fr)] pr-2"
         style={{ "--sidebar-w": `${railCollapsed ? SIDEBAR_RAIL_WIDTH : effectiveSidebarWidth}px` } as CSSProperties}
       >
+        <ErrorBoundary name="sidebar" resetKey={viewKey(view)} fallback={(retry) => <RegionFallback compact onRetry={retry} />}>
         {view.kind === "settings" ? (
           <UserSettingsNav
             section={resolveUserSettingsSection(view.section)}
@@ -332,7 +361,9 @@ export function RavenShellV1() {
             onNavigate={navigation.navigate}
           />
         )}
+        </ErrorBoundary>
         <Island className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+          <ErrorBoundary name={`view ${view.kind}`} resetKey={viewKey(view)} fallback={(retry) => <RegionFallback onRetry={retry} />}>
           <MainView
             view={view}
             data={data}
@@ -343,6 +374,7 @@ export function RavenShellV1() {
             onNavigate={navigation.navigate}
             onBack={navigation.leaveView}
           />
+          </ErrorBoundary>
         </Island>
         <SidebarResizeHandle
           target={shellGridRef}
@@ -355,6 +387,7 @@ export function RavenShellV1() {
         />
       </div>
 
+      <ErrorBoundary name="arrival notices" fallback={() => null}>
       {entryToasts.length > 0 ? (
         <div className="pointer-events-none fixed bottom-[76px] left-1/2 z-[70] flex -translate-x-1/2 flex-col items-center gap-2" role="status" aria-live="polite">
           {entryToasts.map(({ notice, phase }) => (
@@ -375,8 +408,11 @@ export function RavenShellV1() {
           ))}
         </div>
       ) : null}
+      </ErrorBoundary>
 
-      <DeviceDock data={data} media={media} view={view} onNavigate={navigation.navigate} onToggleMixer={toggleMixer} />
+      <ErrorBoundary name="dock" fallback={(retry) => <RegionFallback compact onRetry={retry} onLeave={leaveFromFallback} />}>
+        <DeviceDock data={data} media={media} view={view} onNavigate={navigation.navigate} onToggleMixer={toggleMixer} />
+      </ErrorBoundary>
       <Toaster />
     </div>
   );

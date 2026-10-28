@@ -59,6 +59,7 @@ import { DeviceSwitchWatcher, devicesInUse } from "@/lib/deviceSwitch";
 import { toast } from "@/components/ui/toast";
 import { studioJustFellBack, studioTooSlowNotice } from "@/lib/noiseSuppression";
 import { presenceForActiveNest } from "./state";
+import { rememberActiveNest } from "@/lib/crashRecovery";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
 
@@ -630,6 +631,9 @@ export function useRavenMediaAdapter(
       window.removeEventListener("beforeunload", disconnectActiveNest);
     };
   }, []);
+
+  // A reload of this window returns to this call (see crashRecovery.ts).
+  useEffect(() => rememberActiveNest(activeNestId), [activeNestId]);
 
   useEffect(() => () => {
     const nestId = activeNestRef.current;

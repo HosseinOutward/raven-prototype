@@ -6,6 +6,7 @@ use std::{
 use tauri::{Manager, RunEvent, WindowEvent};
 
 pub mod audio;
+mod diagnostics;
 pub mod media_hotkeys;
 mod notifications;
 pub mod overlay;
@@ -180,7 +181,8 @@ pub fn run() {
             updater::updater_check,
             updater::updater_download,
             updater::updater_install,
-            updater::updater_set_busy
+            updater::updater_set_busy,
+            diagnostics::diagnostics_log_ui_error
         ])
         .setup(|app| {
             if should_start_api_sidecar() {
@@ -202,6 +204,7 @@ pub fn run() {
             if let Err(err) = tray::initialize(app.handle()) {
                 eprintln!("[raven] tray initialization failed: {err}");
             }
+            diagnostics::watch_webview_processes(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

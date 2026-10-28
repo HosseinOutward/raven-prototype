@@ -87,6 +87,10 @@ windows = { version = "0.58", features = [
     "implement",
 ] }
 windows-core = "0.58"
+# The main window's WebView2, to notice when its renderer dies (see diagnostics.rs). The
+# same versions tauri's WebView2 backend already builds.
+webview2-com = "0.38"
+windows-core-webview2 = { package = "windows-core", version = "0.61" }
 # Windows.Graphics.Capture (WGC) wrapper for monitor + window screen capture.
 windows-capture = "1.4"
 

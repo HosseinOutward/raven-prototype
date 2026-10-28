@@ -5000,9 +5000,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+ "webview2-com",
  "windows 0.58.0",
  "windows-capture",
  "windows-core 0.58.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
