@@ -31,6 +31,7 @@ function participant(userId: string, speaking = false): VoiceOverlayParticipant 
     speakingLevel: speaking ? 35 : 0,
     muted: false,
     deafened: false,
+    away: false,
     screenSharing: false,
     cameraOn: false,
   };

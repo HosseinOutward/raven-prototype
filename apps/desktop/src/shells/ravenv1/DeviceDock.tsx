@@ -34,7 +34,7 @@ import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
 import { ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
@@ -326,6 +326,7 @@ export function DeviceDock({
       speakingActivity: media.speakingActivity,
       screenSharingUserIds: media.screenSharingUserIds,
       locationLabel: data.labels.nestSingular,
+      localCallState: { away: media.localAway, deafened: media.localDeafened },
     });
     const serialized = JSON.stringify(snapshot);
     if (lastOverlaySnapshotRef.current === serialized) return;
@@ -341,6 +342,8 @@ export function DeviceDock({
     data.user,
     data.labels.nestSingular,
     media.audioState,
+    media.localAway,
+    media.localDeafened,
     media.phase,
     media.screenSharingUserIds,
     media.speakingActivity,
@@ -396,6 +399,21 @@ export function DeviceDock({
                   {value === presence ? <Check className="text-foreground" /> : null}
                 </DropdownMenuItem>
               ))}
+              {connected && media.awaySupported ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => void media.setAway(!media.localAway)}>
+                    <span className="flex w-4 justify-center"><Coffee className="h-3.5 w-3.5 text-muted-foreground" /></span>
+                    <span className="flex-1">
+                      <span className="block">Back in a bit</span>
+                      <span className="block text-caption text-muted-foreground">
+                        {media.localAway ? "Everyone here sees it until you talk or unmute." : "Tell everyone here. It clears when you talk or unmute."}
+                      </span>
+                    </span>
+                    {media.localAway ? <Check className="text-foreground" /> : null}
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => onNavigate({ kind: "settings" })}>
                 <Settings className="text-muted-foreground" />

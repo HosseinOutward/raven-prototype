@@ -152,6 +152,14 @@ export interface ParticipantSummary {
   username: string;
   displayName: string;
   joinedAt: string;
+  /** "Back in a bit". Absent on a server that predates the call-state route. */
+  away?: boolean;
+  deafened?: boolean;
+}
+
+export interface CallStatePatch {
+  away?: boolean;
+  deafened?: boolean;
 }
 
 export interface SessionSummary {
@@ -939,6 +947,13 @@ export class ApiClient {
 
   joinSession(nestId: string) {
     return this.request<{ session: SessionSummary }>(`/v1/nests/${nestId}/session/join`, { method: "POST" });
+  }
+
+  setCallState(nestId: string, patch: CallStatePatch) {
+    return this.request<{ session: SessionSummary }>(`/v1/nests/${nestId}/session/state`, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
   }
 
   leaveSession(nestId: string) {

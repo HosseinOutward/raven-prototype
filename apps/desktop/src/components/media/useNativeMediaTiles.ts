@@ -51,6 +51,10 @@ export type NativeMediaTile = {
   shareWatchers: WatchPerson[];
   /** Listed by LiveKit, but no media from them yet (see `connectedPeerIds`). Set by the stage. */
   connecting?: boolean;
+  /** "Back in a bit", shared through the server. Set by the stage from the call's participants. */
+  away?: boolean;
+  /** They turned their sound off. Set by the stage, like `away`. */
+  deafened?: boolean;
 };
 
 export function useNativeMediaTiles(

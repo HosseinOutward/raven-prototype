@@ -163,6 +163,13 @@ textarea {
   filter: grayscale(1);
 }
 
+/* Back in a bit: the avatar steps back a little. Opacity only, so shape and the
+   caption stay what says it. */
+.raven-away-avatar {
+  opacity: 0.6;
+  transition: opacity 120ms ease-out;
+}
+
 /* Fullscreen elements live in the browser's top layer. Give both the whole
    stage and an individual participant an explicit top-layer box so inherited
    flex/percentage sizing cannot leave a strip of the app visible underneath. */

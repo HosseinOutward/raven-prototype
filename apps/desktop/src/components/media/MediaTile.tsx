@@ -5,6 +5,7 @@ import {
   Check,
   Eye,
   EyeOff,
+  HeadphoneOff,
   Loader2,
   Maximize2,
   MicOff,
@@ -290,7 +291,10 @@ export function MediaTile({
       <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-chip bg-black/65 px-2 py-1 text-caption font-medium text-white backdrop-blur-md">
         {isShare ? <MonitorUp className="h-3.5 w-3.5 shrink-0" /> : null}
         <span className="min-w-0 truncate">{label}</span>
-        {!isShare && tile.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
+        {!isShare && tile.deafened ? (
+          <HeadphoneOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Deafened" role="img" />
+        ) : !isShare && tile.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
+        {!isShare && tile.away ? <span className="shrink-0 font-normal">Back in a bit</span> : null}
         {!isShare ? <WatchingMark targets={tile.watchedShares} onVideo /> : null}
         {pinned ? <Pin className="h-3 w-3 shrink-0 opacity-70" aria-label="Pinned" /> : null}
         <ConnectionNote quality={tile.connectionQuality} weak={weak} lost={lost} />

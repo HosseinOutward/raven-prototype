@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, type NestDetails, type SessionSummary, type User } from "@/lib/api";
+import { callStatesByUser, callStateSupported } from "@/lib/callState";
 import type { AudioMixerState } from "@/lib/audio";
 import type { VideoMixerState } from "@/lib/video";
 import { connectedPeerIds } from "@/lib/callArrivals";
@@ -56,6 +57,8 @@ export interface VoiceOverlayParticipant {
   speakingLevel: number;
   muted: boolean;
   deafened: boolean;
+  /** "Back in a bit". */
+  away: boolean;
   screenSharing: boolean;
   cameraOn: boolean;
 }
@@ -65,6 +68,8 @@ export interface VoiceOverlaySnapshot {
   nestName: string | null;
   locationLabel: string;
   connected: boolean;
+  /** False against a server that predates the shared call state: no Back in a bit button. */
+  awaySupported: boolean;
   participants: VoiceOverlayParticipant[];
 }
 
@@ -73,6 +78,7 @@ export const EMPTY_VOICE_OVERLAY_SNAPSHOT: VoiceOverlaySnapshot = {
   nestName: null,
   locationLabel: "nest",
   connected: false,
+  awaySupported: false,
   participants: [],
 };
 
@@ -117,6 +123,7 @@ export function buildVoiceOverlaySnapshot({
   speakingActivity,
   screenSharingUserIds,
   locationLabel,
+  localCallState,
 }: {
   user: User;
   details: NestDetails;
@@ -127,7 +134,13 @@ export function buildVoiceOverlaySnapshot({
   speakingActivity: ParticipantVoiceActivityMap;
   screenSharingUserIds: string[];
   locationLabel: string;
+  /** What you just set; the server's echo of it arrives a moment later. */
+  localCallState?: { away: boolean; deafened: boolean };
 }): VoiceOverlaySnapshot {
+  const callStates = callStatesByUser(
+    activeSession?.participants,
+    localCallState ? { userId: user.id, ...localCallState } : undefined,
+  );
   // Who is listed is exactly who the room view counts as connected (`connectedPeerIds`),
   // so a slow joiner shows up here at the same moment their avatar stops "connecting".
   const connectedIds = connectedPeerIds({ session: activeSession, audioState: mixerState, videoState: videoMixer });
@@ -188,6 +201,7 @@ export function buildVoiceOverlaySnapshot({
     nestName: details.nest.name,
     locationLabel: normalizeVoiceOverlayLocationLabel(locationLabel),
     connected,
+    awaySupported: callStateSupported(activeSession),
     participants: Array.from(participants.values()).map((participant) => {
       const voice = resolveParticipantVoicePresentation(
         liveKitSpeaking.get(participant.userId) ?? false,
@@ -203,7 +217,8 @@ export function buildVoiceOverlaySnapshot({
         muted: participant.isLocal
           ? isLocalMuted(mixerState)
           : isRemoteMuted(mixerState, participant.userId),
-        deafened: false,
+        deafened: callStates.get(participant.userId)?.deafened ?? false,
+        away: callStates.get(participant.userId)?.away ?? false,
         screenSharing: screenSharing.has(participant.userId),
         cameraOn: cameraUsers.has(participant.userId),
       };

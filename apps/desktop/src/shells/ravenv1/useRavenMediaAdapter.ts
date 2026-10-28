@@ -60,6 +60,7 @@ import { toast } from "@/components/ui/toast";
 import { studioJustFellBack, studioTooSlowNotice } from "@/lib/noiseSuppression";
 import { NestEntryCancelled } from "./nestEntry";
 import { presenceForActiveNest } from "./state";
+import { callStateCatchUp, callStateSupported, participantCallState } from "@/lib/callState";
 import { rememberActiveNest } from "@/lib/crashRecovery";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
@@ -74,6 +75,7 @@ export type {
 
 const NEST_HEARTBEAT_INTERVAL_MS = 5000;
 const NEST_HEARTBEAT_TIMEOUT_MS = 8000;
+const DEAFEN_SHARE_DEBOUNCE_MS = 300;
 /** Backoff between attempts to rejoin after the realtime connection was lost. */
 export const MEDIA_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10_000, 20_000, 30_000];
 
@@ -142,6 +144,10 @@ export interface RavenMediaAdapterState {
   /** `live` is the only status in which other people can see the camera. */
   cameraStatus: LocalVideoStatus;
   localDeafened: boolean;
+  /** Whether you are marked "Back in a bit" for everyone in the call. */
+  localAway: boolean;
+  /** False against a server that predates the shared call state. */
+  awaySupported: boolean;
   deafenMode: DeafenMode;
   deafenSupported: boolean;
   outputMuteSupported: boolean;
@@ -200,6 +206,7 @@ export interface RavenMediaAdapterState {
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
   toggleDeafen: () => Promise<void>;
+  setAway: (away: boolean) => Promise<void>;
   startScreenShare: () => Promise<void>;
   stopScreenShare: () => Promise<void>;
   refreshMediaDevices: () => Promise<void>;
@@ -273,6 +280,13 @@ export function useRavenMediaAdapter(
   );
   const [soundCues, setSoundCuesState] = useState<SoundCueSettings>(initialSettings.soundCues ?? DEFAULT_SOUND_CUE_SETTINGS);
   const [deafened, setDeafened] = useState(false);
+  const [away, setAwayState] = useState(false);
+  const [awaySupported, setAwaySupported] = useState(false);
+  const awayRef = useRef(false);
+  /** The deafened value the server last confirmed for this participation. */
+  const deafenSharedRef = useRef(false);
+  const localUserIdRef = useRef(options.localUserId);
+  localUserIdRef.current = options.localUserId;
   const [reconnecting, setReconnecting] = useState(false);
   const deafenRef = useRef({ deafened: false, mode: deafenMode });
   deafenRef.current = { deafened, mode: deafenMode };
@@ -601,6 +615,39 @@ export function useRavenMediaAdapter(
     );
   }, [stopLocalVideoSources]);
 
+  // The server drops "Back in a bit" and deafened with the participation, and a
+  // new participation starts clear, so leaving forgets our copy.
+  const resetSharedCallState = useCallback(() => {
+    awayRef.current = false;
+    deafenSharedRef.current = false;
+    setAwayState(false);
+    setAwaySupported(false);
+  }, []);
+
+  /**
+   * Register this client in the Nest's session (first join, automatic rejoin and the
+   * heartbeat's rejoin all land here) and bring the server's copy of our call state in
+   * line with ours: a fresh participation starts clear, but a deafened or stepped-away
+   * person who rejoins after a dropped connection is still deafened or away.
+   */
+  const registerSession = useCallback(async (nestId: string) => {
+    const { session } = await api.joinSession(nestId);
+    const supported = callStateSupported(session);
+    setAwaySupported(supported);
+    if (!supported) return;
+    const server = participantCallState(session.participants, localUserIdRef.current ?? "");
+    const want = { away: awayRef.current, deafened: deafenRef.current.deafened };
+    deafenSharedRef.current = want.deafened;
+    const patch = callStateCatchUp(server, want);
+    if (!patch) return;
+    // A courtesy to the others in the call; the join must not fail over it.
+    void api.setCallState(nestId, patch).catch(() => {
+      deafenSharedRef.current = server.deafened;
+    });
+  }, []);
+  const registerSessionRef = useRef(registerSession);
+  registerSessionRef.current = registerSession;
+
   const leaveMediaSession = useCallback(() => {
     if (leavingRef.current) return leavingRef.current;
     const nestId = activeNestRef.current;
@@ -611,6 +658,7 @@ export function useRavenMediaAdapter(
       setError("");
       activeNestRef.current = null;
       setActiveNestId(null);
+      resetSharedCallState();
       try {
         await cleanupMediaOnly();
         // Media is already down. If the goodbye does not reach the API (offline, signed
@@ -629,7 +677,7 @@ export function useRavenMediaAdapter(
     };
     void operation.then(clearLeave, clearLeave);
     return operation;
-  }, [cleanupMediaOnly, nestLabel, onStateChanged, refreshNativeState, setSafeError]);
+  }, [cleanupMediaOnly, nestLabel, onStateChanged, refreshNativeState, resetSharedCallState, setSafeError]);
 
   useEffect(() => {
     const disconnectActiveNest = () => {
@@ -677,7 +725,7 @@ export function useRavenMediaAdapter(
           // laptop) while its media stayed connected. Put the membership back so the
           // others see who they are talking to.
           await api.joinNest(activeNestId);
-          await api.joinSession(activeNestId);
+          await registerSessionRef.current(activeNestId);
           await api.joinNestPresence(activeNestId);
           const nextPresence = presenceForActiveNest(presenceRef.current);
           await api.updatePresence(nextPresence.state, nextPresence.reachability, activeNestId);
@@ -731,12 +779,12 @@ export function useRavenMediaAdapter(
     nextVideoState = await videoCommands.setSelfPreviewMode(selfMediaPreviewModeRef.current);
     setVideoState(nextVideoState);
 
-    await api.joinSession(nestId);
+    await registerSession(nestId);
     checkpoint();
     await api.joinNestPresence(nestId);
     const nextPresence = presenceForActiveNest(presenceRef.current);
     await api.updatePresence(nextPresence.state, nextPresence.reachability, nestId);
-  }, [rtcServerUrl]);
+  }, [registerSession, rtcServerUrl]);
 
   const joinMediaSession = useCallback(
     async (nestId: string) => {
@@ -804,6 +852,7 @@ export function useRavenMediaAdapter(
           await cleanupMediaOnly();
           activeNestRef.current = null;
           setActiveNestId(null);
+          resetSharedCallState();
           await Promise.allSettled([api.leaveSession(nestId), api.leaveNestPresence(nestId)]);
           if (attempt.cancelled) {
             if (joinAttemptRef.current === attempt) setPhase("idle");
@@ -825,7 +874,7 @@ export function useRavenMediaAdapter(
       work.catch(() => undefined);
       return Promise.race([work, aborted]);
     },
-    [applyVideoJoinDefaults, cleanupMediaOnly, connectMedia, leaveMediaSession, muteLocalMicrophones, nestLabel, onStateChanged, refreshMediaDevices, refreshNativeState, setSafeError],
+    [applyVideoJoinDefaults, cleanupMediaOnly, connectMedia, leaveMediaSession, muteLocalMicrophones, nestLabel, onStateChanged, refreshMediaDevices, refreshNativeState, resetSharedCallState, setSafeError],
   );
 
   const cancelMediaJoin = useCallback(() => {
@@ -1124,6 +1173,51 @@ export function useRavenMediaAdapter(
     }
   }, [applyDeafenStrategy, deafenMode, deafened, setNonFatalError]);
 
+  // Others only need to know that you can't hear them. Quick toggles collapse to the
+  // last value, and a failed send is not worth interrupting the user for.
+  useEffect(() => {
+    if (!activeNestId || !awaySupported || deafenSharedRef.current === deafened) return;
+    const timer = window.setTimeout(() => {
+      const previous = deafenSharedRef.current;
+      deafenSharedRef.current = deafened;
+      void api.setCallState(activeNestId, { deafened }).catch(() => {
+        if (deafenSharedRef.current === deafened) deafenSharedRef.current = previous;
+      });
+    }, DEAFEN_SHARE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [activeNestId, awaySupported, deafened]);
+
+  const setAway = useCallback(async (next: boolean) => {
+    const nestId = activeNestRef.current;
+    if (!nestId || !awaySupported || awayRef.current === next) return;
+    awayRef.current = next;
+    setAwayState(next);
+    try {
+      await api.setCallState(nestId, { away: next });
+    } catch (err) {
+      if (awayRef.current === next && activeNestRef.current === nestId) {
+        awayRef.current = !next;
+        setAwayState(!next);
+      }
+      setNonFatalError(
+        messageFromError(err, "Back in a bit could not be shared"),
+        "rtc_failure",
+        next
+          ? `Others in the ${nestLabel} can't see that you stepped away. Try again.`
+          : `Others in the ${nestLabel} may still see you as away. Try again.`,
+      );
+    }
+  }, [awaySupported, nestLabel, setNonFatalError]);
+
+  // Back in a bit clears itself when you come back: unmuting, or talking with the mic on.
+  const localSpeaking = Boolean(options.localUserId && speakingActivity[options.localUserId]?.speaking);
+  const micWasEnabledRef = useRef(localMicEnabled);
+  useEffect(() => {
+    const unmuted = localMicEnabled && !micWasEnabledRef.current;
+    micWasEnabledRef.current = localMicEnabled;
+    if (awayRef.current && localMicEnabled && (unmuted || localSpeaking)) void setAway(false);
+  }, [localMicEnabled, localSpeaking, setAway]);
+
   const setOutputDevice = useCallback(async (deviceId: string | null) => {
     setError("");
     try {
@@ -1340,6 +1434,8 @@ export function useRavenMediaAdapter(
     localCameraEnabled,
     cameraStatus,
     localDeafened: deafened,
+    localAway: away,
+    awaySupported,
     deafenMode,
     deafenSupported: true,
     outputMuteSupported: false,
@@ -1387,6 +1483,7 @@ export function useRavenMediaAdapter(
     toggleMic,
     toggleCamera,
     toggleDeafen,
+    setAway,
     startScreenShare,
     stopScreenShare,
     refreshMediaDevices,

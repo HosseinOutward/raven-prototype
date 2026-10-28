@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import type { LauncherNest, Nest } from "@/lib/api";
 import { knownConnectedPeerIds } from "@/lib/callArrivals";
+import { callStatesByUser, callStateSupported } from "@/lib/callState";
 import { AvatarStack, GroupedList, LiveDot } from "../atoms";
 import { formatRelativeTime, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
@@ -47,6 +48,14 @@ export function NestView({
     () => (inside ? knownConnectedPeerIds({ session: activeSession, audioState: media.audioState, videoState: media.videoState }) : null),
     [activeSession, inside, media.audioState, media.videoState],
   );
+  const localUserId = data.user?.id;
+  const { localAway, localDeafened } = media;
+  const callStates = useMemo(
+    () => (inside && callStateSupported(activeSession)
+      ? callStatesByUser(activeSession?.participants, localUserId ? { userId: localUserId, away: localAway, deafened: localDeafened } : undefined)
+      : null),
+    [activeSession, inside, localAway, localDeafened, localUserId],
+  );
   const { setRemoteTrackVolume, setRemoteTrackMuted, stopScreenShare } = media;
   const satelliteActions = useMemo<SatelliteActions>(() => ({
     setVolume: async (satellite, gainDb) => {
@@ -80,6 +89,7 @@ export function NestView({
         satelliteActions={satelliteActions}
         roomLabel={data.labels.nestSingular}
         connectedPeerIds={connectedPeers}
+        callStates={callStates}
       />
     );
   }

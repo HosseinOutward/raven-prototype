@@ -336,6 +336,7 @@ func (s *Server) routes() {
 	service.Post("/nests/:id/presence/join", s.joinNestPresence)
 	service.Post("/nests/:id/presence/leave", s.leaveNestPresence)
 	service.Post("/nests/:id/session/join", s.joinCallSession)
+	service.Post("/nests/:id/session/state", s.setCallState)
 	service.Post("/nests/:id/session/leave", s.leaveCallSession)
 	service.Post("/nests/:id/session/disconnect", s.disconnectFromNest)
 	service.Post("/nests/:id/entry-notice", s.announceNestEntry)

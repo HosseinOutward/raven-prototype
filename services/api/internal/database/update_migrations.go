@@ -39,6 +39,10 @@ func migrateVersioned(db *sql.DB, driver string) error {
 			version:    "2026101202_drop_update_control",
 			statements: dropUpdateControlStatements(driver),
 		},
+		{
+			version:    "2026102701_call_state",
+			statements: callStateStatements(),
+		},
 	}
 	for _, migration := range migrations {
 		if err := applyUpdateMigration(db, driver, migration); err != nil {

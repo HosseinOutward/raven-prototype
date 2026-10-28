@@ -79,6 +79,8 @@ pub struct VoiceOverlaySnapshot {
     pub nest_name: Option<String>,
     pub location_label: String,
     pub connected: bool,
+    /// False against a server that predates the shared call state.
+    pub away_supported: bool,
     pub participants: Vec<VoiceOverlayParticipant>,
 }
 
@@ -93,6 +95,8 @@ pub struct VoiceOverlayParticipant {
     pub speaking_level: u8,
     pub muted: bool,
     pub deafened: bool,
+    /// "Back in a bit": a marker with no time or duration.
+    pub away: bool,
     pub screen_sharing: bool,
     pub camera_on: bool,
 }
@@ -729,6 +733,26 @@ mod tests {
         )
         .expect("current participant should deserialize");
         assert_eq!(current.speaking_level, 73);
+    }
+
+    #[test]
+    fn call_state_fields_survive_the_snapshot_and_default_off() {
+        let legacy: VoiceOverlaySnapshot = serde_json::from_str(
+            r#"{"connected":true,"participants":[{"userId":"person","displayName":"Person"}]}"#,
+        )
+        .expect("a snapshot without call state should deserialize");
+        assert!(!legacy.away_supported);
+        assert!(!legacy.participants[0].away);
+
+        let current: VoiceOverlaySnapshot = serde_json::from_str(
+            r#"{"awaySupported":true,"participants":[{"userId":"person","away":true,"deafened":true}]}"#,
+        )
+        .expect("a snapshot with call state should deserialize");
+        assert!(current.away_supported);
+        assert!(current.participants[0].away && current.participants[0].deafened);
+        let echoed = serde_json::to_value(&current).expect("snapshot should serialize");
+        assert_eq!(echoed["awaySupported"], true);
+        assert_eq!(echoed["participants"][0]["away"], true);
     }
 
     #[test]

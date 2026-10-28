@@ -17,6 +17,9 @@ type ParticipantSummary struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
 	JoinedAt    string `json:"joinedAt"`
+	// Away is "Back in a bit": a marker with no time or duration, by design.
+	Away     bool `json:"away"`
+	Deafened bool `json:"deafened"`
 }
 
 type SessionSummary struct {
@@ -217,6 +220,73 @@ func (s *Server) leaveCallSession(c *fiber.Ctx) error {
 		return err
 	}
 	return c.JSON(fiber.Map{"session": summary})
+}
+
+// setCallState updates the caller's own "Back in a bit" and deafened markers.
+// It never touches another person's row, and it writes no event log entry:
+// these are live markers, not history (presence is consent, not telemetry).
+func (s *Server) setCallState(c *fiber.Ctx) error {
+	user := currentUser(c)
+	nestID := c.Params("id")
+	var body struct {
+		Away     *bool `json:"away"`
+		Deafened *bool `json:"deafened"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid call state payload")
+	}
+	summary, changed, err := s.updateParticipantState(nestID, user.ID, body.Away, body.Deafened)
+	if err != nil {
+		return err
+	}
+	if changed {
+		s.broadcastSessionUpdate(nestID, summary.ID, "participant.state")
+	}
+	return c.JSON(fiber.Map{"session": summary})
+}
+
+func (s *Server) updateParticipantState(nestID, userID string, away, deafened *bool) (SessionSummary, bool, error) {
+	now := database.Now()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return SessionSummary{}, false, err
+	}
+	defer tx.Rollback()
+	var sessionID string
+	if err := tx.QueryRow(`SELECT id FROM nest_sessions WHERE nest_id = ? AND ended_at IS NULL`, nestID).Scan(&sessionID); err != nil {
+		return SessionSummary{}, false, err
+	}
+	var currentAway, currentDeafened bool
+	if err := tx.QueryRow(
+		`SELECT away, deafened FROM session_participants WHERE session_id = ? AND user_id = ? AND left_at IS NULL`,
+		sessionID, userID,
+	).Scan(&currentAway, &currentDeafened); err != nil {
+		return SessionSummary{}, false, err
+	}
+	nextAway, nextDeafened := currentAway, currentDeafened
+	if away != nil {
+		nextAway = *away
+	}
+	if deafened != nil {
+		nextDeafened = *deafened
+	}
+	changed := nextAway != currentAway || nextDeafened != currentDeafened
+	if changed {
+		if _, err := tx.Exec(
+			`UPDATE session_participants SET away = ?, deafened = ?, updated_at = ? WHERE session_id = ? AND user_id = ? AND left_at IS NULL`,
+			nextAway, nextDeafened, now, sessionID, userID,
+		); err != nil {
+			return SessionSummary{}, false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return SessionSummary{}, false, err
+	}
+	summary, err := s.activeSessionForNest(nestID)
+	if err != nil {
+		return SessionSummary{}, false, err
+	}
+	return summary, changed, nil
 }
 
 func (s *Server) disconnectFromNest(c *fiber.Ctx) error {
@@ -595,7 +665,7 @@ func (s *Server) sessionsForNest(nestID string) ([]SessionSummary, error) {
 
 func (s *Server) activeParticipants(sessionID string) ([]ParticipantSummary, error) {
 	rows, err := s.db.Query(
-		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), sp.joined_at
+		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), sp.joined_at, sp.away, sp.deafened
 		 FROM session_participants sp
 		 JOIN users u ON u.id = sp.user_id
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
@@ -610,7 +680,7 @@ func (s *Server) activeParticipants(sessionID string) ([]ParticipantSummary, err
 	participants := []ParticipantSummary{}
 	for rows.Next() {
 		var participant ParticipantSummary
-		if err := rows.Scan(&participant.UserID, &participant.Username, &participant.DisplayName, &participant.JoinedAt); err != nil {
+		if err := rows.Scan(&participant.UserID, &participant.Username, &participant.DisplayName, &participant.JoinedAt, &participant.Away, &participant.Deafened); err != nil {
 			return nil, err
 		}
 		participants = append(participants, participant)

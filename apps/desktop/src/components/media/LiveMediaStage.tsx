@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Eye, Focus, LayoutGrid, Loader2, Maximize2, MicOff, Minimize2, MonitorUp, MoreHorizontal, WifiLow, WifiOff } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Eye, Focus, HeadphoneOff, LayoutGrid, Loader2, Maximize2, MicOff, Minimize2, MonitorUp, MoreHorizontal, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
+import type { ParticipantCallState } from "@/lib/callState";
 import { cn } from "@/lib/utils";
 import type { SelfPreviewMode, VideoMixerState, VideoStreamEndpoint } from "@/lib/video";
 import { stripSidecarIdentity } from "@/lib/mediaIdentity";
@@ -60,6 +61,7 @@ export function LiveMediaStage({
   satelliteActions = NO_SATELLITE_ACTIONS,
   roomLabel = "Nest",
   connectedPeerIds = null,
+  callStates = null,
   className,
 }: {
   title: string;
@@ -85,6 +87,8 @@ export function LiveMediaStage({
    * lists is drawn as connecting. Null while it is not known: nobody is marked.
    */
   connectedPeerIds?: ReadonlySet<string> | null;
+  /** "Back in a bit" and deafened per person, by user id. Null while the server does not share them. */
+  callStates?: ReadonlyMap<string, ParticipantCallState> | null;
   className?: string;
 }) {
   const stageRef = useRef<HTMLElement | null>(null);
@@ -120,9 +124,11 @@ export function LiveMediaStage({
   const { pendingFor, setReceiving } = useVideoReceiving(connected, readEngineDesired);
 
   const tiles = useMemo<StageTile[]>(() => nativeTiles.map((nativeTile) => {
-    const tile = isConnecting(nativeTile.participantId, nativeTile.isLocal, connectedPeerIds)
+    const callState = callStates?.get(stripSidecarIdentity(nativeTile.participantId));
+    const present = isConnecting(nativeTile.participantId, nativeTile.isLocal, connectedPeerIds)
       ? { ...nativeTile, connecting: true }
       : nativeTile;
+    const tile = callState ? { ...present, away: callState.away, deafened: callState.deafened } : present;
     if (tile.isLocal) {
       // Your own share is a card unless you ask for a preview. Without an <img> nothing
       // subscribes to its frames, so no JPEGs are made for it.
@@ -130,7 +136,7 @@ export function LiveMediaStage({
     }
     const receiving = effectiveReceiving(tile.receiving, pendingFor(tile.participantId, tile.source));
     return { ...tile, receiving, watching: receiving, loading: tile.source === "screenshare" ? receiving && !tile.streamUrl : tile.loading };
-  }), [connectedPeerIds, nativeTiles, ownPreview, pendingFor]);
+  }), [callStates, connectedPeerIds, nativeTiles, ownPreview, pendingFor]);
 
   const { visual, cards, voice } = useMemo(() => partitionStageTiles(tiles), [tiles]);
   // Arrivals and departures move only once the room has settled: nobody pops in when you
@@ -554,13 +560,17 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
           >
             <span className="relative">
               <span
-                className={cn("block rounded-full", person.speaking && "raven-speaking-avatar", person.connecting && "raven-connecting-avatar")}
+                className={cn("block rounded-full", person.speaking && "raven-speaking-avatar", person.connecting && "raven-connecting-avatar", person.away && !person.connecting && "raven-away-avatar")}
                 style={speakingGlowStyle(person.speakingIntensity, "avatar")}
               >
                 <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className={size} />
               </span>
               {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="absolute -bottom-0.5 -left-0.5 h-6 w-6 rounded-full bg-card" /> : null}
-              {person.audioMuted && !person.connecting ? (
+              {person.deafened && !person.connecting ? (
+                <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-card text-destructive" title="Deafened" aria-label="Deafened" role="img">
+                  <HeadphoneOff className="h-3.5 w-3.5" />
+                </span>
+              ) : person.audioMuted && !person.connecting ? (
                 <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-card text-destructive" title="Muted" aria-label="Muted">
                   <MicOff className="h-3.5 w-3.5" />
                 </span>
@@ -579,6 +589,7 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
               <WatchingMark targets={person.watchedShares} />
             </span>
             {person.connecting ? <ConnectingCaption /> : <ConnectionCaption person={person} />}
+            {person.away && !person.connecting ? <AwayCaption /> : null}
           </div>
         );
       })}
@@ -599,16 +610,19 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
             aria-hidden={phase === "leave" || undefined}
           >
             <span
-              className={cn("block rounded-full", person.speaking && "raven-speaking-ring", person.connecting && "raven-connecting-avatar")}
+              className={cn("block rounded-full", person.speaking && "raven-speaking-ring", person.connecting && "raven-connecting-avatar", person.away && !person.connecting && "raven-away-avatar")}
               style={speakingGlowStyle(person.speakingIntensity, "avatar")}
             >
               <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className="h-7 w-7" />
             </span>
             <span className={cn("max-w-[140px] truncate text-small", person.connecting && "text-muted-foreground")}>{person.isLocal ? "You" : person.displayName}</span>
             <WatchingMark targets={person.watchedShares} />
+            {person.away && !person.connecting ? <span className="shrink-0 text-caption text-muted-foreground">Back in a bit</span> : null}
             {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="-mr-1.5 h-6 w-6 shrink-0 rounded-full" /> : null}
             {person.connecting ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="Connecting" />
+            ) : person.deafened ? (
+              <HeadphoneOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Deafened" role="img" />
             ) : person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
             <SatelliteCluster
               satellites={satellitesFor(satellites.satellites, person)}
@@ -645,6 +659,11 @@ function ConnectingCaption() {
       Connecting…
     </span>
   );
+}
+
+/** A marker they set, with no time or duration on purpose. */
+function AwayCaption() {
+  return <span className="mt-0.5 text-caption text-muted-foreground">Back in a bit</span>;
 }
 
 function ConnectionCaption({ person }: { person: NativeMediaTile }) {

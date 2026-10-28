@@ -1079,3 +1079,131 @@ func deleteJSONWithBody(t *testing.T, server *Server, token, path string, body a
 func setTestCompatibilityHeaders(req *http.Request) {
 	req.Header.Set("X-Raven-Client-Version", "0.1.0")
 }
+
+func sessionParticipants(t *testing.T, server *Server, token, nestID string) []ParticipantSummary {
+	t.Helper()
+	response := getJSON(t, server, token, "/v1/nests/"+nestID+"/session", http.StatusOK)
+	var payload struct {
+		Session *SessionSummary `json:"session"`
+	}
+	if err := json.Unmarshal(response, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Session == nil {
+		return nil
+	}
+	return payload.Session.Participants
+}
+
+func participantByUsername(t *testing.T, participants []ParticipantSummary, username string) ParticipantSummary {
+	t.Helper()
+	for _, participant := range participants {
+		if participant.Username == username {
+			return participant
+		}
+	}
+	t.Fatalf("%s is not in %+v", username, participants)
+	return ParticipantSummary{}
+}
+
+func TestCallStateIsSharedAndOnlyChangesTheCaller(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	bob, bobToken := createTestUser(t, server, "bob")
+	nestID := createTestNest(t, server, aliceToken, "/v1/nests/temporary", "Quick call")
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/invitations", map[string]string{"username": "bob"}, http.StatusCreated)
+	postJSON(t, server, bobToken, "/v1/nests/"+nestID+"/join", nil, http.StatusOK)
+
+	joinResponse := postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+	postJSON(t, server, bobToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+	if !bytes.Contains(joinResponse, []byte(`"away":false`)) || !bytes.Contains(joinResponse, []byte(`"deafened":false`)) {
+		t.Fatalf("participants should always carry both states: %s", joinResponse)
+	}
+
+	bobStream := server.events.subscribe(bob.ID)
+	drainUpdates(t, bobStream)
+
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"away": true}, http.StatusOK)
+	if !hasUpdate(drainUpdates(t, bobStream), "participant.state", nestID) {
+		t.Fatal("setting Back in a bit did not tell the others in the call")
+	}
+
+	// Bob sees alice's marker; nothing about bob changed.
+	seenByBob := sessionParticipants(t, server, bobToken, nestID)
+	if alice := participantByUsername(t, seenByBob, "alice"); !alice.Away || alice.Deafened {
+		t.Fatalf("alice should be away only: %+v", alice)
+	}
+	if other := participantByUsername(t, seenByBob, "bob"); other.Away || other.Deafened || other.UserID != bob.ID {
+		t.Fatalf("bob's row must not change: %+v", other)
+	}
+
+	// A partial patch leaves the other field alone.
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"deafened": true}, http.StatusOK)
+	if alice := participantByUsername(t, sessionParticipants(t, server, bobToken, nestID), "alice"); !alice.Away || !alice.Deafened {
+		t.Fatalf("deafen should not clear Back in a bit: %+v", alice)
+	}
+
+	// Clearing.
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"away": false, "deafened": false}, http.StatusOK)
+	if alice := participantByUsername(t, sessionParticipants(t, server, bobToken, nestID), "alice"); alice.Away || alice.Deafened {
+		t.Fatalf("both states should clear: %+v", alice)
+	}
+
+	// Sending the value it already has changes nothing and says nothing.
+	drainUpdates(t, bobStream)
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"away": false}, http.StatusOK)
+	if updates := drainUpdates(t, bobStream); len(updates) != 0 {
+		t.Fatalf("a no-op update should not broadcast: %+v", updates)
+	}
+
+	// No time or duration is ever stored for either marker.
+	var columns int
+	if err := server.db.QueryRow(`SELECT COUNT(*) FROM nest_event_log WHERE nest_id = ? AND event_type LIKE '%state%'`, nestID).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if columns != 0 {
+		t.Fatalf("call state must not be logged as history, found %d events", columns)
+	}
+}
+
+func TestCallStateRequiresBeingInTheCall(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	_, bobToken := createTestUser(t, server, "bob")
+	nestID := createTestNest(t, server, aliceToken, "/v1/nests/temporary", "Quick call")
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/invitations", map[string]string{"username": "bob"}, http.StatusCreated)
+	postJSON(t, server, bobToken, "/v1/nests/"+nestID+"/join", nil, http.StatusOK)
+
+	// Nobody is in a call yet.
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"away": true}, http.StatusNotFound)
+
+	// Alice is in the call, bob is not: bob cannot change anything, and alice's row is untouched.
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+	postJSON(t, server, bobToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"away": true, "deafened": true}, http.StatusNotFound)
+	if alice := participantByUsername(t, sessionParticipants(t, server, aliceToken, nestID), "alice"); alice.Away || alice.Deafened {
+		t.Fatalf("a stranger changed alice's state: %+v", alice)
+	}
+
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]string{"away": "yes"}, http.StatusBadRequest)
+}
+
+func TestRejoiningStartsWithBothStatesClear(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	_, bobToken := createTestUser(t, server, "bob")
+	nestID := createTestNest(t, server, aliceToken, "/v1/nests/temporary", "Quick call")
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/invitations", map[string]string{"username": "bob"}, http.StatusCreated)
+	postJSON(t, server, bobToken, "/v1/nests/"+nestID+"/join", nil, http.StatusOK)
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+	postJSON(t, server, bobToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/state", map[string]bool{"away": true, "deafened": true}, http.StatusOK)
+	// Joining again while already in the call is a heartbeat, not a reset.
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+	if alice := participantByUsername(t, sessionParticipants(t, server, bobToken, nestID), "alice"); !alice.Away || !alice.Deafened {
+		t.Fatalf("a repeated join must not clear the markers: %+v", alice)
+	}
+
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/leave", nil, http.StatusOK)
+	postJSON(t, server, aliceToken, "/v1/nests/"+nestID+"/session/join", nil, http.StatusOK)
+	if alice := participantByUsername(t, sessionParticipants(t, server, bobToken, nestID), "alice"); alice.Away || alice.Deafened {
+		t.Fatalf("rejoining should start clear: %+v", alice)
+	}
+}
