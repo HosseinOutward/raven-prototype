@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Headphones, HeadphoneOff, Mic, MicOff, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,7 @@ import {
   EMPTY_VOICE_OVERLAY_SNAPSHOT,
   type VoiceOverlayAction,
   type VoiceOverlayBackground,
+  type VoiceOverlayHeadsUp,
   type VoiceOverlayLayout,
   type VoiceOverlayParticipant,
   type VoiceOverlayResolvedShape,
@@ -31,6 +32,15 @@ import {
   type CardButton,
   type LatestThrottle,
 } from "@/lib/voiceOverlayControls";
+import {
+  NOTHING_SHOWN,
+  advanceHeadsUp,
+  closeHeadsUp,
+  headsUpFirst,
+  knockIdOfLine,
+  nextHeadsUpWake,
+  type HeadsUpShown,
+} from "@/lib/voiceOverlayHeadsUp";
 import {
   JOINED_CAPTION_MS,
   LEFT_ROW_MS,
@@ -61,6 +71,7 @@ const DEFAULT_LAYOUT: VoiceOverlayLayout = {
   size: "medium",
   interact: "hover",
   interactive: false,
+  anchorCorner: "topLeft",
   maxCardWidth: 640,
   maxCardHeight: 480,
 };
@@ -143,6 +154,10 @@ export function VoiceOverlayWindow() {
   const [arrivals, setArrivals] = useState<Record<string, true>>({});
   const [ghosts, setGhosts] = useState<Ghost[]>([]);
   const [quiet, setQuiet] = useState(false);
+  // Knock and message lines: the overlay times them; the snapshot lists what could still show.
+  const [lines, setLines] = useState<HeadsUpShown>(NOTHING_SHOWN);
+  const [heldLine, setHeldLine] = useState<string | null>(null);
+  const [linesTick, setLinesTick] = useState(0);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const lastSizeRef = useRef("");
   const draggingRef = useRef(false);
@@ -398,6 +413,39 @@ export function VoiceOverlayWindow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot]);
 
+  // How long each knock or message shows. Resting the pointer on a line keeps it.
+  const listedLines = snapshot.headsUp ?? EMPTY_VOICE_OVERLAY_SNAPSHOT.headsUp;
+  const listedLinesRef = useRef(listedLines);
+  listedLinesRef.current = listedLines;
+  const held = useMemo(() => new Set<string>(heldLine && layout.interactive ? [heldLine] : []), [heldLine, layout.interactive]);
+  useEffect(() => {
+    setLines((current) => advanceHeadsUp(current, listedLines, Date.now(), held));
+  }, [listedLines, held, linesTick]);
+  useEffect(() => {
+    const wake = nextHeadsUpWake(lines, held);
+    if (wake == null) return;
+    const timer = window.setTimeout(() => setLinesTick((value) => value + 1), Math.max(0, wake - Date.now()) + 20);
+    return () => window.clearTimeout(timer);
+  }, [lines, held]);
+  const enterLine = (id: string) => setHeldLine(id);
+  // After the pointer leaves, a line stays a moment longer; `held` still names it for this one step.
+  const leaveLine = (id: string) => {
+    const at = Date.now();
+    setLines((current) => advanceHeadsUp(current, listedLinesRef.current, at, new Set([id])));
+    setHeldLine((current) => (current === id ? null : current));
+  };
+  useEffect(() => {
+    if (!layout.interactive && heldLine) leaveLine(heldLine);
+    // Only the end of interaction matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout.interactive]);
+  const answerLine = (id: string, open: boolean) => {
+    const knockId = knockIdOfLine(id);
+    if (!knockId) return;
+    setLines((current) => closeHeadsUp(current, id, Date.now()));
+    void voiceOverlayCommands.action({ kind: "knock", knockId, open }).catch(() => undefined);
+  };
+
   const now = Date.now();
   const participants = snapshot.participants;
   const shape: VoiceOverlayResolvedShape = layout.shape;
@@ -501,6 +549,7 @@ export function VoiceOverlayWindow() {
     snapshot.reconnecting ||
     Boolean(saying?.words || saying?.caption) ||
     ghosts.length > 0 ||
+    lines.shown.length > 0 ||
     (display.showJoinsAndLeaves && Object.keys(arrivals).length > 0);
   const stayFull = !inCall || display.quietFade === "none" || anyoneTalking || headsUp || layout.interactive;
 
@@ -654,6 +703,35 @@ export function VoiceOverlayWindow() {
     </div>
   ) : null;
 
+  // Knocks and messages: at the end of the card away from the edge it grows from.
+  const linesFirst = headsUpFirst(shape, layout.anchorCorner);
+  const lineNodes =
+    lines.shown.length > 0 ? (
+      <div key="lines" className={cn("flex", shape === "row" ? "shrink-0 items-center gap-1.5" : "flex-col gap-0.5")}>
+        {lines.shown.map(({ line, leavingAt }) => (
+          <HeadsUpLine
+            key={line.id}
+            line={line}
+            shape={shape}
+            avatarSize={scale.avatar}
+            interactive={layout.interactive}
+            leaving={leavingAt != null}
+            onEnter={() => enterLine(line.id)}
+            onLeave={() => leaveLine(line.id)}
+            onAnswer={(open) => answerLine(line.id, open)}
+          />
+        ))}
+      </div>
+    ) : null;
+  const linesDivider =
+    lineNodes && (participants.length || rowList.length) ? (
+      <div
+        key="lines-divider"
+        className={shape === "row" ? "mx-0.5 h-5 w-px shrink-0 bg-white/15" : "mx-1.5 my-1 h-px bg-white/15"}
+        aria-hidden
+      />
+    ) : null;
+
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-transparent text-foreground">
       <div
@@ -683,29 +761,109 @@ export function VoiceOverlayWindow() {
         {participants.length || rowList.length ? (
           shape === "row" ? (
             <div className="flex items-center gap-1.5">
+              {linesFirst ? lineNodes : null}
+              {linesFirst ? linesDivider : null}
               {localItem}
               {barNode}
               {hasOthers && localItem ? <div className="mx-0.5 h-5 w-px shrink-0 bg-white/15" aria-hidden /> : null}
               {others}
               {folded}
               {hidden}
+              {linesFirst ? null : linesDivider}
+              {linesFirst ? null : lineNodes}
             </div>
           ) : (
             <div className="space-y-0.5">
+              {linesFirst ? lineNodes : null}
+              {linesFirst ? linesDivider : null}
               {others}
               {folded}
               {hidden}
               {hasOthers && localItem ? <div className="mx-1.5 my-1 h-px bg-white/15" aria-hidden /> : null}
               {localItem}
               {barNode}
+              {linesFirst ? null : linesDivider}
+              {linesFirst ? null : lineNodes}
             </div>
           )
         ) : (
-          <div className="whitespace-nowrap px-2 py-1.5 text-muted-foreground">
-            {inCall ? `No one in ${snapshot.locationLabel || "call"}` : "Not in a call"}
+          <div className={cn("flex gap-1.5", shape === "row" ? "items-center" : "flex-col")}>
+            {linesFirst ? lineNodes : null}
+            {linesFirst ? linesDivider : null}
+            <div className="whitespace-nowrap px-2 py-1.5 text-muted-foreground">
+              {inCall ? `No one in ${snapshot.locationLabel || "call"}` : "Not in a call"}
+            </div>
+            {linesFirst ? null : linesDivider}
+            {linesFirst ? null : lineNodes}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** A knock or a message above or beside the people. Knocks get Open and Dismiss while interactive. */
+function HeadsUpLine({
+  line,
+  shape,
+  avatarSize,
+  interactive,
+  leaving,
+  onEnter,
+  onLeave,
+  onAnswer,
+}: {
+  line: VoiceOverlayHeadsUp;
+  shape: VoiceOverlayResolvedShape;
+  avatarSize: number;
+  interactive: boolean;
+  leaving: boolean;
+  onEnter: () => void;
+  onLeave: () => void;
+  onAnswer: (open: boolean) => void;
+}) {
+  const answerable = line.kind === "knock" && interactive && !leaving;
+  return (
+    <div
+      data-heads-up={line.kind}
+      aria-label={`${line.actorName} ${line.text}`}
+      onPointerEnter={onEnter}
+      onPointerLeave={onLeave}
+      className={cn(
+        "flex min-w-0 items-center gap-2",
+        shape === "row" ? "shrink-0 pr-1" : "px-1.5 py-1",
+        leaving ? "animate-pop-out" : "animate-pop-in",
+      )}
+    >
+      <div className="shrink-0 rounded-full p-0.5 ring-1 ring-white/10">
+        <div style={{ width: avatarSize, height: avatarSize }}>
+          <Avatar name={line.actorName} src={line.avatarUrl ?? undefined} className="h-full w-full text-caption" />
+        </div>
+      </div>
+      <span className={cn("min-w-0 truncate", shape === "row" ? "max-w-[34em]" : "max-w-[28em]")}>
+        <span className="font-medium text-foreground">{line.actorName}</span>{" "}
+        <span className="text-muted-foreground">{line.text}</span>
+      </span>
+      {answerable ? (
+        <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+          <button
+            type="button"
+            data-heads-up-action="open"
+            onClick={() => onAnswer(true)}
+            className="inline-flex h-6 items-center whitespace-nowrap rounded-control bg-white/15 px-2 text-caption text-foreground transition-colors hover:bg-white/25 focus-visible:-outline-offset-2"
+          >
+            Open
+          </button>
+          <button
+            type="button"
+            data-heads-up-action="dismiss"
+            onClick={() => onAnswer(false)}
+            className="inline-flex h-6 items-center whitespace-nowrap rounded-control bg-white/10 px-2 text-caption text-muted-foreground transition-colors hover:bg-white/15 hover:text-foreground focus-visible:-outline-offset-2"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

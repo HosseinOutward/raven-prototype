@@ -70,7 +70,8 @@ const INTERACT_LABEL: Record<VoiceOverlayInteract, string> = {
   never: "Never",
 };
 
-export function VoiceOverlaySettingsPanel() {
+/** `treeLabel` is the user's word for a tree, lower case ("tree" or "space"). */
+export function VoiceOverlaySettingsPanel({ treeLabel = "tree" }: { treeLabel?: string }) {
   const [settings, setSettings] = useState<VoiceOverlaySettings | null>(null);
   const [saving, setSaving] = useState<keyof VoiceOverlaySettingsPatch | "position" | null>(null);
   const [error, setError] = useState("");
@@ -333,6 +334,27 @@ export function VoiceOverlaySettingsPanel() {
             checked={settings.showJoinsAndLeaves}
             disabled={!enabled || saving === "showJoinsAndLeaves"}
             onChange={(checked) => void update({ showJoinsAndLeaves: checked })}
+          />
+          <SettingsToggleRow
+            label="Show knocks"
+            description="Open and Dismiss are there while you can click the overlay."
+            checked={settings.showKnocks}
+            disabled={!enabled || saving === "showKnocks"}
+            onChange={(checked) => void update({ showKnocks: checked })}
+          />
+          <SettingsRow
+            label="Show messages"
+            description={`From text rooms in the ${treeLabel} you’re calling in.`}
+            control={
+              <ChoiceSelect
+                label="Show messages"
+                value={settings.showMessages}
+                labels={{ off: "Off", tree: `From this ${treeLabel}` }}
+                width="w-[168px]"
+                disabled={!enabled || saving === "showMessages"}
+                onChange={(showMessages) => void update({ showMessages })}
+              />
+            }
           />
         </SettingsRows>
       </SettingsSection>

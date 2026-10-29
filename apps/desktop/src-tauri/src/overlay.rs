@@ -83,6 +83,8 @@ pub struct VoiceOverlaySettings {
     pub muted_hint: bool,
     pub show_weak_connections: bool,
     pub show_joins_and_leaves: bool,
+    pub show_knocks: bool,
+    pub show_messages: VoiceOverlayMessages,
     pub show_on_join: bool,
     pub overlay_buttons: VoiceOverlayButtons,
     /// Scroll on a person's row to change their volume while the card is interactive.
@@ -110,6 +112,8 @@ impl Default for VoiceOverlaySettings {
             muted_hint: true,
             show_weak_connections: true,
             show_joins_and_leaves: true,
+            show_knocks: true,
+            show_messages: VoiceOverlayMessages::default(),
             show_on_join: false,
             overlay_buttons: VoiceOverlayButtons::default(),
             scroll_volume: true,
@@ -142,6 +146,8 @@ struct StoredVoiceOverlaySettings {
     muted_hint: Option<bool>,
     show_weak_connections: Option<bool>,
     show_joins_and_leaves: Option<bool>,
+    show_knocks: Option<bool>,
+    show_messages: Option<VoiceOverlayMessages>,
     show_on_join: Option<bool>,
     overlay_buttons: Option<VoiceOverlayButtons>,
     scroll_volume: Option<bool>,
@@ -188,6 +194,8 @@ impl From<StoredVoiceOverlaySettings> for VoiceOverlaySettings {
             show_joins_and_leaves: stored
                 .show_joins_and_leaves
                 .unwrap_or(defaults.show_joins_and_leaves),
+            show_knocks: stored.show_knocks.unwrap_or(defaults.show_knocks),
+            show_messages: stored.show_messages.unwrap_or(defaults.show_messages),
             show_on_join: stored.show_on_join.unwrap_or(defaults.show_on_join),
             overlay_buttons: stored.overlay_buttons.unwrap_or(defaults.overlay_buttons),
             scroll_volume: stored.scroll_volume.unwrap_or(defaults.scroll_volume),
@@ -285,6 +293,16 @@ pub enum VoiceOverlayQuietFade {
     Lots,
 }
 
+/// Which text-room messages appear as a heads-up line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VoiceOverlayMessages {
+    #[default]
+    Off,
+    /// Text rooms in the tree of the nest you are calling in.
+    Tree,
+}
+
 const DEFAULT_LINGER_SECONDS: u8 = 3;
 
 /// Only the offered values are kept; anything else in a hand-edited file becomes the default.
@@ -360,7 +378,30 @@ pub struct VoiceOverlaySnapshot {
     pub local_muted_hint: bool,
     /// False against a server that predates the shared call state.
     pub away_supported: bool,
+    /// Knocks and messages that could still be on the card. The overlay decides how long each shows.
+    pub heads_up: Vec<VoiceOverlayHeadsUp>,
     pub participants: Vec<VoiceOverlayParticipant>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VoiceOverlayHeadsUpKind {
+    #[default]
+    Knock,
+    Message,
+}
+
+/// One line the card may show above or beside the people.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VoiceOverlayHeadsUp {
+    pub id: String,
+    pub kind: VoiceOverlayHeadsUpKind,
+    pub actor_name: String,
+    pub avatar_url: Option<String>,
+    pub text: String,
+    /// When it happened (ISO 8601).
+    pub at: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,6 +452,12 @@ pub enum VoiceOverlayAction {
     Away {
         away: bool,
     },
+    /// Open or dismiss a knock shown as a heads-up line.
+    #[serde(rename_all = "camelCase")]
+    Knock {
+        knock_id: String,
+        open: bool,
+    },
     #[serde(rename_all = "camelCase")]
     Volume {
         user_id: String,
@@ -445,6 +492,8 @@ pub struct VoiceOverlayLayoutView {
     pub size: VoiceOverlaySize,
     pub interact: VoiceOverlayInteract,
     pub interactive: bool,
+    /// The screen corner the card grows away from; heads-up lines go at the far end.
+    pub anchor_corner: VoiceOverlayCorner,
     /// The largest card that fits the monitor it's on, in CSS px.
     pub max_card_width: f64,
     pub max_card_height: f64,
@@ -506,6 +555,8 @@ pub struct VoiceOverlaySettingsView {
     pub muted_hint: bool,
     pub show_weak_connections: bool,
     pub show_joins_and_leaves: bool,
+    pub show_knocks: bool,
+    pub show_messages: VoiceOverlayMessages,
     pub show_on_join: bool,
     pub overlay_buttons: VoiceOverlayButtons,
     pub scroll_volume: bool,
@@ -528,6 +579,8 @@ pub struct VoiceOverlaySettingsPatch {
     pub muted_hint: Option<bool>,
     pub show_weak_connections: Option<bool>,
     pub show_joins_and_leaves: Option<bool>,
+    pub show_knocks: Option<bool>,
+    pub show_messages: Option<VoiceOverlayMessages>,
     pub show_on_join: Option<bool>,
     pub overlay_buttons: Option<VoiceOverlayButtons>,
     pub scroll_volume: Option<bool>,
@@ -858,6 +911,12 @@ fn apply_settings_patch(
     if let Some(value) = patch.show_joins_and_leaves {
         next.show_joins_and_leaves = value;
     }
+    if let Some(value) = patch.show_knocks {
+        next.show_knocks = value;
+    }
+    if let Some(value) = patch.show_messages {
+        next.show_messages = value;
+    }
     if let Some(value) = patch.show_on_join {
         next.show_on_join = value;
     }
@@ -891,6 +950,8 @@ fn settings_view(
         muted_hint: settings.muted_hint,
         show_weak_connections: settings.show_weak_connections,
         show_joins_and_leaves: settings.show_joins_and_leaves,
+        show_knocks: settings.show_knocks,
+        show_messages: settings.show_messages,
         show_on_join: settings.show_on_join,
         overlay_buttons: settings.overlay_buttons,
         scroll_volume: settings.scroll_volume,
@@ -915,6 +976,11 @@ fn layout_view(state: &VoiceOverlayState) -> Result<VoiceOverlayLayoutView, Voic
         size: settings.size,
         interact: settings.interact,
         interactive: window_state.interactive,
+        anchor_corner: settings
+            .anchor
+            .as_ref()
+            .map(|anchor| anchor.corner)
+            .unwrap_or_default(),
         max_card_width,
         max_card_height,
     })
@@ -1812,6 +1878,8 @@ mod tests {
             muted_hint: false,
             show_weak_connections: false,
             show_joins_and_leaves: false,
+            show_knocks: false,
+            show_messages: VoiceOverlayMessages::Tree,
             show_on_join: true,
             overlay_buttons: VoiceOverlayButtons {
                 mute: true,
@@ -1855,6 +1923,8 @@ mod tests {
         assert_eq!(settings.quiet_fade, VoiceOverlayQuietFade::None);
         assert!(settings.muted_hint && settings.show_weak_connections && settings.show_joins_and_leaves);
         assert!(!settings.show_on_join);
+        assert!(settings.show_knocks);
+        assert_eq!(settings.show_messages, VoiceOverlayMessages::Off);
         assert_eq!(settings.overlay_buttons, VoiceOverlayButtons::default());
         assert!(settings.scroll_volume);
         assert_eq!(settings.interact, VoiceOverlayInteract::Hover);
@@ -1957,6 +2027,8 @@ mod tests {
                 muted_hint: Some(false),
                 show_weak_connections: Some(false),
                 show_joins_and_leaves: Some(false),
+                show_knocks: Some(false),
+                show_messages: Some(VoiceOverlayMessages::Tree),
                 show_on_join: Some(true),
                 overlay_buttons: Some(VoiceOverlayButtons {
                     mute: false,
@@ -1979,6 +2051,8 @@ mod tests {
         assert_eq!(settings.quiet_fade, VoiceOverlayQuietFade::Some);
         assert!(!settings.muted_hint && !settings.show_weak_connections && !settings.show_joins_and_leaves);
         assert!(settings.show_on_join);
+        assert!(!settings.show_knocks);
+        assert_eq!(settings.show_messages, VoiceOverlayMessages::Tree);
         assert_eq!(
             settings.overlay_buttons,
             VoiceOverlayButtons {
@@ -2006,6 +2080,41 @@ mod tests {
                 percent: 120,
             }
         );
+        let knock: VoiceOverlayAction =
+            serde_json::from_str(r#"{"kind":"knock","knockId":"k_1","open":true}"#).expect("knock");
+        assert_eq!(
+            knock,
+            VoiceOverlayAction::Knock {
+                knock_id: "k_1".to_string(),
+                open: true,
+            }
+        );
+    }
+
+    #[test]
+    fn heads_up_lines_round_trip_and_default_to_none() {
+        let older: VoiceOverlaySnapshot =
+            serde_json::from_str(r#"{"connected":true}"#).expect("snapshot without heads-up lines");
+        assert!(older.heads_up.is_empty());
+
+        let current: VoiceOverlaySnapshot = serde_json::from_str(
+            r#"{"headsUp":[{"id":"k_1","kind":"knock","actorName":"Arash","avatarUrl":null,"text":"","at":"2026-10-29T10:00:00Z"},{"id":"m_1","kind":"message","actorName":"Mina","text":"in design: hi","at":"2026-10-29T10:00:01Z"}]}"#,
+        )
+        .expect("snapshot with heads-up lines");
+        assert_eq!(current.heads_up[0].kind, VoiceOverlayHeadsUpKind::Knock);
+        assert_eq!(current.heads_up[1].kind, VoiceOverlayHeadsUpKind::Message);
+        let echoed = serde_json::to_value(&current).expect("snapshot should serialize");
+        assert_eq!(echoed["headsUp"][1]["actorName"], "Mina");
+        assert_eq!(echoed["headsUp"][0]["kind"], "knock");
+    }
+
+    #[test]
+    fn messages_setting_is_off_unless_chosen() {
+        let off: VoiceOverlaySettings = serde_json::from_str(r#"{"enabled":true}"#).expect("no messages key");
+        assert_eq!(off.show_messages, VoiceOverlayMessages::Off);
+        let tree: VoiceOverlaySettings =
+            serde_json::from_str(r#"{"showMessages":"tree"}"#).expect("tree messages");
+        assert_eq!(tree.show_messages, VoiceOverlayMessages::Tree);
     }
 
     #[test]

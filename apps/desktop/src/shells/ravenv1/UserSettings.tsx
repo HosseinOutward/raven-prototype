@@ -151,7 +151,7 @@ export function UserSettingsView({
     case "voice-overlay":
       return (
         <SettingsPage title="Voice overlay" description="A small panel that stays on top of other windows and shows who is speaking.">
-          <VoiceOverlaySettingsPanel />
+          <VoiceOverlaySettingsPanel treeLabel={data.labels.treeSingular.toLowerCase()} />
         </SettingsPage>
       );
     case "tray":

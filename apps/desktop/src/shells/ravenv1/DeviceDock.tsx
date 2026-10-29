@@ -44,6 +44,9 @@ import { type VideoQualityProfileId } from "@/lib/video";
 import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
 import { ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
+import type { ChatStore } from "@/lib/chat/store";
+import { pendingTarget } from "./Inbox";
+import { useVoiceOverlayHeadsUp } from "./useVoiceOverlayHeadsUp";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
 import type { LocalVideoStatus } from "./mediaState";
 import type {
@@ -99,12 +102,14 @@ const TRAY_PRESENCES = SELECTABLE_PRESENCES.map((id) => ({ id, label: PRESENCE[i
 export function DeviceDock({
   data,
   media,
+  chat,
   view,
   onNavigate,
   onToggleMixer,
 }: {
   data: RavenShellData;
   media: RavenMediaAdapterState;
+  chat: ChatStore | null;
   view: RavenView;
   onNavigate: (view: RavenView) => void;
   onToggleMixer: () => void;
@@ -122,6 +127,11 @@ export function DeviceDock({
   const setPresenceRef = useRef(data.setPresence);
   setPresenceRef.current = data.setPresence;
   mediaRef.current = media;
+  // The overlay's knock lines act on what the inbox holds now.
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  const navigateRef = useRef(onNavigate);
+  navigateRef.current = onNavigate;
   const [fullscreenHost, setFullscreenHost] = useState<HTMLElement | null>(null);
   const [hotkeys, setHotkeys] = useState<MediaHotkeySettings | null>(null);
   const [connectedSince, setConnectedSince] = useState<string | null>(null);
@@ -195,6 +205,20 @@ export function DeviceDock({
       if (!active) return;
       if (action.kind === "mic" || action.kind === "deafen") {
         runCallAction(action.kind);
+        return;
+      }
+      if (action.kind === "knock") {
+        if (!action.open) {
+          // A failure is shown by the shell data; the line goes when the knock does.
+          void dataRef.current.dismissKnock(action.knockId).catch(() => undefined);
+          return;
+        }
+        const item = dataRef.current.pending.find((pending) => pending.kind === "knock" && pending.knock.id === action.knockId);
+        if (!item) return;
+        // The same place the inbox's Open goes, after bringing Raven forward from under the game.
+        navigateRef.current(pendingTarget(item));
+        const appWindow = getCurrentWindow();
+        void appWindow.unminimize().then(() => appWindow.show()).then(() => appWindow.setFocus()).catch(() => undefined);
         return;
       }
       const current = mediaRef.current;
@@ -383,12 +407,20 @@ export function DeviceDock({
 
   // The overlay's avatar URLs carry each picture's version; a change re-sends the snapshot.
   const avatarRevision = useAvatarVersions();
+  const headsUp = useVoiceOverlayHeadsUp({
+    data,
+    chat,
+    treeId: media.activeNestId ? activeDetails?.nest.treeId ?? null : null,
+    view,
+  });
   useEffect(() => {
     if (!data.user || !activeDetails) {
-      const serialized = JSON.stringify(EMPTY_VOICE_OVERLAY_SNAPSHOT);
+      // Knocks reach the overlay with or without a call.
+      const empty = { ...EMPTY_VOICE_OVERLAY_SNAPSHOT, headsUp: data.user ? headsUp : [] };
+      const serialized = JSON.stringify(empty);
       if (lastOverlaySnapshotRef.current === serialized) return;
       lastOverlaySnapshotRef.current = serialized;
-      void voiceOverlayCommands.updateSnapshot(EMPTY_VOICE_OVERLAY_SNAPSHOT).catch(() => undefined);
+      void voiceOverlayCommands.updateSnapshot(empty).catch(() => undefined);
       return;
     }
     const snapshot = buildVoiceOverlaySnapshot({
@@ -404,6 +436,7 @@ export function DeviceDock({
       reconnecting: media.reconnecting,
       localMutedHint: mutedHint,
       localCallState: { away: media.localAway, deafened: media.localDeafened },
+      headsUp,
     });
     const serialized = JSON.stringify(snapshot);
     if (lastOverlaySnapshotRef.current === serialized) return;
@@ -418,6 +451,7 @@ export function DeviceDock({
     avatarRevision,
     data.user,
     data.labels.nestSingular,
+    headsUp,
     media.audioState,
     media.localAway,
     media.localDeafened,

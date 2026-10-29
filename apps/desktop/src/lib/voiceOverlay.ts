@@ -38,6 +38,8 @@ export interface VoiceOverlaySettings {
   mutedHint: boolean;
   showWeakConnections: boolean;
   showJoinsAndLeaves: boolean;
+  showKnocks: boolean;
+  showMessages: VoiceOverlayMessages;
   showOnJoin: boolean;
   overlayButtons: VoiceOverlayButtons;
   /** Scroll on a person's row to change their volume while the card is interactive. */
@@ -57,7 +59,25 @@ export type VoiceOverlayAction =
   | { kind: "mic" }
   | { kind: "deafen" }
   | { kind: "away"; away: boolean }
-  | { kind: "volume"; userId: string; percent: number };
+  | { kind: "volume"; userId: string; percent: number }
+  /** Open the knock in Raven (`open`) or dismiss it. */
+  | { kind: "knock"; knockId: string; open: boolean };
+
+/** Which text-room messages show as a line on the card: none, or those of the call's tree. */
+export type VoiceOverlayMessages = "off" | "tree";
+
+/** A knock or a message that could still be on the card. The overlay decides how long it shows. */
+export interface VoiceOverlayHeadsUp {
+  /** Stable for the same knock or message. */
+  id: string;
+  kind: "knock" | "message";
+  actorName: string;
+  avatarUrl: string | null;
+  /** What follows the name: "knocked", or "in design: can someone check the build". */
+  text: string;
+  /** When Raven first saw it (ISO 8601). */
+  at: string;
+}
 
 /** A row along the top or bottom edge and a column elsewhere, or always one of them. */
 export type VoiceOverlayShape = "followEdge" | "column" | "row";
@@ -91,6 +111,8 @@ export interface VoiceOverlaySettingsPatch {
   mutedHint?: boolean;
   showWeakConnections?: boolean;
   showJoinsAndLeaves?: boolean;
+  showKnocks?: boolean;
+  showMessages?: VoiceOverlayMessages;
   showOnJoin?: boolean;
   overlayButtons?: VoiceOverlayButtons;
   scrollVolume?: boolean;
@@ -103,9 +125,13 @@ export interface VoiceOverlayLayout {
   interact: VoiceOverlayInteract;
   /** Clicks land on the overlay right now (pointing at it, or holding its key). */
   interactive: boolean;
+  /** The screen corner the card grows away from; heads-up lines go at the far end. */
+  anchorCorner: VoiceOverlayCorner;
   maxCardWidth: number;
   maxCardHeight: number;
 }
+
+export type VoiceOverlayCorner = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
 
 /** The window the overlay wants and the card inside it, in CSS px. */
 export interface VoiceOverlayContentSize {
@@ -145,6 +171,8 @@ export interface VoiceOverlaySnapshot {
   localMutedHint: boolean;
   /** False against a server that predates the shared call state: no Back in a bit button. */
   awaySupported: boolean;
+  /** Knocks and messages that could still show, oldest first. Knocks come with or without a call. */
+  headsUp: VoiceOverlayHeadsUp[];
   participants: VoiceOverlayParticipant[];
 }
 
@@ -156,6 +184,7 @@ export const EMPTY_VOICE_OVERLAY_SNAPSHOT: VoiceOverlaySnapshot = {
   reconnecting: false,
   localMutedHint: false,
   awaySupported: false,
+  headsUp: [],
   participants: [],
 };
 
@@ -223,6 +252,7 @@ export function buildVoiceOverlaySnapshot({
   reconnecting,
   localMutedHint,
   localCallState,
+  headsUp = [],
 }: {
   user: User;
   details: NestDetails;
@@ -237,6 +267,7 @@ export function buildVoiceOverlaySnapshot({
   localMutedHint: boolean;
   /** What you just set; the server's echo of it arrives a moment later. */
   localCallState?: { away: boolean; deafened: boolean };
+  headsUp?: VoiceOverlayHeadsUp[];
 }): VoiceOverlaySnapshot {
   const callStates = callStatesByUser(
     activeSession?.participants,
@@ -322,6 +353,7 @@ export function buildVoiceOverlaySnapshot({
     reconnecting,
     localMutedHint,
     awaySupported: callStateSupported(activeSession),
+    headsUp,
     participants: Array.from(participants.values()).map((participant) => {
       const voice = resolveParticipantVoicePresentation(
         liveKitSpeaking.get(participant.userId) ?? false,

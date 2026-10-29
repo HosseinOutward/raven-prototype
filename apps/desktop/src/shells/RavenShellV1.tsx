@@ -411,7 +411,7 @@ export function RavenShellV1() {
       </ErrorBoundary>
 
       <ErrorBoundary name="dock" fallback={(retry) => <RegionFallback compact onRetry={retry} onLeave={leaveFromFallback} />}>
-        <DeviceDock data={data} media={media} view={view} onNavigate={navigation.navigate} onToggleMixer={toggleMixer} />
+        <DeviceDock data={data} media={media} chat={chat} view={view} onNavigate={navigation.navigate} onToggleMixer={toggleMixer} />
       </ErrorBoundary>
       <Toaster />
     </div>

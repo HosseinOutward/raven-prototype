@@ -19,7 +19,7 @@ function capitalize(value: string) {
   return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
-function pendingTarget(item: PendingItem): RavenView {
+export function pendingTarget(item: PendingItem): RavenView {
   if (item.kind === "knock" || item.kind === "friend") return { kind: "user", id: item.fromId };
   return { kind: "waiting", id: item.nestId };
 }
