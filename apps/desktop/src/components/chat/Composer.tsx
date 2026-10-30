@@ -1,5 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
-import { ArrowUp, CornerUpLeft, ImagePlus, Pencil, X } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
+import { ArrowUp, CornerUpLeft, ImagePlus, Pencil, Smile, X } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { EmojiPicker } from "./EmojiPicker";
+import { loadEmoji, searchEmoji, withTone, type EmojiData } from "@/lib/emoji/data";
+import { recordEmoji, skinTone } from "@/lib/emoji/prefs";
+import { shortcodeQuery, completedShortcode } from "@/lib/emoji/shortcodes";
 import { Button } from "@/components/ui/button";
 import { fieldClassName } from "@/components/ui/input";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -43,6 +48,13 @@ async function filesToSources(files: File[]): Promise<TraySource[]> {
 /** Where a message is written. Enter sends it; Shift+Enter starts a new line. */
 export function Composer({ conversationId, name, replyingTo, editing, onCancelReply, onCancelEdit, onSend, onSaveEdit, onTyping, onEditLast, imageLimits }: ComposerProps) {
   const [text, setText] = useState(() => drafts.get(conversationId) ?? "");
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [emojiData, setEmojiData] = useState<EmojiData>();
+  const [caret, setCaret] = useState(0);
+  const selection = useRef({ start: 0, end: 0 });
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const suggestionsId = useId();
   const [saving, setSaving] = useState(false);
   const field = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -85,6 +97,44 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
     element.style.overflowY = wanted > MAX_HEIGHT ? "auto" : "hidden";
   }, [text]);
 
+  const token = shortcodeQuery(text, caret);
+  const tokenKey = token ? `${token.start}:${token.query}` : null;
+  const suggestions = emojiData && token && dismissed !== tokenKey
+    ? searchEmoji({ ...emojiData, list: emojiData.list.filter((entry) => entry.shortcodes.some((code) => code.startsWith(token.query))) }, token.query, 6)
+    : [];
+  const activeSuggestion = Math.min(suggestionIndex, Math.max(0, suggestions.length - 1));
+
+  const insertEmoji = (emoji: string, start = selection.current.start, end = selection.current.end) => {
+    const from = Math.min(start, text.length);
+    const to = Math.min(end, text.length);
+    setText((value) => value.slice(0, from) + emoji + value.slice(to));
+    const next = from + emoji.length;
+    selection.current = { start: next, end: next };
+    setCaret(next); setSuggestionIndex(0);
+    if (!editing) onTyping();
+    requestAnimationFrame(() => {
+      if (!emojiOpen) field.current?.focus();
+      field.current?.setSelectionRange(next, next);
+    });
+  };
+  const chooseSuggestion = (index: number) => {
+    if (!token || !suggestions[index]) return;
+    const emoji = withTone(suggestions[index], skinTone());
+    recordEmoji(emoji); insertEmoji(emoji, token.start, caret);
+  };
+
+  // Loading may finish after the closing colon was typed.
+  useEffect(() => {
+    if (!emojiData) return;
+    const complete = completedShortcode(text, caret, emojiData);
+    if (!complete) return;
+    const entry = emojiData.byShortcode.get(text.slice(complete.start + 1, caret - 1))!;
+    const emoji = withTone(entry, skinTone());
+    recordEmoji(emoji); insertEmoji(emoji, complete.start, caret);
+    // Only text, caret and loaded data determine a completion.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, caret, emojiData]);
+
   const length = Array.from(text).length;
   const tooLong = length > MAX_LENGTH;
   const empty = text.trim() === "";
@@ -102,6 +152,8 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
     }
     onSend(text, hasImages ? chatTray.take(conversationId) : []);
     setText("");
+    selection.current = { start: 0, end: 0 };
+    setCaret(0);
     drafts.delete(conversationId);
   };
 
@@ -122,6 +174,19 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // While an input method is composing a character, Enter belongs to it.
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (suggestions.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setSuggestionIndex((activeSuggestion + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length);
+        return;
+      }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+        event.preventDefault(); chooseSuggestion(activeSuggestion); return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault(); setDismissed(tokenKey); return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -165,7 +230,13 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
           onFullQualityChange={(fullQuality) => chatTray.setFullQuality(conversationId, fullQuality)}
         />
       ) : null}
-      <div className="flex items-end gap-2">
+      <div className="relative flex items-end gap-2">
+        {suggestions.length > 0 ? <div id={suggestionsId} role="listbox" aria-label="Emoji suggestions" className="absolute bottom-full left-0 z-50 mb-2 w-[280px] rounded-card border bg-popover p-1 text-popover-foreground shadow-raised">
+          {suggestions.map((entry, index) => <div key={entry.emoji} id={`${suggestionsId}-${index}`} role="option" aria-selected={index === activeSuggestion} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseSuggestion(index)} className={cn("flex h-8 cursor-pointer items-center gap-2 rounded-control px-2 text-small text-muted-foreground hover:bg-secondary", index === activeSuggestion && "bg-secondary")}>
+            <span className="text-[20px] leading-none">{withTone(entry, skinTone())}</span>
+            <span>:{entry.shortcodes.find((code) => code.startsWith(token!.query))}:</span>
+          </div>)}
+        </div> : null}
         {imageLimits && !editing ? (
           <>
             <Tooltip label="Add images">
@@ -197,14 +268,32 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
           aria-label={hasImages ? "Caption" : `Message ${name}`}
           placeholder={hasImages ? "Add a caption" : `Message ${name}`}
           aria-invalid={tooLong}
+          aria-autocomplete="list"
+          aria-controls={suggestions.length ? suggestionsId : undefined}
+          aria-activedescendant={suggestions.length ? `${suggestionsId}-${activeSuggestion}` : undefined}
+          onSelect={(event) => {
+            const element = event.currentTarget;
+            selection.current = { start: element.selectionStart, end: element.selectionEnd };
+            setCaret(element.selectionStart);
+          }}
           onChange={(event) => {
-            setText(event.currentTarget.value);
+            const element = event.currentTarget;
+            selection.current = { start: element.selectionStart, end: element.selectionEnd };
+            setCaret(element.selectionStart); setSuggestionIndex(0); setDismissed(null);
+            if (element.value.includes(":")) void loadEmoji().then(setEmojiData);
+            setText(element.value);
             if (event.currentTarget.value.trim() && !editing) onTyping();
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           className={cn(fieldClassName, "raven-chat-text min-h-9 flex-1 resize-none px-3 py-2 leading-5")}
         />
+        <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
+          <Tooltip label="Emoji"><PopoverTrigger asChild><Button size="icon" variant="ghost" title="" aria-label="Emoji"><Smile className="h-4 w-4" /></Button></PopoverTrigger></Tooltip>
+          <PopoverContent side="top" align="end" className="w-[344px] p-0" onCloseAutoFocus={(event) => { event.preventDefault(); field.current?.focus(); }}>
+            <EmojiPicker autoFocus onPick={(emoji) => insertEmoji(emoji)} />
+          </PopoverContent>
+        </Popover>
         <Tooltip label={editing ? "Save" : "Send"} shortcut="Enter">
           <Button size="icon" title="" aria-label={editing ? "Save changes" : "Send message"} disabled={blocked} onClick={submit}>
             <ArrowUp className="h-4 w-4" />

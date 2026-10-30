@@ -18,10 +18,10 @@
    Elevation runs canvas -> surface -> raised, one step each. */
 :root {
   /* Geist has no Arabic-script glyphs; Vazirmatn is bundled so Persian and Arabic read
-     well everywhere instead of falling to whatever the system has. The emoji fonts are
-     named so Linux does not draw emoji as outlines. */
+     well everywhere instead of falling to whatever the system has. Bundled Twemoji gives
+     emoji one look everywhere and draws flags on Windows; system fonts cover newer emoji. */
   font-family:
-    "Geist Variable", "Vazirmatn Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif,
+    "Geist Variable", "Vazirmatn Variable", "Twemoji", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif,
     "Segoe UI Emoji", "Noto Color Emoji";
   font-size: 16px;
   color-scheme: dark;
@@ -236,7 +236,7 @@ textarea {
 
 /* Monospace is for hotkeys, addresses and numeric readouts only. */
 .rv-mono {
-  font-family: "Geist Mono Variable", "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  font-family: "Geist Mono Variable", "Twemoji", "Cascadia Mono", "Consolas", ui-monospace, monospace, "Segoe UI Emoji", "Noto Color Emoji";
 }
 
 /* Horizontal parameter slider. Styled explicitly rather than left to

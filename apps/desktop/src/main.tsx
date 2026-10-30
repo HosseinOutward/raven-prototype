@@ -11,6 +11,7 @@ import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 // Persian and Arabic script, which Geist does not cover.
 import "@fontsource-variable/vazirmatn";
+import "twemoji-colr-font/twemoji.css";
 import "@/styles.css";
 
 const route = parseRoute();

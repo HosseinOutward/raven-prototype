@@ -227,7 +227,7 @@ function CaptionButton({
       <span
         aria-hidden
         className="leading-none"
-        style={{ fontFamily: "\"Segoe Fluent Icons\", \"Segoe MDL2 Assets\", \"Segoe UI Symbol\", sans-serif" }}
+        style={{ fontFamily: "\"Segoe Fluent Icons\", \"Segoe MDL2 Assets\", \"Segoe UI Symbol\", \"Twemoji\", sans-serif, \"Segoe UI Emoji\", \"Noto Color Emoji\"" }}
       >
         {String.fromCharCode(glyph)}
       </span>

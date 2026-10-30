@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { canShow, messageExcerpt, onlyPictures } from "@/lib/chat/attachments";
 import { saveAttachment } from "@/lib/chat/imageActions";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
+import { emojiOnlyCount } from "@/lib/chat/format";
 import { systemLine } from "@/lib/chat/text";
 import { clockTime, fullTime } from "@/lib/chat/time";
 import type { ChatAttachment, ChatMessage, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
@@ -83,11 +84,12 @@ export interface MessageRowProps {
 }
 
 /** The time, and for my own messages whether it has been read. */
-function MessageMeta({ message, mine, deleted, status, overImage }: { message: ChatMessage; mine: boolean; deleted: boolean; status?: DeliveryStatus; overImage?: boolean }) {
+function MessageMeta({ message, mine, deleted, status, overImage, alignStart }: { message: ChatMessage; mine: boolean; deleted: boolean; status?: DeliveryStatus; overImage?: boolean; alignStart?: boolean }) {
   return (
     <div
       className={cn(
         "flex items-center justify-end gap-1 text-caption",
+        alignStart && "justify-start",
         // Over a picture the colours behind are anyone's guess, so it gets a scrim.
         overImage ? "pointer-events-none absolute bottom-1.5 right-1.5 rounded-chip bg-black/55 px-1.5 py-0.5 text-white backdrop-blur-md" : "mt-0.5 text-subtle",
       )}
@@ -128,7 +130,8 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const attachments = !deleted ? message.attachments ?? [] : [];
   const hasText = message.body.trim() !== "";
   // Pictures with nothing to say about them stand on their own, without a bubble.
-  const bare = attachments.length > 0 && !hasText && !reply && onlyPictures(attachments);
+  const bareEmoji = !deleted && attachments.length === 0 && !reply && emojiOnlyCount(message.body) > 0;
+  const bare = bareEmoji || (attachments.length > 0 && !hasText && !reply && onlyPictures(attachments));
   const shown = attachments.filter(canShow);
   const savable = shown.length === 1 && shown[0].kind === "image" ? shown[0] : null;
 
@@ -225,13 +228,16 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
         {bare ? (
           <div className={cn("min-w-0 max-w-[min(100%,34rem)] rounded-control transition-colors", props.highlighted && "outline outline-2 outline-ring")}>
             {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
-            <MessageAttachments
+            {bareEmoji ? <>
+              <MessageText body={message.body} />
+              <MessageMeta message={message} mine={mine} deleted={deleted} status={status} alignStart={!mine} />
+            </> : <MessageAttachments
               conversationId={message.conversationId}
               attachments={attachments}
               senderName={mine ? "you" : message.senderName}
               onOpen={(attachment) => props.onOpenImage(message, attachment)}
               footer={<MessageMeta message={message} mine={mine} deleted={deleted} status={status} overImage />}
-            />
+            />}
           </div>
         ) : (
           <div
@@ -280,7 +286,8 @@ export const PendingRow = memo(function PendingRow({
   const failed = pending.state === "failed";
   const attachments = pending.attachments ?? [];
   const hasText = pending.body.trim() !== "";
-  const bare = attachments.length > 0 && !hasText && !pending.replyTo;
+  const bareEmoji = attachments.length === 0 && !pending.replyTo && emojiOnlyCount(pending.body) > 0;
+  const bare = bareEmoji || (attachments.length > 0 && !hasText && !pending.replyTo);
   const meta = (overImage: boolean) => (
     <div
       className={cn(
@@ -302,7 +309,7 @@ export const PendingRow = memo(function PendingRow({
     <div className="flex flex-col items-end pt-2.5">
       {bare ? (
         <div className="min-w-0 max-w-[min(100%,34rem)]">
-          <PendingAttachments attachments={attachments} footer={meta(true)} />
+          {bareEmoji ? <><MessageText body={pending.body} />{meta(false)}</> : <PendingAttachments attachments={attachments} footer={meta(true)} />}
         </div>
       ) : (
         <div className="min-w-0 max-w-[min(100%,34rem)] rounded-card bg-accent px-3 py-1.5">

@@ -27,12 +27,14 @@
     "@tauri-apps/api": "^2.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "emojibase-data": "18.0.0",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-virtuoso": "^4.18.16",
     "tailwind-merge": "^3.3.0",
-    "thumbhash": "^0.1.1"
+    "thumbhash": "^0.1.1",
+    "twemoji-colr-font": "15.0.3"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",

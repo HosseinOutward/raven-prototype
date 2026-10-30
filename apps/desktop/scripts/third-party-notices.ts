@@ -65,7 +65,8 @@ for (const chunk of [bundle].flat().flatMap((result) => result.output)) {
     // Plugins prefix virtual modules with a null character and suffix a query.
     const path = id.replace(/^\0/, "").replaceAll("\\", "/").split("?")[0];
     const at = path.lastIndexOf("/node_modules/");
-    if (at < 0 || module.renderedLength === 0) continue;
+    // CSS-only font packages have no rendered JavaScript but ship their assets.
+    if (at < 0 || (module.renderedLength === 0 && !/\.(css|scss)$/.test(path))) continue;
     const [first, second] = path.slice(at + "/node_modules/".length).split("/");
     packageDirs.add(`${path.slice(0, at)}/node_modules/${first.startsWith("@") ? `${first}/${second}` : first}`);
   }

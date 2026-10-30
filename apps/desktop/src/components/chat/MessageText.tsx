@@ -48,9 +48,9 @@ function renderInline(nodes: Inline[], keyPrefix = ""): ReactNode[] {
  */
 export const MessageText = memo(function MessageText({ body, className }: { body: string; className?: string }) {
   const blocks = useMemo(() => parseMessage(body), [body]);
-  const jumbo = useMemo(() => emojiOnlyCount(body) > 0, [body]);
+  const jumbo = useMemo(() => emojiOnlyCount(body), [body]);
   return (
-    <div className={cn("raven-chat-text", jumbo ? "text-display" : "text-body", className)}>
+    <div className={cn("raven-chat-text", ["text-body", "text-emoji-1", "text-emoji-2", "text-emoji-3"][jumbo], className)}>
       {blocks.map((block, index) =>
         block.type === "code" ? (
           <pre key={index} dir="ltr" className="rv-mono my-1 overflow-x-auto whitespace-pre rounded-control bg-card px-2.5 py-2 text-small">

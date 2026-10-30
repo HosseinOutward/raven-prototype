@@ -6,11 +6,15 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Geist Variable", "Vazirmatn Variable", "Segoe UI Variable Text", "Segoe UI", "system-ui", "-apple-system", "sans-serif", "Segoe UI Emoji", "Noto Color Emoji"],
-        mono: ["Geist Mono Variable", "Cascadia Mono", "Consolas", "ui-monospace", "monospace"],
+        sans: ["Geist Variable", "Vazirmatn Variable", "Twemoji", "Segoe UI Variable Text", "Segoe UI", "system-ui", "-apple-system", "sans-serif", "Segoe UI Emoji", "Noto Color Emoji"],
+        mono: ["Geist Mono Variable", "Twemoji", "Cascadia Mono", "Consolas", "ui-monospace", "monospace", "Segoe UI Emoji", "Noto Color Emoji"],
       },
       // The whole product uses these six sizes. 12px is the floor.
       fontSize: {
+        // Only for emoji-only messages.
+        "emoji-1": ["48px", { lineHeight: "56px" }],
+        "emoji-2": ["40px", { lineHeight: "48px" }],
+        "emoji-3": ["32px", { lineHeight: "40px" }],
         caption: ["12px", { lineHeight: "16px" }],
         small: ["13px", { lineHeight: "18px" }],
         body: ["14px", { lineHeight: "20px" }],

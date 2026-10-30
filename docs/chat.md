@@ -51,7 +51,7 @@ Defaults chosen during the build. Each is one constant or one check to change:
 
 Not in the desktop client yet: attachments (the server supports stored images).
 Not in this version: reactions, mentions, search, forwarding, pinning, link
-previews, an emoji picker (the system picker works), end-to-end
+previews, end-to-end
 encryption, auto-delete timers, per-nest permissions, and "last seen".
 
 ## Architecture
@@ -310,6 +310,12 @@ session every five minutes, and ends cleanly on shutdown. The client reconnects 
 so a restart does not bring every client back in the same instant.
 
 ## Client
+
+Twemoji is bundled as a color font for consistent emoji on Windows and Linux, including
+flags on Windows. Messages of one to three emoji appear large without a bubble unless
+they include a reply or attachments. The composer has a searchable emoji picker with
+recents and a skin tone preference, plus `:shortcode` suggestions and completion. The
+picker offers emoji through Unicode 15.0, matching the bundled font.
 
 - `apps/desktop/src/lib/eventStream.ts`: one shared stream for the shell and chat.
 - `apps/desktop/src/lib/chat/`: a store with no framework in it, read through
