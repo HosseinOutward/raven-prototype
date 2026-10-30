@@ -400,6 +400,7 @@ GET    /v1/chat/conversations/:id/messages?after=<seq>
 GET    /v1/chat/conversations/:id/messages?around=<seq>
 GET    /v1/chat/conversations/:id/changes?after=<seq>
 POST   /v1/chat/conversations/:id/messages
+POST   /v1/chat/conversations/:id/messages/:messageId/reactions
 POST   /v1/chat/conversations/:id/messages/:messageId/edit
 DELETE /v1/chat/conversations/:id/messages/:messageId?for=me|everyone
 POST   /v1/chat/conversations/:id/read
@@ -461,11 +462,21 @@ Without a cursor the newest page is returned. `limit` defaults to 50 and is at m
 `after=0` reads from the beginning. `asOfSeq` is how current the answer is guaranteed to
 be: it is read before the messages, so it can only understate.
 
-`changes?after=<seq>` returns every message that was created, edited or deleted after that
+`changes?after=<seq>` returns every message that was created, edited, reacted to or deleted after that
 sequence number, oldest change first, in the same envelope with `reset` in place of the
 paging flags. `reset: true` means more than 200 messages changed: reload the newest page
 instead.
 
+- `POST …/reactions` with `{ "emoji": "👍", "add": true }` adds your reaction;
+  `add: false` removes it. Answers `{ "message": ChatMessage }` with optional
+  `reactions: [{emoji, count, userIds}]`, ordered by first remaining addition and then
+  each person's addition time. Requires send access and a visible, undeleted text
+  message. Up to 3 per person (a fourth replaces your oldest), 20 kinds per message
+  (`422` for another kind), invalid emoji `400`, system/deleted messages `409`.
+  Repeated adds/removes change nothing. Changes emit `message.updated` and advance
+  `changedSeq`, without unread, activity or notification changes. Deleted messages,
+  previews and reply quotes omit reactions. `properties.chat.reactions` advertises
+  `{maxPerPerson: 3, maxKinds: 20}`.
 - `POST …/edit` with `{ "body": "…" }`: the sender, within 48 hours.
 - `DELETE …?for=everyone` erases the text and leaves a marker. `?for=me` hides the message
   on the caller's devices and answers `{ "hideRev": 2, "unreadCount": 0 }`.
@@ -474,7 +485,7 @@ instead.
 - `POST …/typing` has no body and stores nothing.
 
 Rate limits are per account and answer `429` with `Retry-After`: send and typing 20 per 10
-seconds, edit 30 per minute, delete 60 per minute.
+seconds, edit 30 per minute, react 60 per minute, delete 60 per minute.
 
 ### Chat events
 

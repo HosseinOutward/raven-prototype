@@ -99,3 +99,25 @@ func chatExcerpt(body string) string {
 	runes := []rune(flat)
 	return string(runes[:chatExcerptRunes]) + "…"
 }
+
+// validChatReaction guards emoji supplied by the client's picker.
+func validChatReaction(s string) bool {
+	if len(s) == 0 || len(s) > 64 || !utf8.ValidString(s) || utf8.RuneCountInString(s) > 16 {
+		return false
+	}
+	hasEmoji := false
+	for i, r := range s {
+		switch {
+		case r >= '0' && r <= '9', r == '#', r == '*':
+			if i != 0 || !strings.ContainsRune(s, '\u20e3') {
+				return false
+			}
+		case r >= 0x203c && r <= 0x3299, r >= 0x1f000 && r <= 0x1faff:
+			hasEmoji = true
+		case r == 0xa9, r == 0xae, r == 0xfe0f, r == 0x200d, r >= 0xe0020 && r <= 0xe007f:
+		default:
+			return false
+		}
+	}
+	return hasEmoji
+}

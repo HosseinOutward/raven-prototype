@@ -49,7 +49,9 @@ const (
 	chatExcerptRunes      = 140
 	chatMaxGroupMembers   = 50
 
-	chatEditWindow = 48 * time.Hour
+	chatEditWindow            = 48 * time.Hour
+	chatMaxReactionsPerPerson = 3
+	chatMaxReactionKinds      = 20
 
 	chatHistoryPageDefault = 50
 	chatHistoryPageMax     = 100
@@ -105,7 +107,15 @@ type ChatReplyRef struct {
 	Unavailable bool `json:"unavailable,omitempty"`
 }
 
+// ChatReaction is one emoji on a message and who put it there, in the order they did.
+type ChatReaction struct {
+	Emoji   string   `json:"emoji"`
+	Count   int      `json:"count"`
+	UserIDs []string `json:"userIds"`
+}
+
 type ChatMessage struct {
+	Reactions       []ChatReaction   `json:"reactions,omitempty"`
 	ID              string           `json:"id"`
 	ConversationID  string           `json:"conversationId"`
 	Seq             int64            `json:"seq"`
@@ -199,6 +209,7 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	conversation.Get("/messages", s.chatRoute("history", s.listChatMessages))
 	conversation.Get("/changes", s.chatRoute("changes", s.listChatChanges))
 	conversation.Post("/messages", s.chatLimiter("send", 20, 10*time.Second), s.chatRoute("send", s.sendChatMessage))
+	conversation.Post("/messages/:messageId/reactions", s.chatLimiter("react", 60, time.Minute), s.chatRoute("react", s.reactToChatMessage))
 	conversation.Post("/messages/:messageId/edit", s.chatLimiter("edit", 30, time.Minute), s.chatRoute("edit", s.editChatMessage))
 	conversation.Delete("/messages/:messageId", s.chatLimiter("delete", 60, time.Minute), s.chatRoute("delete message", s.deleteChatMessage))
 	conversation.Post("/read", s.chatRoute("read", s.markChatRead))
@@ -251,6 +262,7 @@ var (
 	errChatGroupFull     = fiber.NewError(fiber.StatusBadRequest, "A group can have up to 50 people.")
 	errChatNotAGroup     = fiber.NewError(fiber.StatusBadRequest, "That only works in a group.")
 	errChatEditTooLate   = fiber.NewError(fiber.StatusForbidden, "Messages can be edited for 48 hours.")
+	errChatCannotReact   = fiber.NewError(fiber.StatusConflict, "That message can’t take reactions.")
 	errChatCannotEdit    = fiber.NewError(fiber.StatusConflict, "That message can’t be edited.")
 	errChatReplyMismatch = fiber.NewError(fiber.StatusBadRequest, "The message you replied to isn’t in this conversation.")
 )

@@ -815,6 +815,7 @@ func chatDeleteConversationTx(tx *database.Tx, conversationID string) error {
 		return err
 	}
 	for _, statement := range []string{
+		`DELETE FROM chat_reactions WHERE conversation_id = ?`,
 		`DELETE FROM chat_message_hides WHERE conversation_id = ?`,
 		`DELETE FROM chat_messages WHERE conversation_id = ?`,
 		`DELETE FROM chat_members WHERE conversation_id = ?`,
@@ -851,6 +852,7 @@ func deleteChatForTreeTx(tx *database.Tx, treeID string) error {
 		return err
 	}
 	for _, statement := range []string{
+		`DELETE FROM chat_reactions WHERE conversation_id IN ` + nests,
 		`DELETE FROM chat_message_hides WHERE conversation_id IN ` + nests,
 		`DELETE FROM chat_messages WHERE conversation_id IN ` + nests,
 		`DELETE FROM chat_members WHERE conversation_id IN ` + nests,

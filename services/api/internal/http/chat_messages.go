@@ -94,6 +94,9 @@ func (s *Server) queryChatMessages(q chatQuerier, viewerID string, floor int64, 
 	if err := withChatAttachments(q, messages); err != nil {
 		return nil, err
 	}
+	if err := withChatReactions(q, messages); err != nil {
+		return nil, err
+	}
 	return messages, nil
 }
 
@@ -108,7 +111,10 @@ func (s *Server) loadChatMessage(q chatQuerier, conversationID, messageID, viewe
 		return message, err
 	}
 	messages := []ChatMessage{message}
-	err = withChatAttachments(q, messages)
+	if err = withChatAttachments(q, messages); err != nil {
+		return ChatMessage{}, err
+	}
+	err = withChatReactions(q, messages)
 	return messages[0], err
 }
 
@@ -619,6 +625,9 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": message})
 	}
 
+	if _, err := tx.Exec(`DELETE FROM chat_reactions WHERE message_id = ?`, messageID); err != nil {
+		return err
+	}
 	if err := chatQueuePurgesTx(tx, `message_id = ?`, messageID); err != nil {
 		return err
 	}

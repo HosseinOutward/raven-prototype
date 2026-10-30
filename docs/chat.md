@@ -43,6 +43,10 @@ Defaults chosen during the build. Each is one constant or one check to change:
   Leaving or being removed ends access at once.
 - Text nests: every current member of the tree reads the whole history and can write.
   Leaving the tree ends access at once. Deleting the tree deletes its text nests.
+- Reactions accept any emoji, up to 3 per person per message and 20 different emoji.
+  Adding a fourth replaces your oldest. Anyone who can send can react to a visible text
+  message, including their own. Reactions never notify, count as unread or move a
+  conversation up the list.
 - A new incoming message brings an archived conversation back.
 - Messages are up to 4096 characters. Formatting is `**bold**`, `*italic*`, `~~struck~~`,
   `` `code` `` and fenced code blocks. A web address written out in full becomes a link.
@@ -50,7 +54,7 @@ Defaults chosen during the build. Each is one constant or one check to change:
   is how people are tricked.
 
 Not in the desktop client yet: attachments (the server supports stored images).
-Not in this version: reactions, mentions, search, forwarding, pinning, link
+Not in this version: mentions, search, forwarding, pinning, link
 previews, end-to-end
 encryption, auto-delete timers, per-nest permissions, and "last seen".
 
@@ -127,6 +131,9 @@ Every handler in the chat files follows six rules. Each has a test.
 
 A message carries two numbers: `seq`, where it was created (the order and the paging key;
 timestamps are never used for order), and `changedSeq`, where it last changed.
+
+A reaction is a message change like an edit: it advances `changedSeq` and emits
+`message.updated`; an unchanged add or remove rolls back its sequence increment.
 
 ### What the client does with them
 
@@ -218,6 +225,7 @@ The SQL runs on PostgreSQL (production) and SQLite (local use and the default te
 | `chat_attachments` | Ordered attachment descriptions, uploader and retry id, conversation, optional message, open `kind`/`source`, dimensions, placeholder and metadata. `message_id` deliberately has no foreign key so bulk message deletes never depend on order. |
 | `chat_attachment_variants` | Named variants declared at create time; an immutable object key and upload time are filled by PUT. All declared variants must have keys before send; a future peer source with no variants is ready immediately. |
 | `chat_object_purges` | Durable object keys queued inside the deletion transaction, with retry attempts. |
+| `chat_reactions` | Emoji, message, conversation, person and creation time; unique on `(message_id, user_id, emoji)`. Migration `2026103102_chat_reactions` runs on SQLite and PostgreSQL. Delete for everyone and group/tree deletion remove the rows; hiding and clearing retain them. |
 | `chat_message_hides` | "Remove for me": person, message. |
 | `chat_user_settings` | `share_read_status`. |
 | `tree_categories`, `tree_layout_items` | Categories of a tree and the category and position of each voice and text nest. An overlay: the `nests` table is unchanged. |
@@ -226,6 +234,13 @@ Ids are 32 hexadecimal characters and timestamps are RFC 3339 text, like the res
 Raven's schema. Deleting a group or a tree first marks the conversations `deleted`,
 so a send racing the delete gets `404`, then queues their objects and removes rows.
 Deleting a text nest retains messages and attachments until its tree is deleted.
+
+`ChatMessage.reactions` is an optional list of `{emoji, count, userIds}`. Emoji are
+ordered by their earliest remaining addition, and people by when they added that emoji.
+Every viewer receives the same user ids. History, changes, send/edit responses and
+message events carry reactions; deleted messages, previews and reply quotes do not.
+`properties.chat.reactions` advertises `{maxPerPerson: 3, maxKinds: 20}`; clients show
+reactions only when this capability is present.
 
 ### Attachment routes and wire shape
 
@@ -296,7 +311,7 @@ Chat events arrive on `GET /v1/nest-events` as SSE event `chat` with a JSON body
 | `type` | Meaning | Sent to |
 |---|---|---|
 | `message.created` | A new message. | Everyone who may see it. |
-| `message.updated` | An edit or a delete for everyone. | Everyone who may see it. |
+| `message.updated` | An edit, reaction or delete for everyone. | Everyone who may see it. |
 | `conversation.bump` | The conversation changed at `seq`, without the content. | People who may not see that message. |
 | `message.hidden` | You removed a message for yourself. | Your own devices. |
 | `conversation.read` | A read position moved. | Your own devices (with the new unread count), and a direct-message peer when read status is shared. |
@@ -378,7 +393,7 @@ picker offers emoji through Unicode 15.0, matching the bundled font.
   must be checked/updated at deploy time; this change does not deploy either.
 
 - Per-account rate limits, with `Retry-After`: send 20 per 10 s, typing 20 per 10 s, edit
-  30 per minute, delete 60 per minute, open a direct message 60 per minute, add members 60
+  30 per minute, react 60 per minute, delete 60 per minute, open a direct message 60 per minute, add members 60
   per hour, rename 30 per hour, create a group 20 per hour.
 - A message is at most 4096 characters and 16 KB. Invalid UTF-8, NUL and control
   characters are refused. ZWNJ and other joiners are kept.
