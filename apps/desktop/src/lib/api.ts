@@ -1072,9 +1072,14 @@ export class ApiClient {
     return this.request<T>(path, init);
   }
 
+  /** Like `call`, for an endpoint that answers with bytes rather than JSON. */
+  callBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+    return this.request<Blob>(path, { ...init, response: "blob" });
+  }
+
   private async request<T>(
     path: string,
-    init: RequestInit & { auth?: boolean; response?: "json" | "none" } = {},
+    init: RequestInit & { auth?: boolean; response?: "json" | "none" | "blob" } = {},
   ): Promise<T> {
     if (this.updateRequired && isCompatibilityGatedPath(path)) {
       throw new ApiError(this.updateRequired.message, 426, this.updateRequired.reasonCode, this.updateRequired);
@@ -1096,6 +1101,7 @@ export class ApiClient {
       await response.body?.cancel().catch(() => undefined);
       return undefined as T;
     }
+    if (response.ok && responseMode === "blob") return (await response.blob()) as T;
     const payload: Record<string, unknown> = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = apiErrorFromPayload(payload, response.status);

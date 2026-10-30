@@ -1,15 +1,18 @@
 import { memo, useState } from "react";
-import { AlertCircle, Check, CheckCheck, Clock, Copy, CornerUpLeft, EyeOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { AlertCircle, Check, CheckCheck, Clock, Copy, CornerUpLeft, Download, EyeOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
-import { excerptOf } from "@/lib/chat/reducer";
+import { canShow, messageExcerpt, onlyPictures } from "@/lib/chat/attachments";
+import { saveAttachment } from "@/lib/chat/imageActions";
+import { excerptOf, summarize } from "@/lib/chat/reducer";
 import { systemLine } from "@/lib/chat/text";
 import { clockTime, fullTime } from "@/lib/chat/time";
-import type { ChatMessage, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
+import type { ChatAttachment, ChatMessage, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
+import { MessageAttachments, PendingAttachments } from "./Attachments";
 import { MessageText } from "./MessageText";
 
 /** What stands above a message without being part of it. */
@@ -34,7 +37,7 @@ function Decorations({ dayHeading, newDivider }: { dayHeading?: string; newDivid
 
 /** The quoted line above a reply. Clicking it goes to the original when there is one to go to. */
 function ReplyQuote({ reply, onOpen }: { reply: ChatReplyRef; onOpen?: () => void }) {
-  const text = reply.unavailable ? "Original message isn’t available" : reply.deleted ? "Message deleted" : reply.excerpt;
+  const text = reply.unavailable ? "Original message isn’t available" : reply.deleted ? "Message deleted" : messageExcerpt(reply.excerpt, reply.attachments);
   const content = (
     <>
       {reply.senderName && !reply.unavailable ? <span className="block truncate text-caption font-medium"><bdi>{reply.senderName}</bdi></span> : null}
@@ -75,6 +78,31 @@ export interface MessageRowProps {
   onRemoveForMe: (message: ChatMessage) => void;
   onDeleteForEveryone: (message: ChatMessage) => void;
   onOpenReply: (seq: number) => void;
+  /** Opens the viewer on one of the message's images. */
+  onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
+}
+
+/** The time, and for my own messages whether it has been read. */
+function MessageMeta({ message, mine, deleted, status, overImage }: { message: ChatMessage; mine: boolean; deleted: boolean; status?: DeliveryStatus; overImage?: boolean }) {
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-end gap-1 text-caption",
+        // Over a picture the colours behind are anyone's guess, so it gets a scrim.
+        overImage ? "pointer-events-none absolute bottom-1.5 right-1.5 rounded-chip bg-black/55 px-1.5 py-0.5 text-white backdrop-blur-md" : "mt-0.5 text-subtle",
+      )}
+    >
+      {message.editedAt && !deleted ? <span title={`Edited ${fullTime(message.editedAt)}`}>edited</span> : null}
+      <time dateTime={message.createdAt} title={fullTime(message.createdAt)} className="tabular-nums">{clockTime(message.createdAt)}</time>
+      {mine && !deleted ? (
+        status === "read" ? (
+          <CheckCheck className={cn("h-3.5 w-3.5", !overImage && "text-muted-foreground")} aria-label="Read" />
+        ) : (
+          <Check className="h-3.5 w-3.5" aria-label="Sent" />
+        )
+      ) : null}
+    </div>
+  );
 }
 
 /** One message in a conversation. */
@@ -95,8 +123,24 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   // A reply shows the original as it is now when that is on screen, and otherwise as it
   // was when this message was fetched.
   const reply: ChatReplyRef | undefined = message.replyTo && parent
-    ? { id: parent.id, seq: parent.seq, senderId: parent.senderId, senderName: parent.senderName, deleted: Boolean(parent.deletedAt), excerpt: parent.deletedAt ? undefined : excerptOf(parent.body) }
+    ? { id: parent.id, seq: parent.seq, senderId: parent.senderId, senderName: parent.senderName, deleted: Boolean(parent.deletedAt), excerpt: parent.deletedAt ? undefined : excerptOf(parent.body), attachments: parent.deletedAt ? undefined : summarize(parent.attachments) }
     : message.replyTo;
+  const attachments = !deleted ? message.attachments ?? [] : [];
+  const hasText = message.body.trim() !== "";
+  // Pictures with nothing to say about them stand on their own, without a bubble.
+  const bare = attachments.length > 0 && !hasText && !reply && onlyPictures(attachments);
+  const shown = attachments.filter(canShow);
+  const savable = shown.length === 1 && shown[0].kind === "image" ? shown[0] : null;
+
+  const save = () => {
+    if (!savable) return;
+    void saveAttachment(message.conversationId, savable).then(
+      (saved) => {
+        if (saved) toast({ title: "Image saved" });
+      },
+      () => toast({ title: "Couldn’t save the image", description: "Try again in a moment.", tone: "error" }),
+    );
+  };
 
   const copy = () => {
     void navigator.clipboard.writeText(message.body).then(
@@ -127,7 +171,13 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               Reply
             </DropdownMenuItem>
           ) : null}
-          {!deleted ? (
+          {!deleted && savable ? (
+            <DropdownMenuItem onSelect={save}>
+              <Download className="text-muted-foreground" />
+              Save image…
+            </DropdownMenuItem>
+          ) : null}
+          {!deleted && hasText ? (
             <DropdownMenuItem onSelect={copy}>
               <Copy className="text-muted-foreground" />
               Copy text
@@ -172,32 +222,45 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             {showSender ? <Avatar name={message.senderName} src={api.userAvatarUrl(message.senderId)} className="h-7 w-7" /> : null}
           </span>
         ) : null}
-        <div
-          className={cn(
-            "min-w-0 max-w-[min(100%,34rem)] rounded-card px-3 py-1.5 transition-colors",
-            mine ? "bg-accent" : "bg-secondary",
-            props.highlighted && "outline outline-2 outline-ring",
-          )}
-        >
-          {showSender && !mine ? <div className="truncate text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
-          {reply && !deleted ? <ReplyQuote reply={reply} onOpen={reply.seq ? () => props.onOpenReply(reply.seq!) : undefined} /> : null}
-          {deleted ? (
-            <p className="text-body italic text-subtle">Message deleted</p>
-          ) : (
-            <MessageText body={message.body} />
-          )}
-          <div className="mt-0.5 flex items-center justify-end gap-1 text-caption text-subtle">
-            {message.editedAt && !deleted ? <span title={`Edited ${fullTime(message.editedAt)}`}>edited</span> : null}
-            <time dateTime={message.createdAt} title={fullTime(message.createdAt)} className="tabular-nums">{clockTime(message.createdAt)}</time>
-            {mine && !deleted ? (
-              status === "read" ? (
-                <CheckCheck className="h-3.5 w-3.5 text-muted-foreground" aria-label="Read" />
-              ) : (
-                <Check className="h-3.5 w-3.5" aria-label="Sent" />
-              )
-            ) : null}
+        {bare ? (
+          <div className={cn("min-w-0 max-w-[min(100%,34rem)] rounded-control transition-colors", props.highlighted && "outline outline-2 outline-ring")}>
+            {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
+            <MessageAttachments
+              conversationId={message.conversationId}
+              attachments={attachments}
+              senderName={mine ? "you" : message.senderName}
+              onOpen={(attachment) => props.onOpenImage(message, attachment)}
+              footer={<MessageMeta message={message} mine={mine} deleted={deleted} status={status} overImage />}
+            />
           </div>
-        </div>
+        ) : (
+          <div
+            className={cn(
+              "min-w-0 max-w-[min(100%,34rem)] rounded-card px-3 py-1.5 transition-colors",
+              mine ? "bg-accent" : "bg-secondary",
+              props.highlighted && "outline outline-2 outline-ring",
+            )}
+          >
+            {showSender && !mine ? <div className="truncate text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
+            {reply && !deleted ? <ReplyQuote reply={reply} onOpen={reply.seq ? () => props.onOpenReply(reply.seq!) : undefined} /> : null}
+            {attachments.length > 0 ? (
+              <div className="-mx-1.5 mb-1 mt-0.5">
+                <MessageAttachments
+                  conversationId={message.conversationId}
+                  attachments={attachments}
+                  senderName={mine ? "you" : message.senderName}
+                  onOpen={(attachment) => props.onOpenImage(message, attachment)}
+                />
+              </div>
+            ) : null}
+            {deleted ? (
+              <p className="text-body italic text-subtle">Message deleted</p>
+            ) : hasText ? (
+              <MessageText body={message.body} />
+            ) : null}
+            <MessageMeta message={message} mine={mine} deleted={deleted} status={status} />
+          </div>
+        )}
         {actions}
       </div>
     </div>
@@ -215,22 +278,44 @@ export const PendingRow = memo(function PendingRow({
   onDiscard: (pending: PendingMessage) => void;
 }) {
   const failed = pending.state === "failed";
+  const attachments = pending.attachments ?? [];
+  const hasText = pending.body.trim() !== "";
+  const bare = attachments.length > 0 && !hasText && !pending.replyTo;
+  const meta = (overImage: boolean) => (
+    <div
+      className={cn(
+        "flex items-center justify-end gap-1 text-caption",
+        overImage ? "pointer-events-none absolute bottom-1.5 right-1.5 rounded-chip bg-black/55 px-1.5 py-0.5 text-white backdrop-blur-md" : "mt-0.5 text-subtle",
+      )}
+    >
+      {failed ? (
+        <AlertCircle className={cn("h-3.5 w-3.5", !overImage && "text-destructive")} aria-label="Not sent" />
+      ) : (
+        <>
+          <span>Sending…</span>
+          <Clock className="h-3.5 w-3.5" aria-hidden />
+        </>
+      )}
+    </div>
+  );
   return (
     <div className="flex flex-col items-end pt-2.5">
-      <div className="min-w-0 max-w-[min(100%,34rem)] rounded-card bg-accent px-3 py-1.5">
-        {pending.replyTo ? <ReplyQuote reply={pending.replyTo} /> : null}
-        <MessageText body={pending.body} />
-        <div className="mt-0.5 flex items-center justify-end gap-1 text-caption text-subtle">
-          {failed ? (
-            <AlertCircle className="h-3.5 w-3.5 text-destructive" aria-hidden />
-          ) : (
-            <>
-              <span>Sending…</span>
-              <Clock className="h-3.5 w-3.5" aria-hidden />
-            </>
-          )}
+      {bare ? (
+        <div className="min-w-0 max-w-[min(100%,34rem)]">
+          <PendingAttachments attachments={attachments} footer={meta(true)} />
         </div>
-      </div>
+      ) : (
+        <div className="min-w-0 max-w-[min(100%,34rem)] rounded-card bg-accent px-3 py-1.5">
+          {pending.replyTo ? <ReplyQuote reply={pending.replyTo} /> : null}
+          {attachments.length > 0 ? (
+            <div className="-mx-1.5 mb-1 mt-0.5">
+              <PendingAttachments attachments={attachments} />
+            </div>
+          ) : null}
+          {hasText ? <MessageText body={pending.body} /> : null}
+          {meta(false)}
+        </div>
+      )}
       {failed ? (
         <div className="mt-1 flex max-w-[34rem] flex-wrap items-center justify-end gap-x-2 gap-y-1 text-caption" role="alert">
           <span className="text-destructive">Not sent. {pending.error && pending.error !== "Not sent." ? pending.error : "Nobody has seen this."}</span>

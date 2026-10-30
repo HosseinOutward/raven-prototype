@@ -159,7 +159,26 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 		}
 		conversations = append(conversations, item)
 	}
-	return conversations, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	ids := []any{}
+	for _, c := range conversations {
+		if p := c.LastMessage; p != nil && !p.Deleted {
+			ids = append(ids, p.ID)
+		}
+	}
+	summaries, err := chatAttachmentSummaryMap(q, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range conversations {
+		if p := conversations[i].LastMessage; p != nil && !p.Deleted {
+			p.Attachments = summaries[p.ID]
+		}
+	}
+	return conversations, nil
 }
 
 func (s *Server) chatSummary(q chatQuerier, userID, conversationID string) (ChatConversation, error) {
@@ -788,8 +807,13 @@ func (s *Server) updateChatConversation(c *fiber.Ctx) error {
 // deleted comes first: it takes the row lock, so a send racing with the delete waits and
 // then finds the conversation gone instead of writing into rows that are being removed.
 func chatDeleteConversationTx(tx *database.Tx, conversationID string) error {
+	if _, err := tx.Exec(`UPDATE chat_conversations SET status = 'deleted' WHERE id = ?`, conversationID); err != nil {
+		return err
+	}
+	if err := chatQueuePurgesTx(tx, `conversation_id = ?`, conversationID); err != nil {
+		return err
+	}
 	for _, statement := range []string{
-		`UPDATE chat_conversations SET status = 'deleted' WHERE id = ?`,
 		`DELETE FROM chat_message_hides WHERE conversation_id = ?`,
 		`DELETE FROM chat_messages WHERE conversation_id = ?`,
 		`DELETE FROM chat_members WHERE conversation_id = ?`,
@@ -819,8 +843,13 @@ func chatHideTextNestTx(tx *database.Tx, conversationID string) error {
 // tree. It runs first in the tree's delete transaction for the reason given above.
 func deleteChatForTreeTx(tx *database.Tx, treeID string) error {
 	const nests = `(SELECT id FROM chat_conversations WHERE tree_id = ?)`
+	if _, err := tx.Exec(`UPDATE chat_conversations SET status = 'deleted' WHERE tree_id = ?`, treeID); err != nil {
+		return err
+	}
+	if err := chatQueuePurgesTx(tx, `conversation_id IN `+nests, treeID); err != nil {
+		return err
+	}
 	for _, statement := range []string{
-		`UPDATE chat_conversations SET status = 'deleted' WHERE tree_id = ?`,
 		`DELETE FROM chat_message_hides WHERE conversation_id IN ` + nests,
 		`DELETE FROM chat_messages WHERE conversation_id IN ` + nests,
 		`DELETE FROM chat_members WHERE conversation_id IN ` + nests,

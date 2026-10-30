@@ -220,7 +220,7 @@ func New(db *database.DB) *Server {
 func fiberConfig() fiber.Config {
 	config := fiber.Config{
 		AppName:      "Raven API",
-		BodyLimit:    maxProfileImageBytes + 64*1024,
+		BodyLimit:    chatImageFullBytes + 64*1024,
 		ErrorHandler: errorHandler,
 	}
 	if proxies := splitCSV(os.Getenv("RAVEN_TRUSTED_PROXIES")); len(proxies) > 0 {
@@ -255,7 +255,8 @@ func (s *Server) routes() {
 		},
 		AllowHeaders:  "Origin, Content-Type, Accept, X-Session-ID, X-Raven-OS, X-Raven-Device, X-Raven-Client-Version, X-Raven-Capabilities, X-Request-ID, X-Idempotency-Key",
 		ExposeHeaders: "X-Session-ID, X-Request-ID, Retry-After",
-		AllowMethods:  "GET,POST,DELETE,OPTIONS",
+		// PUT carries the bytes of a chat attachment's variant.
+		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
 	}))
 	s.app.Get("/healthz", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -265,7 +266,7 @@ func (s *Server) routes() {
 		})
 	})
 
-	v1 := s.app.Group("/v1")
+	v1 := s.app.Group("/v1", chatRequestBodyLimit)
 	v1.Get("/server/properties", s.getServerProperties)
 	v1.Get("/media/users/:id/avatar", s.getUserAvatar)
 	v1.Get("/media/trees/:id/avatar", s.getTreeAvatar)
@@ -356,6 +357,10 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 	if err := s.db.QueryRow(`SELECT avatar_object_key FROM server_settings WHERE id = 1`).Scan(&storedAvatar); err == nil && storedAvatar != "" {
 		avatar = serverAvatarRoute(storedAvatar)
 	}
+	chat := map[string]any{"version": chatProtocolVersion, "maxMessageLength": chatMaxBodyRunes, "editWindowSeconds": int(chatEditWindow.Seconds()), "maxGroupMembers": chatMaxGroupMembers}
+	if attachments := s.chatAttachmentCapabilities(); attachments != nil {
+		chat["attachments"] = attachments
+	}
 	return c.JSON(ServerProperties{
 		Name:         fallbackString(s.serverName, "Raven"),
 		Description:  fallbackString(s.serverDescription, "Desktop RTC for private Nests"),
@@ -364,12 +369,7 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 		// Lets a client tell that this server has text chat, and its limits, before it
 		// shows anything that depends on it.
 		Properties: map[string]any{
-			"chat": map[string]any{
-				"version":           chatProtocolVersion,
-				"maxMessageLength":  chatMaxBodyRunes,
-				"editWindowSeconds": int(chatEditWindow.Seconds()),
-				"maxGroupMembers":   chatMaxGroupMembers,
-			},
+			"chat": chat,
 		},
 	})
 }

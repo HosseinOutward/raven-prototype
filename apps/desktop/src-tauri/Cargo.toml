@@ -28,6 +28,8 @@ tauri-build = { version = "2.2.0", features = [] }
 tauri = { version = "2.5.0", features = ["tray-icon"] }
 tauri-plugin-opener = "2.2.7"
 tauri-plugin-updater = "=2.10.1"
+# The save picker for chat images.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -37,6 +39,10 @@ cpal = "0.15"
 base64 = "0.22"
 png = "0.17"
 mozjpeg = "0.10.13"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+img-parts = "0.4"
+fast_image_resize = "5"
+thumbhash = "0.1"
 livekit = { version = "0.7", features = ["rustls-tls-webpki-roots"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
 ringbuf = "0.4"

@@ -37,12 +37,17 @@ const (
 	chatCapability      = "chat-v1"
 	chatProtocolVersion = 1
 
-	chatMaxBodyRunes    = 4096
-	chatMaxBodyBytes    = 16 * 1024
-	chatMaxNameRunes    = 80
-	chatMaxTopicRunes   = 240
-	chatExcerptRunes    = 140
-	chatMaxGroupMembers = 50
+	chatMaxAttachments    = 10
+	chatImageFullBytes    = 10 * 1024 * 1024
+	chatImagePreviewBytes = 512 * 1024
+	chatImageMaxPixels    = 100000000
+	chatImageMaxSide      = 16384
+	chatMaxBodyRunes      = 4096
+	chatMaxBodyBytes      = 16 * 1024
+	chatMaxNameRunes      = 80
+	chatMaxTopicRunes     = 240
+	chatExcerptRunes      = 140
+	chatMaxGroupMembers   = 50
 
 	chatEditWindow = 48 * time.Hour
 
@@ -80,46 +85,55 @@ type ChatMember struct {
 	JoinedAt string `json:"joinedAt"`
 }
 
+// ChatAttachmentSummary is all a list or a quote needs to say what a message holds
+// ("Photo") without loading descriptions.
+type ChatAttachmentSummary struct {
+	Kind string `json:"kind"`
+}
+
 // ChatReplyRef is the quoted line above a reply.
 type ChatReplyRef struct {
-	ID         string `json:"id"`
-	Seq        int64  `json:"seq,omitempty"`
-	SenderID   string `json:"senderId,omitempty"`
-	SenderName string `json:"senderName,omitempty"`
-	Excerpt    string `json:"excerpt,omitempty"`
-	Deleted    bool   `json:"deleted,omitempty"`
+	ID          string                  `json:"id"`
+	Seq         int64                   `json:"seq,omitempty"`
+	SenderID    string                  `json:"senderId,omitempty"`
+	SenderName  string                  `json:"senderName,omitempty"`
+	Excerpt     string                  `json:"excerpt,omitempty"`
+	Deleted     bool                    `json:"deleted,omitempty"`
+	Attachments []ChatAttachmentSummary `json:"attachments,omitempty"`
 	// Unavailable means this reader may not see the original: it is from before they
 	// joined, or they removed it for themselves. Nothing else about it is sent.
 	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 type ChatMessage struct {
-	ID              string          `json:"id"`
-	ConversationID  string          `json:"conversationId"`
-	Seq             int64           `json:"seq"`
-	ChangedSeq      int64           `json:"changedSeq"`
-	SenderID        string          `json:"senderId"`
-	SenderName      string          `json:"senderName"`
-	ClientMessageID string          `json:"clientMessageId"`
-	Kind            string          `json:"kind"`
-	Body            string          `json:"body"`
-	ReplyTo         *ChatReplyRef   `json:"replyTo,omitempty"`
-	System          json.RawMessage `json:"system,omitempty"`
-	CreatedAt       string          `json:"createdAt"`
-	EditedAt        *string         `json:"editedAt,omitempty"`
-	DeletedAt       *string         `json:"deletedAt,omitempty"`
+	ID              string           `json:"id"`
+	ConversationID  string           `json:"conversationId"`
+	Seq             int64            `json:"seq"`
+	ChangedSeq      int64            `json:"changedSeq"`
+	SenderID        string           `json:"senderId"`
+	SenderName      string           `json:"senderName"`
+	ClientMessageID string           `json:"clientMessageId"`
+	Kind            string           `json:"kind"`
+	Body            string           `json:"body"`
+	Attachments     []ChatAttachment `json:"attachments,omitempty"`
+	ReplyTo         *ChatReplyRef    `json:"replyTo,omitempty"`
+	System          json.RawMessage  `json:"system,omitempty"`
+	CreatedAt       string           `json:"createdAt"`
+	EditedAt        *string          `json:"editedAt,omitempty"`
+	DeletedAt       *string          `json:"deletedAt,omitempty"`
 }
 
 type ChatMessagePreview struct {
-	ID         string          `json:"id"`
-	Seq        int64           `json:"seq"`
-	SenderID   string          `json:"senderId"`
-	SenderName string          `json:"senderName"`
-	Kind       string          `json:"kind"`
-	Excerpt    string          `json:"excerpt"`
-	System     json.RawMessage `json:"system,omitempty"`
-	Deleted    bool            `json:"deleted,omitempty"`
-	CreatedAt  string          `json:"createdAt"`
+	ID          string                  `json:"id"`
+	Seq         int64                   `json:"seq"`
+	SenderID    string                  `json:"senderId"`
+	SenderName  string                  `json:"senderName"`
+	Kind        string                  `json:"kind"`
+	Excerpt     string                  `json:"excerpt"`
+	Attachments []ChatAttachmentSummary `json:"attachments,omitempty"`
+	System      json.RawMessage         `json:"system,omitempty"`
+	Deleted     bool                    `json:"deleted,omitempty"`
+	CreatedAt   string                  `json:"createdAt"`
 }
 
 // ChatConversation is a conversation as one person sees it.
@@ -169,6 +183,9 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	chat.Post("/groups", s.chatLimiter("create", 20, time.Hour), s.chatRoute("create group", s.createChatGroup))
 
 	conversation := chat.Group("/conversations/:id")
+	conversation.Post("/attachments", s.chatLimiter("attach", 60, time.Minute), s.chatRoute("create attachment", s.createChatAttachment))
+	conversation.Put("/attachments/:attachmentId/variants/:variant", s.chatLimiter("upload", 120, time.Minute), s.chatRoute("upload attachment", s.uploadChatAttachment))
+	conversation.Get("/attachments/:attachmentId/variants/:variant", s.chatRoute("fetch attachment", s.fetchChatAttachment))
 	conversation.Get("", s.chatRoute("get", s.getChatConversation))
 	conversation.Delete("", s.chatRoute("delete conversation", s.deleteChatConversation))
 	conversation.Post("/settings", s.chatLimiter("rename", 30, time.Hour), s.chatRoute("rename", s.updateChatConversation))

@@ -1,6 +1,7 @@
 // The sentences the interface writes about conversations: who did what, who is typing,
 // and the one line shown under a conversation's name in a list.
 
+import { messageExcerpt } from "./attachments";
 import type { ChatConversation, ChatMessage, ChatMessagePreview, ChatSystemPayload, TypingPerson } from "./types";
 
 /** "Ava", "Ava and Sam", "Ava, Sam and 2 others". */
@@ -39,7 +40,7 @@ export function previewLine(conversation: ChatConversation, me: string): string 
   const last: ChatMessagePreview | undefined = conversation.lastMessage;
   if (!last) return "";
   if (last.kind === "system") return systemLine(last.system, last.senderId, last.senderName, me);
-  const text = last.deleted ? "Message deleted" : last.excerpt;
+  const text = last.deleted ? "Message deleted" : messageExcerpt(last.excerpt, last.attachments);
   if (last.senderId === me) return `You: ${text}`;
   return conversation.kind === "dm" ? text : `${last.senderName}: ${text}`;
 }

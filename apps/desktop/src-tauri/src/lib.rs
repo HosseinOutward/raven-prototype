@@ -5,6 +5,7 @@ use std::{
 
 use tauri::{Manager, RunEvent, WindowEvent};
 
+pub mod attachments;
 pub mod audio;
 mod diagnostics;
 pub mod media_hotkeys;
@@ -78,6 +79,11 @@ pub fn run() {
         .manage(new_media_hotkey_state())
         .manage(tray::new_tray_state())
         .invoke_handler(tauri::generate_handler![
+            attachments::attachment_prepare,
+            attachments::attachment_read,
+            attachments::attachment_discard,
+            attachments::attachment_sweep,
+            attachments::attachment_save,
             audio_get_state,
             audio_get_capabilities,
             audio_get_network_totals,
@@ -190,6 +196,7 @@ pub fn run() {
             diagnostics::diagnostics_log_ui_error
         ])
         .setup(|app| {
+            attachments::initialize(app.handle());
             if should_start_api_sidecar() {
                 start_api_sidecar(app.handle())?;
             }
@@ -224,7 +231,8 @@ pub fn run() {
                 .pubkey(updater::PUBLIC_KEY.trim())
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init());
 
     #[cfg(any(windows, target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());

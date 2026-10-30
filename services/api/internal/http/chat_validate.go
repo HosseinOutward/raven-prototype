@@ -15,6 +15,15 @@ import (
 // each paragraph when it draws it, so they cannot reach outside their own message.
 // What is refused is text the database or a terminal would mishandle.
 func normalizeChatBody(raw string) (string, error) {
+	body, err := normalizeChatCaption(raw)
+	if err == nil && body == "" {
+		return "", fiber.NewError(fiber.StatusBadRequest, "Write a message first.")
+	}
+	return body, err
+}
+
+// normalizeChatCaption validates text while leaving the empty-body decision to the caller.
+func normalizeChatCaption(raw string) (string, error) {
 	if len(raw) > chatMaxBodyBytes {
 		return "", fiber.NewError(fiber.StatusRequestEntityTooLarge, "That message is too long.")
 	}
@@ -31,9 +40,6 @@ func normalizeChatBody(raw string) (string, error) {
 		}
 	}
 	body = strings.TrimSpace(body)
-	if body == "" {
-		return "", fiber.NewError(fiber.StatusBadRequest, "Write a message first.")
-	}
 	if utf8.RuneCountInString(body) > chatMaxBodyRunes {
 		return "", fiber.NewError(fiber.StatusRequestEntityTooLarge, "That message is too long.")
 	}

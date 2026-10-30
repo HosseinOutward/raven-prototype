@@ -1,11 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, CornerUpLeft, Pencil, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
+import { ArrowUp, CornerUpLeft, ImagePlus, Pencil, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fieldClassName } from "@/components/ui/input";
 import { Tooltip } from "@/components/ui/tooltip";
-import { excerptOf } from "@/lib/chat/reducer";
-import type { ChatMessage } from "@/lib/chat/types";
+import { messageExcerpt, type AttachmentLimits } from "@/lib/chat/attachments";
+import { addToTray, chatTray } from "@/lib/chat/composerTray";
+import { excerptOf, summarize } from "@/lib/chat/reducer";
+import { trayReady, type TraySource } from "@/lib/chat/tray";
+import type { ChatMessage, PreparedAttachment } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
+import { AttachmentTray } from "./AttachmentTray";
 
 /** The server refuses anything longer. */
 const MAX_LENGTH = 4096;
@@ -23,18 +27,29 @@ export interface ComposerProps {
   editing: ChatMessage | null;
   onCancelReply: () => void;
   onCancelEdit: () => void;
-  onSend: (body: string) => void;
+  onSend: (body: string, attachments: PreparedAttachment[]) => void;
   onSaveEdit: (body: string) => Promise<void>;
   onTyping: () => void;
   /** Up arrow in an empty box: start editing the last message I sent. */
   onEditLast: () => void;
+  /** What images this server takes, or null when it takes none. */
+  imageLimits: AttachmentLimits | null;
+}
+
+async function filesToSources(files: File[]): Promise<TraySource[]> {
+  return Promise.all(files.map(async (file): Promise<TraySource> => ({ kind: "bytes", bytes: await file.arrayBuffer(), name: file.name || "image" })));
 }
 
 /** Where a message is written. Enter sends it; Shift+Enter starts a new line. */
-export function Composer({ conversationId, name, replyingTo, editing, onCancelReply, onCancelEdit, onSend, onSaveEdit, onTyping, onEditLast }: ComposerProps) {
+export function Composer({ conversationId, name, replyingTo, editing, onCancelReply, onCancelEdit, onSend, onSaveEdit, onTyping, onEditLast, imageLimits }: ComposerProps) {
   const [text, setText] = useState(() => drafts.get(conversationId) ?? "");
   const [saving, setSaving] = useState(false);
   const field = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const tray = useSyncExternalStore(chatTray.subscribe, () => chatTray.get(conversationId));
+  // Edits change the text only, so the tray waits, hidden, until editing ends.
+  const images = imageLimits && !editing ? tray : null;
+  const hasImages = Boolean(images && images.items.length > 0);
   const beforeEdit = useRef("");
 
   // Editing borrows the box: what was being written is put aside and comes back after.
@@ -73,9 +88,11 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   const length = Array.from(text).length;
   const tooLong = length > MAX_LENGTH;
   const empty = text.trim() === "";
+  const imagesReady = !images || trayReady(images);
+  const blocked = (editing ? empty : empty && !hasImages) || tooLong || saving || !imagesReady;
 
   const submit = () => {
-    if (empty || tooLong || saving) return;
+    if (blocked) return;
     if (editing) {
       setSaving(true);
       void onSaveEdit(text)
@@ -83,9 +100,23 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
         .finally(() => setSaving(false));
       return;
     }
-    onSend(text);
+    onSend(text, hasImages ? chatTray.take(conversationId) : []);
     setText("");
     drafts.delete(conversationId);
+  };
+
+  const addFiles = (files: File[]) => {
+    if (!imageLimits) return;
+    void filesToSources(files).then((sources) => addToTray(conversationId, sources, imageLimits));
+  };
+
+  // A pasted image goes to the tray; anything else is pasted as text, as always.
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!imageLimits || editing) return;
+    const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (files.length === 0) return;
+    event.preventDefault();
+    addFiles(files);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -98,6 +129,9 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
       event.preventDefault();
       if (editing) onCancelEdit();
       else onCancelReply();
+    } else if (event.key === "Escape" && hasImages && text === "") {
+      event.preventDefault();
+      chatTray.clear(conversationId);
     } else if (event.key === "ArrowUp" && text === "" && !editing) {
       event.preventDefault();
       onEditLast();
@@ -107,7 +141,7 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   const context = editing
     ? { icon: <Pencil className="h-4 w-4" />, title: "Editing message", text: excerptOf(editing.body), cancel: onCancelEdit, label: "Stop editing" }
     : replyingTo
-      ? { icon: <CornerUpLeft className="h-4 w-4" />, title: `Replying to ${replyingTo.senderName}`, text: excerptOf(replyingTo.body), cancel: onCancelReply, label: "Cancel reply" }
+      ? { icon: <CornerUpLeft className="h-4 w-4" />, title: `Replying to ${replyingTo.senderName}`, text: messageExcerpt(excerptOf(replyingTo.body), summarize(replyingTo.attachments)), cancel: onCancelReply, label: "Cancel reply" }
       : null;
 
   return (
@@ -124,24 +158,55 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
           </button>
         </div>
       ) : null}
+      {images ? (
+        <AttachmentTray
+          tray={images}
+          onRemove={(id) => chatTray.remove(conversationId, id)}
+          onFullQualityChange={(fullQuality) => chatTray.setFullQuality(conversationId, fullQuality)}
+        />
+      ) : null}
       <div className="flex items-end gap-2">
+        {imageLimits && !editing ? (
+          <>
+            <Tooltip label="Add images">
+              <Button size="icon" variant="ghost" title="" aria-label="Add images" onClick={() => picker.current?.click()}>
+                <ImagePlus className="h-4 w-4" />
+              </Button>
+            </Tooltip>
+            <input
+              ref={picker}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              tabIndex={-1}
+              onChange={(event) => {
+                addFiles(Array.from(event.currentTarget.files ?? []));
+                // The same file can be picked again after being removed.
+                event.currentTarget.value = "";
+                field.current?.focus();
+              }}
+            />
+          </>
+        ) : null}
         <textarea
           ref={field}
           dir="auto"
           rows={1}
           value={text}
-          aria-label={`Message ${name}`}
-          placeholder={`Message ${name}`}
+          aria-label={hasImages ? "Caption" : `Message ${name}`}
+          placeholder={hasImages ? "Add a caption" : `Message ${name}`}
           aria-invalid={tooLong}
           onChange={(event) => {
             setText(event.currentTarget.value);
             if (event.currentTarget.value.trim() && !editing) onTyping();
           }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           className={cn(fieldClassName, "raven-chat-text min-h-9 flex-1 resize-none px-3 py-2 leading-5")}
         />
         <Tooltip label={editing ? "Save" : "Send"} shortcut="Enter">
-          <Button size="icon" title="" aria-label={editing ? "Save changes" : "Send message"} disabled={empty || tooLong || saving} onClick={submit}>
+          <Button size="icon" title="" aria-label={editing ? "Save changes" : "Send message"} disabled={blocked} onClick={submit}>
             <ArrowUp className="h-4 w-4" />
           </Button>
         </Tooltip>

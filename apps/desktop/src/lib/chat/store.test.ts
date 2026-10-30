@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatApi } from "./chatApi";
-import { ChatStore } from "./store";
-import type { ChatConversation, ChatMessage, ChatPage } from "./types";
+import { ChatStore, type AttachmentBackend } from "./store";
+import type { ChatAttachment, ChatConversation, ChatMessage, ChatPage, PreparedAttachment } from "./types";
 
 const ME = { id: "me", username: "me", displayName: "Me" };
 const C = "c1";
@@ -17,6 +17,10 @@ function memoryStorage() {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => void values.set(key, value),
     removeItem: (key: string) => void values.delete(key),
+    key: (index: number) => [...values.keys()][index] ?? null,
+    get length() {
+      return values.size;
+    },
   };
 }
 
@@ -40,6 +44,12 @@ function fakeServer() {
   const failures = new Map<string, Error[]>();
   const gates = new Map<string, Promise<void>>();
   let pageSays: Partial<ChatPage> = {};
+  /** Attachments by id, with the variants whose bytes have arrived. */
+  const uploads = new Map<string, { attachment: ChatAttachment; clientUploadId: string; declared: string[]; have: Set<string> }>();
+  const uploadState = (id: string) => {
+    const entry = uploads.get(id)!;
+    return { attachment: entry.attachment, missingVariants: entry.declared.filter((variant) => !entry.have.has(variant)) };
+  };
 
   const summary = (): ChatConversation => ({
     id: C,
@@ -85,11 +95,31 @@ function fakeServer() {
     getConversation: (id: string) => step(`summary ${id}`, () => ({ conversation: summary(), members: [] })),
     messages: (_id: string, cursor: { before?: number; after?: number } = {}) => step(`messages ${JSON.stringify(cursor)}`, () => page([...messages], pageSays)),
     changes: (_id: string, after: number) => step(`changes ${after}`, () => ({ messages: messages.filter((item) => item.changedSeq > after), reset: false, asOfSeq: lastSeq, me: { readSeq, hideRev: 0, visibleFromSeq: 0 } })),
-    send: (_id: string, input: { clientMessageId: string; body: string }) =>
+    send: (_id: string, input: { clientMessageId: string; body: string; attachmentIds?: string[] }) =>
       step(`send ${input.clientMessageId}`, () => {
         const existing = messages.find((item) => item.clientMessageId === input.clientMessageId);
         if (existing) return { message: existing, duplicate: true };
-        return { message: store(ME.id, input.body, input.clientMessageId) };
+        const attached = (input.attachmentIds ?? []).map((id) => uploads.get(id));
+        if (attached.some((entry) => !entry || entry.have.size < entry.declared.length)) throw httpError(422, "That attachment isn't ready to send.");
+        const message = store(ME.id, input.body, input.clientMessageId);
+        if (attached.length) message.attachments = attached.map((entry) => entry!.attachment);
+        return { message };
+      }),
+    createAttachment: (_id: string, description: { clientUploadId: string; kind: string; variants: Array<{ variant: string }> }) =>
+      step(`create ${description.clientUploadId}`, () => {
+        const known = [...uploads.values()].find((entry) => entry.clientUploadId === description.clientUploadId);
+        if (known) return uploadState(known.attachment.id);
+        const id = `a${uploads.size + 1}`;
+        const declared = description.variants.map((variant) => variant.variant);
+        uploads.set(id, { attachment: { id, kind: description.kind, source: "stored", contentType: "image/jpeg", size: 1, variants: declared }, clientUploadId: description.clientUploadId, declared, have: new Set() });
+        return uploadState(id);
+      }),
+    uploadVariant: (_id: string, attachmentId: string, variant: string) =>
+      step(`upload ${attachmentId} ${variant}`, () => {
+        const entry = uploads.get(attachmentId);
+        if (!entry) throw httpError(404, "Not found");
+        entry.have.add(variant);
+        return uploadState(attachmentId);
       }),
     markRead: (_id: string, seq: number) =>
       step(`read ${seq}`, () => {
@@ -118,6 +148,11 @@ function fakeServer() {
       return release;
     },
     sends: () => calls.filter((call) => call.startsWith("send ")),
+    /** Every create, upload and send, in order, with the message's id shortened to "send". */
+    steps: () => calls.filter((call) => /^(create|upload|send) /.test(call)).map((call) => (call.startsWith("send ") ? "send" : call.startsWith("create ") ? "create" : call)),
+    uploads,
+    /** Forgets every attachment, as the server does with uploads no message claimed in a day. */
+    purge: () => uploads.clear(),
     pageLoads: () => calls.filter((call) => call.startsWith("messages ")).length,
     /** Makes history pages claim there is more before or after what they hold. */
     pagesSay: (patch: Partial<ChatPage>) => {
@@ -467,6 +502,203 @@ describe("subscribers", () => {
     unsubscribe();
     store.handleEvent({ type: "conversation.bump", conversationId: C, seq: 2 });
     expect(notified).toBe(1);
+    store.dispose();
+  });
+});
+
+function prepared(handle: string): PreparedAttachment {
+  return {
+    handle,
+    kind: "image",
+    contentType: "image/jpeg",
+    size: 4,
+    name: "photo.jpg",
+    width: 4000,
+    height: 3000,
+    placeholder: "",
+    animated: false,
+    variants: [
+      { variant: "full", contentType: "image/jpeg", size: 4 },
+      { variant: "preview", contentType: "image/jpeg", size: 4 },
+    ],
+  };
+}
+
+/** The prepared files on "this computer", and the media cache. */
+function fakeBackend() {
+  const reads: string[] = [];
+  const discarded: string[] = [];
+  const sweeps: string[][] = [];
+  const seeded: string[] = [];
+  const missing = new Set<string>();
+  const backend: AttachmentBackend = {
+    readVariant: async (handle, variant) => {
+      reads.push(`${handle} ${variant}`);
+      if (missing.has(handle)) throw { code: "io" };
+      return new ArrayBuffer(4);
+    },
+    discard: async (handle) => void discarded.push(handle),
+    sweep: async (keep) => void sweeps.push([...keep].sort()),
+    seed: (attachmentId, variant) => void seeded.push(`${attachmentId} ${variant}`),
+  };
+  return { backend, reads, discarded, sweeps, seeded, missing };
+}
+
+describe("sending images", () => {
+  test("creates, uploads each variant, then sends, in that order; then lets the files go", async () => {
+    const files = fakeBackend();
+    const { store, server } = await openStore(fakeServer(), { attachments: files.backend });
+    store.send(C, "  a caption  ", undefined, [prepared("h1"), prepared("h2")]);
+    await until(() => conversation(store).pending.length === 0, "the message to be sent");
+
+    expect(server.steps()).toEqual(["create", "upload a1 full", "upload a1 preview", "create", "upload a2 full", "upload a2 preview", "send"]);
+    expect(conversation(store).messages[0].body).toBe("a caption");
+    expect(conversation(store).messages[0].attachments?.map((attachment) => attachment.id)).toEqual(["a1", "a2"]);
+    // The list's copy is seeded from the bytes just uploaded, so it isn't fetched again.
+    expect(files.seeded).toEqual(["a1 preview", "a2 preview"]);
+    await until(() => files.discarded.length === 2, "the files to be discarded");
+    expect(files.discarded).toEqual(["h1", "h2"]);
+    store.dispose();
+  });
+
+  test("an image without a caption can be sent; nothing at all cannot", async () => {
+    const files = fakeBackend();
+    const { store } = await openStore(fakeServer(), { attachments: files.backend });
+    expect(store.send(C, "   ")).toBeNull();
+    expect(store.send(C, "", undefined, [prepared("h1")])).not.toBeNull();
+    await until(() => conversation(store).pending.length === 0);
+    expect(conversation(store).messages[0].body).toBe("");
+    store.dispose();
+  });
+
+  test("a create whose answer was lost is asked again and finds the same attachment", async () => {
+    const files = fakeBackend();
+    const server = fakeServer();
+    const original = server.api.createAttachment;
+    let lostOnce = false;
+    server.api.createAttachment = async (id, description) => {
+      const result = await original(id, description);
+      if (!lostOnce) {
+        lostOnce = true;
+        throw new TypeError("connection reset");
+      }
+      return result;
+    };
+    const { store } = await openStore(server, { attachments: files.backend });
+    store.send(C, "", undefined, [prepared("h1")]);
+    await until(() => conversation(store).pending.length === 0);
+
+    expect(server.uploads.size).toBe(1);
+    expect(server.steps()).toEqual(["create", "create", "upload a1 full", "upload a1 preview", "send"]);
+    store.dispose();
+  });
+
+  test("a failed upload is retried for the missing variant only", async () => {
+    const files = fakeBackend();
+    const server = fakeServer();
+    const original = server.api.uploadVariant;
+    let failedOnce = false;
+    server.api.uploadVariant = async (id, attachmentId, variant, bytes, contentType) => {
+      if (variant === "preview" && !failedOnce) {
+        failedOnce = true;
+        throw httpError(503);
+      }
+      return original(id, attachmentId, variant, bytes, contentType);
+    };
+    const { store } = await openStore(server, { attachments: files.backend });
+    store.send(C, "", undefined, [prepared("h1")]);
+    await until(() => conversation(store).pending.length === 0);
+
+    expect(server.steps()).toEqual(["create", "upload a1 full", "upload a1 preview", "send"]);
+    expect(files.reads.filter((read) => read === "h1 full")).toHaveLength(1);
+    store.dispose();
+  });
+
+  test("after a restart, sending again carries on where it stopped and sends once", async () => {
+    const storage = memoryStorage();
+    const server = fakeServer();
+    const files = fakeBackend();
+    const first = await openStore(server, { storage, attachments: files.backend });
+    // The uploads get through; the message itself doesn't, and then the app closes.
+    server.failNext("send", httpError(403, "not now"));
+    const clientId = first.store.send(C, "from the train", undefined, [prepared("h1")])!;
+    await until(() => conversation(first.store).pending[0]?.state === "failed", "the send to fail");
+    first.store.dispose();
+
+    server.calls.length = 0;
+    const again = fakeBackend();
+    const { store } = await openStore(server, { storage, attachments: again.backend });
+    // The sweep at startup keeps what the outbox still needs.
+    expect(again.sweeps).toEqual([["h1"]]);
+    expect(conversation(store).pending.map((item) => [item.clientMessageId, item.state])).toEqual([[clientId, "failed"]]);
+
+    store.retry(C, clientId);
+    await until(() => conversation(store).pending.length === 0, "the message to be sent");
+    expect(server.steps()).toEqual(["send"]);
+    expect(server.messages).toHaveLength(1);
+    expect(conversation(store).messages[0].attachments?.map((attachment) => attachment.id)).toEqual(["a1"]);
+    // Uploaded before the restart, so its list copy is read back from disk to seed the cache.
+    await until(() => again.discarded.length === 1);
+    expect(again.reads).toEqual(["h1 preview"]);
+    expect(again.seeded).toEqual(["a1 preview"]);
+    store.dispose();
+  });
+
+  test("uploads the server purged are made again once, and the message sends once", async () => {
+    const files = fakeBackend();
+    const server = fakeServer();
+    const { store } = await openStore(server, { attachments: files.backend });
+    const release = server.hold("send");
+    store.send(C, "", undefined, [prepared("h1")]);
+    await until(() => server.sends().length === 1);
+    server.purge();
+    release();
+    await until(() => conversation(store).pending.length === 0, "the message to be sent");
+
+    expect(server.steps()).toEqual(["create", "upload a1 full", "upload a1 preview", "send", "create", "upload a1 full", "upload a1 preview", "send"]);
+    expect(server.messages).toHaveLength(1);
+    store.dispose();
+  });
+
+  test("purged a second time, it fails and waits for the person", async () => {
+    const files = fakeBackend();
+    const server = fakeServer();
+    const original = server.api.send;
+    server.api.send = async (id, input) => {
+      server.purge();
+      return original(id, input);
+    };
+    const { store } = await openStore(server, { attachments: files.backend });
+    store.send(C, "", undefined, [prepared("h1")]);
+    await until(() => conversation(store).pending[0]?.state === "failed");
+    expect(conversation(store).pending[0].error).toBe("That attachment isn't ready to send.");
+    expect(server.sends()).toHaveLength(2);
+    store.dispose();
+  });
+
+  test("an image too large for the server fails with words, and discarding lets its file go", async () => {
+    const files = fakeBackend();
+    const server = fakeServer();
+    server.failNext("upload", httpError(413, "Request Entity Too Large"));
+    const { store } = await openStore(server, { attachments: files.backend });
+    const clientId = store.send(C, "", undefined, [prepared("h1")])!;
+    await until(() => conversation(store).pending[0]?.state === "failed");
+    expect(conversation(store).pending[0].error).toBe("That image is too large for this server.");
+
+    store.discard(C, clientId);
+    await until(() => files.discarded.length === 1);
+    expect(files.discarded).toEqual(["h1"]);
+    store.dispose();
+  });
+
+  test("an image no longer on this computer fails at once", async () => {
+    const files = fakeBackend();
+    files.missing.add("h1");
+    const { store, server } = await openStore(fakeServer(), { attachments: files.backend });
+    store.send(C, "", undefined, [prepared("h1")]);
+    await until(() => conversation(store).pending[0]?.state === "failed");
+    expect(conversation(store).pending[0].error).toBe("The image is no longer on this computer. Discard this and add it again.");
+    expect(server.sends()).toEqual([]);
     store.dispose();
   });
 });

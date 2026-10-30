@@ -1,5 +1,6 @@
 import { api } from "@/lib/api";
 import type {
+  ChatAttachment,
   ChatChanges,
   ChatConversation,
   ChatMember,
@@ -9,6 +10,26 @@ import type {
   TreeCategory,
   TreeLayout,
 } from "./types";
+
+/** What creating an attachment declares: its description, with no bytes. */
+export interface AttachmentDescription {
+  clientUploadId: string;
+  kind: string;
+  source: string;
+  contentType: string;
+  size: number;
+  name?: string;
+  width?: number;
+  height?: number;
+  placeholder?: string;
+  variants: Array<{ variant: string; contentType: string; size: number }>;
+}
+
+/** The server's copy of an attachment, and which of its variants still need their bytes. */
+export interface AttachmentUploadState {
+  attachment: ChatAttachment;
+  missingVariants: string[];
+}
 
 /**
  * The chat endpoints. The store depends on this interface rather than on `api`, so its
@@ -27,7 +48,12 @@ export interface ChatApi {
   clearConversation(id: string): Promise<void>;
   messages(id: string, cursor?: { before?: number; after?: number; around?: number; limit?: number }): Promise<ChatPage>;
   changes(id: string, after: number): Promise<ChatChanges>;
-  send(id: string, message: { clientMessageId: string; body: string; replyToMessageId?: string }): Promise<{ message: ChatMessage; duplicate?: boolean }>;
+  send(id: string, message: { clientMessageId: string; body: string; replyToMessageId?: string; attachmentIds?: string[] }): Promise<{ message: ChatMessage; duplicate?: boolean }>;
+  /** Declares an attachment. The same `clientUploadId` again returns the same one. */
+  createAttachment(id: string, description: AttachmentDescription): Promise<AttachmentUploadState>;
+  /** Stores the bytes of one variant. Uploading one the server already has is harmless. */
+  uploadVariant(id: string, attachmentId: string, variant: string, bytes: ArrayBuffer | Blob, contentType: string): Promise<AttachmentUploadState>;
+  fetchVariant(id: string, attachmentId: string, variant: string): Promise<Blob>;
   edit(id: string, messageId: string, body: string): Promise<{ message: ChatMessage }>;
   deleteForEveryone(id: string, messageId: string): Promise<{ message: ChatMessage }>;
   deleteForMe(id: string, messageId: string): Promise<{ hideRev: number; unreadCount: number }>;
@@ -45,6 +71,8 @@ export interface ChatApi {
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
 const conversationPath = (id: string) => `/v1/chat/conversations/${encodeURIComponent(id)}`;
 const treePath = (id: string) => `/v1/trees/${encodeURIComponent(id)}`;
+const variantPath = (id: string, attachmentId: string, variant: string) =>
+  `${conversationPath(id)}/attachments/${encodeURIComponent(attachmentId)}/variants/${encodeURIComponent(variant)}`;
 
 export const chatApi: ChatApi = {
   listConversations: () => api.call("/v1/chat/conversations"),
@@ -67,6 +95,11 @@ export const chatApi: ChatApi = {
   },
   changes: (id, after) => api.call(`${conversationPath(id)}/changes?after=${after}`),
   send: (id, message) => api.call(`${conversationPath(id)}/messages`, json(message)),
+  createAttachment: (id, description) => api.call(`${conversationPath(id)}/attachments`, json(description)),
+  // One function for every upload, so a later resumable upload (for video) replaces only this.
+  uploadVariant: (id, attachmentId, variant, bytes, contentType) =>
+    api.call(variantPath(id, attachmentId, variant), { method: "PUT", headers: { "Content-Type": contentType }, body: bytes }),
+  fetchVariant: (id, attachmentId, variant) => api.callBlob(variantPath(id, attachmentId, variant)),
   edit: (id, messageId, body) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}/edit`, json({ body })),
   deleteForEveryone: (id, messageId) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}?for=everyone`, { method: "DELETE" }),
   deleteForMe: (id, messageId) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}?for=me`, { method: "DELETE" }),

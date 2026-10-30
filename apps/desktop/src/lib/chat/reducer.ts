@@ -17,6 +17,7 @@
 
 import {
   UNREAD_CAP,
+  type ChatAttachmentSummary,
   type ChatChanges,
   type ChatConversation,
   type ChatEffect,
@@ -80,6 +81,11 @@ export function excerptOf(body: string): string {
   return characters.length <= 140 ? flat : `${characters.slice(0, 140).join("")}…`;
 }
 
+/** Only what a list or a quote needs to say what a message holds. */
+export function summarize(attachments: ChatAttachmentSummary[] | undefined): ChatAttachmentSummary[] | undefined {
+  return attachments?.length ? attachments.map((attachment) => ({ kind: attachment.kind })) : undefined;
+}
+
 function previewOf(message: ChatMessage): ChatMessagePreview {
   return {
     id: message.id,
@@ -88,6 +94,7 @@ function previewOf(message: ChatMessage): ChatMessagePreview {
     senderName: message.senderName,
     kind: message.kind,
     excerpt: message.deletedAt ? "" : excerptOf(message.body),
+    ...(message.attachments?.length && !message.deletedAt ? { attachments: summarize(message.attachments) } : {}),
     system: message.system,
     deleted: Boolean(message.deletedAt),
     createdAt: message.createdAt,

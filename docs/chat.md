@@ -49,7 +49,8 @@ Defaults chosen during the build. Each is one constant or one check to change:
   There is no `[label](address)` form, because a link whose words differ from where it goes
   is how people are tricked.
 
-Not in this version: attachments, reactions, mentions, search, forwarding, pinning, link
+Not in the desktop client yet: attachments (the server supports stored images).
+Not in this version: reactions, mentions, search, forwarding, pinning, link
 previews, an emoji picker (the system picker works), OS notifications, end-to-end
 encryption, auto-delete timers, per-nest permissions, and "last seen".
 
@@ -181,21 +182,88 @@ focused, the conversation is open and its newest messages are in view.
 
 ## Data
 
-One migration, `2026101101_chat`, creates tables only and alters nothing that existed. The
-SQL runs on PostgreSQL (production) and SQLite (local use and the default test run).
+The base migration, `2026101101_chat`, and additive attachment migration,
+`2026103001_chat_attachments`, create tables without rewriting existing messages.
+The SQL runs on PostgreSQL (production) and SQLite (local use and the default test run).
 
 | Table | Holds |
 |---|---|
 | `chat_conversations` | One row per direct message, group or text nest: kind, tree, name, `last_seq`, `last_message_seq`, `last_activity_ms`, status. `dm_key` is unique, so two friends have exactly one direct message. |
 | `chat_members` | Membership and per-person state. Authoritative for direct messages and groups. For text nests access always comes from `tree_members`, and the row only holds the person's read position, hides and archive flag. |
 | `chat_messages` | `seq`, `changed_seq`, sender, `client_message_id`, kind (`text` or `system`), body, reply target, edit and delete marks. Unique on `(conversation_id, seq)` and on `(conversation_id, sender_id, client_message_id)`. |
+| `chat_attachments` | Ordered attachment descriptions, uploader and retry id, conversation, optional message, open `kind`/`source`, dimensions, placeholder and metadata. `message_id` deliberately has no foreign key so bulk message deletes never depend on order. |
+| `chat_attachment_variants` | Named variants declared at create time; an immutable object key and upload time are filled by PUT. All declared variants must have keys before send; a future peer source with no variants is ready immediately. |
+| `chat_object_purges` | Durable object keys queued inside the deletion transaction, with retry attempts. |
 | `chat_message_hides` | "Remove for me": person, message. |
 | `chat_user_settings` | `share_read_status`. |
 | `tree_categories`, `tree_layout_items` | Categories of a tree and the category and position of each voice and text nest. An overlay: the `nests` table is unchanged. |
 
 Ids are 32 hexadecimal characters and timestamps are RFC 3339 text, like the rest of
-Raven's schema. Deleting a group, a text nest or a tree first marks the conversation
-`deleted`, so a send racing the delete gets `404`, then removes its rows.
+Raven's schema. Deleting a group or a tree first marks the conversations `deleted`,
+so a send racing the delete gets `404`, then queues their objects and removes rows.
+Deleting a text nest retains messages and attachments until its tree is deleted.
+
+### Attachment routes and wire shape
+
+All routes use the normal session header (`X-Session-ID`) and conversation permissions.
+Under `/v1/chat/conversations/:id`:
+
+| Method and path | Behavior |
+|---|---|
+| `POST /attachments` | Declare `{clientUploadId, kind, source, contentType, size, name?, width?, height?, placeholder?, variants: [{variant, contentType, size}]}`. Currently accepts `image` / `stored`. Requires send access. Returns `{attachment, missingVariants}` (`201`, or `200` for the same uploader/upload id, whatever its current state). |
+| `PUT /attachments/:attachmentId/variants/:variant` | Raw bytes for a declared variant, owned by the caller and not yet attached. Checks size, detected MIME type and image header dimensions. Returns `{attachment, missingVariants}`. A repeated successful variant PUT is a no-op. The object is written before the conversation is locked, so a slow store never delays sends; the lock is held only to record the key. A retry that loses the race deletes its own copy. |
+| `GET /attachments/:attachmentId/variants/:variant` | Uploader-only before sending. Afterwards requires conversation read access, a message at/above the viewer's floor, not hidden by them and not deleted; otherwise `404`. Returns the variant MIME type, private immutable cache headers, an object-key ETag and `nosniff`. Authorization precedes conditional `304`. |
+
+Send accepts `attachmentIds`, claims them in request order in the message transaction,
+and permits an empty caption when at least one attachment is ready. Invalid claims
+return `422` and roll back the sequence increment and all claims. Duplicate sends
+return the original message with attachments. Attachment-only messages remain `text`.
+Edits change only the caption, which may be empty when attachments exist.
+
+`ChatMessage.attachments` is an ordered list of `{id, kind, source, contentType, size,
+name?, width?, height?, durationMs?, placeholder?, variants, meta?}`. History, catch-up,
+send/edit responses and message events carry it. Deleted messages omit attachments.
+Conversation previews and visible reply references carry only `[{kind}]`; an empty
+caption still has an empty excerpt. Description/variant loading uses one joined query
+per page, including visible reply targets. Creating or uploading sends no events.
+
+Delete for everyone queues variant keys before removing attachment rows and emits
+`message.updated` without attachments. Group/tree deletion queues them too; hiding,
+clearing and text-nest deletion retain them. Maintenance expires unattached descriptions
+older than 24 hours, then drains up to 100 keys per run (every 10 seconds). Failures
+increment attempts and log the key only; at 20 failures a final log is written and the
+key remains queued for operator attention without further automatic retries.
+Object keys use `RAVEN_CHAT_MEDIA_PREFIX` (default `chat-attachments`).
+
+### Desktop attachment preparation
+
+Native commands prepare an attachment before any network operation. `attachment_prepare`
+accepts raw bytes with JSON `{name, mode}` in the `X-Raven-Attachment` header, or a JSON
+body `{path, mode}` for a dropped file. `mode` is `standard` or `full`. Its camelCase result
+is `{handle, kind, contentType, size, name, width, height, placeholder, animated, variants}`;
+each variant is `{variant, contentType, size}`. `kind` is currently `image`, with `full`
+and `preview` variants. The placeholder is standard base64 ThumbHash, compatible with the
+JavaScript `thumbhash` package. Dimensions describe the oriented full image.
+
+`attachment_save` takes raw bytes with JSON `{name, contentType}` in the same header, shows
+the native save picker suggesting that name, and writes the bytes where the person chose.
+It returns `false` when they cancel.
+
+`attachment_read({handle, variant})` returns raw bytes. `attachment_discard({handle})`
+removes an outbox entry. After restoring its durable outbox, the client calls
+`attachment_sweep({keep: handles})` to remove unreferenced entries; it must finish this
+initial sweep before starting new preparations. Handles are canonical UUIDs, never paths.
+These commands return errors as `{code}`: `unsupported`, `tooLarge`, `damaged`, or `io`.
+
+Preparation uses blocking workers and commits a whole folder by rename under
+`<app_cache_dir>/chat-outbox/<handle>/`, containing named variant files and
+`attachment.json`. Startup removes entries and abandoned temporary folders older than
+14 days. Inputs are sniffed, limited to 50 MiB, 16,384 px per side and 100 megapixels,
+with a 512 MiB decoder allocation limit. Standard mode resizes above 2560 px; previews
+fit 960 px and 512 KiB while preserving transparency. EXIF/XMP are removed from still
+JPEG/PNG/WebP originals, retaining ICC. Animated GIF/WebP full variants pass through
+untouched under 10 MiB, with a still preview. Full mode preserves unrotated source
+pixels and dimensions; rotated graphics use lossless WebP and rotated photos JPEG 95.
 
 ## Realtime
 
@@ -229,8 +297,55 @@ so a restart does not bring every client back in the same instant.
 - Message text is never treated as HTML. Each line gets its own direction (`dir="auto"`),
   names are isolated with `<bdi>`, bidirectional control characters are stripped from web
   addresses, and Vazirmatn is bundled as the Persian and Arabic fallback behind Geist.
+- Attachments are handled by kind and source, never by "image" outside the drawing code
+  (`lib/chat/attachments.ts`). Images can be pasted, dropped (Tauri's drag-and-drop event,
+  only on the open conversation) or picked; each goes to a per-conversation tray
+  (`lib/chat/tray.ts`) that prepares it natively, again in `full` mode when the person
+  turns on Full quality. The text becomes the caption. The attach button, paste and drop
+  exist only when the server announces `chat.attachments` with images and `stored`.
+- Sending a message with attachments is three steps in the store's sender loop, each
+  recorded on the pending message as it completes: create (keyed by a `clientUploadId`
+  made per attachment), upload each variant the server reports missing (read back from
+  the native outbox), then send with `attachmentIds`. The outbox in `localStorage` is
+  format 2 and keeps that progress, so a retry or a restart resumes; format 1 still
+  loads. A 404 on upload or a 422 on send means the server purged the uploads: they are
+  made again once. Upload 413 and 415 are final, in words. The store's startup sweep
+  (`attachment_sweep`, keeping every handle any account's outbox needs) finishes before
+  the tray prepares anything. A sent or discarded message discards its native files.
+- Bytes are fetched with the session header and shown from object URLs held by one media
+  cache (`lib/chat/mediaCache.ts`): requests in flight are shared, finished ones are kept
+  to 64 MB least recently used with evicted URLs revoked, nothing on screen is evicted,
+  and a 404 is remembered as gone. Images load only within about a screen of the
+  viewport. One's own sent images are seeded from the uploaded preview bytes, and a
+  message still sending shows its local preview, so neither loads twice or jumps.
+- The list draws the `preview` variant in a box sized from `width` and `height` before
+  it loads (at most 400 by 320 CSS px; a two-column grid for several), with the ThumbHash
+  as a blur. The viewer loads `full` and offers Save (`attachment_save`: the native save
+  picker, then a write of the bytes; no path comes from the page) and Copy (PNG on the
+  clipboard). A kind or source this version can't draw says "Sent from a newer version
+  of Raven. Update to see it." Lists and quotes say "Photo", "2 photos" or "Attachment"
+  when there is no caption.
 
 ## Limits and safety
+
+- Up to 10 attachments per message. Images require `full` (up to 10 MiB) and `preview`
+  (up to 512 KiB), using JPEG, PNG, GIF or WebP. Width and height are required, each at
+  most 16,384 pixels and together at most 100 megapixels. Upload checks use only
+  `image.DecodeConfig`: full dimensions must match the declaration (a 90° swap is
+  accepted), and preview dimensions may not exceed full dimensions.
+- `properties.chat.attachments` announces version 1, supported kinds/variant byte
+  limits, dimensions, sources and max-per-message from the server's rule map. It is
+  omitted when object storage is unavailable; clients then hide attachment controls.
+- Create is limited to 60/minute and upload to 120/minute per account.
+- The global Fiber body limit is 10 MiB + 64 KiB. Other `/v1` requests over 1 MiB
+  are rejected with `413` before parsing (both Content-Length and buffered size are
+  checked). Known limit: fasthttp already buffers requests before this middleware,
+  so rejection does not save that memory. A focused `StreamRequestBody` experiment
+  confirmed that existing `c.Body()` handlers still buffer the whole stream and can
+  read past BodyLimit; streaming was left disabled to retain the global bound.
+- The repo nginx API limit is 12 MiB in `nginx/mimir.conf` (desktop API) and
+  `nginx/raven.conf` (admin API). Saye's running nginx and the ArvanCloud CDN
+  must be checked/updated at deploy time; this change does not deploy either.
 
 - Per-account rate limits, with `Retry-After`: send 20 per 10 s, typing 20 per 10 s, edit
   30 per minute, delete 60 per minute, open a direct message 60 per minute, add members 60
@@ -251,6 +366,7 @@ results are in [chat-testing.md](chat-testing.md).
 
 | Requirement | Shown by |
 |---|---|
+| Attachments: ordered send/retry, caption edits, sync, authorized fetch, and durable purge. | Go: `chat_attachments_test.go` |
 | Direct messages and groups; create, list, archive, delete | Go: one direct message per pair, group lifecycle, archive, clear, delete. App. |
 | End-to-end delivery p95 under 200 ms; p50, p95, p99 measured separately | Bench steady run. The path through the production proxy and CDN is **not yet measured** (needs a deploy). |
 | Edit with status and time | Go: owner only, 48-hour window, event. Client reducer. App. |

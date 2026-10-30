@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Archive, ArchiveRestore, Eraser, Hand, LogIn, LogOut, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { Archive, ArchiveRestore, Eraser, Hand, ImagePlus, LogIn, LogOut, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
 import { GroupPeopleDialog, RenameDialog } from "@/components/chat/ChatDialogs";
+import { ImageViewer } from "@/components/chat/ImageViewer";
 import { Composer } from "@/components/chat/Composer";
 import { ConversationAvatar } from "@/components/chat/ConversationRow";
 import { MessageList, type MessageListHandle } from "@/components/chat/MessageList";
@@ -9,16 +11,18 @@ import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
-import { excerptOf } from "@/lib/chat/reducer";
+import { canShow } from "@/lib/chat/attachments";
+import { addToTray } from "@/lib/chat/composerTray";
+import { excerptOf, summarize } from "@/lib/chat/reducer";
 import type { ChatStore } from "@/lib/chat/store";
-import type { ChatMember, ChatMessage, ConversationState } from "@/lib/chat/types";
+import type { ChatAttachment, ChatMember, ChatMessage, ConversationState, PreparedAttachment } from "@/lib/chat/types";
 import { EmptyState, PersonAvatar } from "../atoms";
 import { personNestAction, personStatus } from "../people";
 import { PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
 import type { NestEntryController } from "../useNestEntry";
 import { useProfileKnock } from "../useProfileKnock";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
-import { useChatSelector, useConversation, useWindowActive } from "../useChat";
+import { useChatSelector, useConversation, useImageLimits, useWindowActive } from "../useChat";
 import { ViewHeader } from "./shared";
 
 type Confirmation =
@@ -113,7 +117,38 @@ function OpenConversation({
   const [working, setWorking] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [viewing, setViewing] = useState<{ messageId: string; attachmentId: string } | null>(null);
+  const [dropping, setDropping] = useState(false);
+  const imageLimits = useImageLimits(data);
+  // Images can come in only where something can be sent, and not while editing a message.
+  const takesImages = summary.canSend && imageLimits && !editing ? imageLimits : null;
 
+  // Files dragged over the window. Only the conversation on screen listens, so a drop
+  // lands nowhere else.
+  useEffect(() => {
+    if (!takesImages) return;
+    let stop: (() => void) | null = null;
+    let live = true;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const { payload } = event;
+        if (payload.type === "enter") setDropping(payload.paths.length > 0);
+        else if (payload.type === "leave") setDropping(false);
+        else if (payload.type === "drop") {
+          setDropping(false);
+          addToTray(id, payload.paths.map((path) => ({ kind: "path" as const, path })), takesImages);
+        }
+      })
+      .then((unlisten) => {
+        if (live) stop = unlisten;
+        else unlisten();
+      }, () => undefined);
+    return () => {
+      live = false;
+      stop?.();
+      setDropping(false);
+    };
+  }, [id, takesImages]);
   // The list does not carry who is in a group; fetch that when the group is opened.
   const needsMembers = summary.kind === "group" && conversation.members.length === 0;
   useEffect(() => {
@@ -140,9 +175,16 @@ function OpenConversation({
   const askRemove = useCallback((message: ChatMessage) => setConfirming({ kind: "remove-message", message }), []);
   const askDelete = useCallback((message: ChatMessage) => setConfirming({ kind: "delete-message", message }), []);
 
-  const send = (body: string) => {
+  const openImage = useCallback((message: ChatMessage, attachment: ChatAttachment) => setViewing({ messageId: message.id, attachmentId: attachment.id }), []);
+
+  // The viewer follows the message as it is now: deleting it closes the viewer.
+  const viewedMessage = viewing ? conversation.messages.find((message) => message.id === viewing.messageId) : undefined;
+  const viewedImages = viewedMessage && !viewedMessage.deletedAt ? (viewedMessage.attachments ?? []).filter((attachment) => attachment.kind === "image" && canShow(attachment)) : [];
+  const viewedIndex = viewing ? viewedImages.findIndex((attachment) => attachment.id === viewing.attachmentId) : -1;
+
+  const send = (body: string, attachments: PreparedAttachment[]) => {
     const reply = replyingTo;
-    chat.send(id, body, reply ? { id: reply.id, seq: reply.seq, senderId: reply.senderId, senderName: reply.senderName, excerpt: excerptOf(reply.body) } : undefined);
+    chat.send(id, body, reply ? { id: reply.id, seq: reply.seq, senderId: reply.senderId, senderName: reply.senderName, excerpt: excerptOf(reply.body), attachments: summarize(reply.attachments) } : undefined, attachments);
     setReplyingTo(null);
     list.current?.scrollToLatest();
   };
@@ -270,43 +312,63 @@ function OpenConversation({
         }
       />
 
-      <MessageList
-        ref={list}
-        store={chat}
-        conversation={conversation}
-        me={me}
-        windowActive={windowActive}
-        intro={intro}
-        onReply={startReply}
-        onEdit={startEdit}
-        onRemoveForMe={askRemove}
-        onDeleteForEveryone={askDelete}
-      />
-
-      {summary.canSend ? (
-        <Composer
-          conversationId={id}
-          name={summary.name}
-          replyingTo={replyingTo}
-          editing={editing}
-          onCancelReply={() => setReplyingTo(null)}
-          onCancelEdit={() => setEditing(null)}
-          onSend={send}
-          onSaveEdit={(body) =>
-            chat.edit(id, editing!.id, body).catch((failure) => {
-              report("Couldn’t save the change.")(failure);
-              throw failure;
-            })
-          }
-          onTyping={() => chat.typing(id)}
-          onEditLast={editLast}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <MessageList
+          ref={list}
+          store={chat}
+          conversation={conversation}
+          me={me}
+          windowActive={windowActive}
+          intro={intro}
+          onReply={startReply}
+          onEdit={startEdit}
+          onRemoveForMe={askRemove}
+          onDeleteForEveryone={askDelete}
+          onOpenImage={openImage}
         />
-      ) : (
-        <p className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-5 text-center text-small text-muted-foreground">
-          You and {summary.name} are not friends at the moment. What was said stays here, but new messages can’t be sent.
-        </p>
-      )}
 
+        {summary.canSend ? (
+          <Composer
+            conversationId={id}
+            name={summary.name}
+            replyingTo={replyingTo}
+            editing={editing}
+            onCancelReply={() => setReplyingTo(null)}
+            onCancelEdit={() => setEditing(null)}
+            onSend={send}
+            onSaveEdit={(body) =>
+              chat.edit(id, editing!.id, body).catch((failure) => {
+                report("Couldn’t save the change.")(failure);
+                throw failure;
+              })
+            }
+            onTyping={() => chat.typing(id)}
+            onEditLast={editLast}
+            imageLimits={imageLimits}
+          />
+        ) : (
+          <p className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-5 text-center text-small text-muted-foreground">
+            You and {summary.name} are not friends at the moment. What was said stays here, but new messages can’t be sent.
+          </p>
+        )}
+        {dropping && takesImages ? (
+          <div className="pointer-events-none absolute inset-3 z-10 flex animate-fade-in flex-col items-center justify-center gap-2 rounded-card border-2 border-dashed border-input bg-card/90 text-body text-muted-foreground">
+            <ImagePlus className="h-5 w-5" aria-hidden />
+            Drop to add to the message
+          </div>
+        ) : null}
+      </div>
+
+      {viewedMessage && viewedIndex >= 0 ? (
+        <ImageViewer
+          conversationId={id}
+          images={viewedImages}
+          index={viewedIndex}
+          senderName={viewedMessage.senderId === me ? "you" : viewedMessage.senderName}
+          onIndexChange={(index) => setViewing({ messageId: viewedMessage.id, attachmentId: viewedImages[index].id })}
+          onClose={() => setViewing(null)}
+        />
+      ) : null}
       {confirmation ? (
         <ConfirmDialog
           open
@@ -419,7 +481,9 @@ function describeConfirmation(confirming: Confirmation, name: string, kind: Conv
     case "delete-message":
       return {
         title: "Delete this message for everyone?",
-        description: "Its text is erased for everyone in the conversation and can’t be brought back. A note stays where it was.",
+        description: confirming.message.attachments?.length
+          ? "Its images and text are erased for everyone in the conversation and can’t be brought back. A note stays where it was."
+          : "Its text is erased for everyone in the conversation and can’t be brought back. A note stays where it was.",
         confirmLabel: "Delete",
       };
     case "remove-member":

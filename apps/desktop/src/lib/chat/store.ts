@@ -9,7 +9,19 @@
 
 import type { ChatApi } from "./chatApi";
 import { httpStatusOf } from "./errors";
-import { classifySendFailure, clearOutbox, loadOutbox, newClientMessageId, nextToSend, saveOutbox, SEND_RETRY_WINDOW_MS, type OutboxStorage } from "./outbox";
+import {
+  classifySendFailure,
+  clearOutbox,
+  loadOutbox,
+  LocalSendFailure,
+  newClientMessageId,
+  nextToSend,
+  outboxHandles,
+  saveOutbox,
+  SEND_RETRY_WINDOW_MS,
+  type OutboxStorage,
+  type SendStep,
+} from "./outbox";
 import {
   addPending,
   applyChanges,
@@ -32,7 +44,21 @@ import {
   updatePending,
   type PageMode,
 } from "./reducer";
-import type { ChatConversation, ChatEffect, ChatEvent, ChatMember, ChatReplyRef, ChatState, ChatUser, PendingMessage, Reduced, TreeLayout } from "./types";
+import type {
+  ChatConversation,
+  ChatEffect,
+  ChatEvent,
+  ChatMember,
+  ChatMessage,
+  ChatReplyRef,
+  ChatState,
+  ChatUser,
+  PendingAttachment,
+  PendingMessage,
+  PreparedAttachment,
+  Reduced,
+  TreeLayout,
+} from "./types";
 
 /** How many conversations keep their messages loaded besides the ones on screen. */
 const KEPT_LOADED = 3;
@@ -45,6 +71,31 @@ const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15_000, 30_000];
 
 type Timer = ReturnType<typeof setTimeout>;
 
+/**
+ * The parts of sending attachments that live outside the server: the prepared files on
+ * this computer, and the media cache. The app passes the native commands; tests a fake.
+ */
+export interface AttachmentBackend {
+  readVariant(handle: string, variant: string): Promise<ArrayBuffer>;
+  discard(handle: string): Promise<void>;
+  sweep(keep: string[]): Promise<void>;
+  /** Bytes just uploaded, so showing the sent message does not download them again. */
+  seed(attachmentId: string, variant: string, bytes: Blob): void;
+}
+
+/** The variant shown in the message list, and so the one worth keeping after a send. */
+const LIST_VARIANT = "preview";
+
+/** A step of sending failed; which step decides what the failure means. */
+class StepFailure extends Error {
+  constructor(readonly step: SendStep, readonly cause: unknown) {
+    super("send step failed");
+  }
+}
+
+/** The message was taken back (discarded) while it was being sent. */
+class Withdrawn extends Error {}
+
 export interface ChatStoreOptions {
   api: ChatApi;
   me: ChatUser;
@@ -52,6 +103,8 @@ export interface ChatStoreOptions {
   storage?: OutboxStorage | null;
   /** Called when the server says the session has ended. */
   onSignedOut?: () => void;
+  /** Leave out where attachments cannot be sent; messages with them then fail. */
+  attachments?: AttachmentBackend | null;
   now?: () => number;
   /** Multiplies every wait (retries, debounces). Tests shrink it; the app leaves it at 1. */
   delayScale?: number;
@@ -68,6 +121,11 @@ export class ChatStore {
   private readonly me: ChatUser;
   private readonly storage: OutboxStorage | null;
   private readonly onSignedOut?: () => void;
+  private readonly attachments: AttachmentBackend | null;
+  /** Settles once prepared files no unsent message needs have been cleared away. */
+  readonly attachmentsReady: Promise<void>;
+  /** Attachments whose list variant is already in the media cache. */
+  private readonly seeded = new Set<string>();
   private readonly now: () => number;
   private readonly delayScale: number;
   private disposed = false;
@@ -107,6 +165,12 @@ export class ChatStore {
     this.now = options.now ?? Date.now;
     this.delayScale = options.delayScale ?? 1;
     this.state = emptyChatState(options.me.id);
+    this.attachments = options.attachments ?? null;
+    // The sweep removes every prepared file it is not told to keep, so it runs before
+    // anything new is prepared, keeping what the saved outbox still needs.
+    this.attachmentsReady = this.attachments
+      ? this.attachments.sweep(this.storage ? outboxHandles(this.storage) : []).catch(() => undefined)
+      : Promise.resolve();
   }
 
   private later(run: () => void, delayMs: number): Timer {
@@ -137,7 +201,11 @@ export class ChatStore {
     // Cheap fingerprint of every unsent message, to tell when they need saving again.
     let key = "";
     for (const conversation of Object.values(state.conversations)) {
-      for (const item of conversation.pending) key += `${item.clientMessageId}:${item.state};`;
+      for (const item of conversation.pending) {
+        key += `${item.clientMessageId}:${item.state}`;
+        for (const attachment of item.attachments ?? []) key += `,${attachment.attachmentId ?? ""}/${attachment.uploaded.join("+")}`;
+        key += ";";
+      }
     }
     return key;
   }
@@ -408,14 +476,29 @@ export class ChatStore {
 
   // ---- sending ------------------------------------------------------------------------
 
-  /** Shows the message at once and sends it in the background. Returns its client id. */
-  send(conversationId: string, body: string, replyTo?: ChatReplyRef): string | null {
+  /**
+   * Shows the message at once and sends it in the background. Returns its client id.
+   * `attachments` are what the composer's tray prepared; the text is then their caption
+   * and may be empty.
+   */
+  send(conversationId: string, body: string, replyTo?: ChatReplyRef, attachments: PreparedAttachment[] = []): string | null {
     const text = body.trim();
-    if (!text || !this.state.conversations[conversationId]) return null;
+    if ((!text && attachments.length === 0) || !this.state.conversations[conversationId]) return null;
     const pending: PendingMessage = {
       clientMessageId: newClientMessageId(),
       conversationId,
       body: text,
+      ...(attachments.length
+        ? {
+            attachments: attachments.map((description): PendingAttachment => ({
+              handle: description.handle,
+              clientUploadId: newClientMessageId(),
+              kind: description.kind,
+              description,
+              uploaded: [],
+            })),
+          }
+        : {}),
       replyTo,
       createdAt: new Date(this.now()).toISOString(),
       state: "queued",
@@ -435,8 +518,117 @@ export class ChatStore {
 
   discard(conversationId: string, clientMessageId: string) {
     this.firstAttemptAt.delete(clientMessageId);
+    const item = this.pendingItem(conversationId, clientMessageId);
     this.set(removePending(this.state, conversationId, clientMessageId));
+    this.discardFiles(item);
     this.pump(conversationId);
+  }
+
+  private pendingItem(conversationId: string, clientMessageId: string): PendingMessage | undefined {
+    return this.state.conversations[conversationId]?.pending.find((item) => item.clientMessageId === clientMessageId);
+  }
+
+  private discardFiles(item: PendingMessage | undefined) {
+    for (const attachment of item?.attachments ?? []) void this.attachments?.discard(attachment.handle).catch(() => undefined);
+  }
+
+  /** Records how far sending an attachment got, on the pending message itself. */
+  private recordAttachment(conversationId: string, clientMessageId: string, index: number, patch: Partial<PendingAttachment>): PendingAttachment {
+    const item = this.pendingItem(conversationId, clientMessageId);
+    const current = item?.attachments?.[index];
+    if (!item || !current) throw new Withdrawn();
+    const next = { ...current, ...patch };
+    const attachments = item.attachments!.slice();
+    attachments[index] = next;
+    this.set(updatePending(this.state, conversationId, clientMessageId, { attachments }));
+    return next;
+  }
+
+  /**
+   * Sends one message. With attachments it is three steps, each safe to repeat and each
+   * recorded as it completes, so a retry or a restart carries on where it stopped:
+   * create every attachment, upload each variant the server is missing, then send the
+   * message naming them in order.
+   */
+  private async deliver(conversationId: string, clientMessageId: string): Promise<ChatMessage> {
+    const item = this.pendingItem(conversationId, clientMessageId);
+    if (!item) throw new Withdrawn();
+    const attachmentIds: string[] = [];
+    for (let index = 0; index < (item.attachments?.length ?? 0); index += 1) {
+      let attachment = this.pendingItem(conversationId, clientMessageId)?.attachments?.[index];
+      if (!attachment) throw new Withdrawn();
+      if (!this.attachments) throw new StepFailure("create", new LocalSendFailure("Images can’t be sent from here."));
+      const { description } = attachment;
+      const declared = description.variants.map((variant) => variant.variant);
+      if (!attachment.attachmentId) {
+        const created = await this.api
+          .createAttachment(conversationId, {
+            clientUploadId: attachment.clientUploadId,
+            kind: attachment.kind,
+            source: "stored",
+            contentType: description.contentType,
+            size: description.size,
+            name: description.name || undefined,
+            width: description.width || undefined,
+            height: description.height || undefined,
+            placeholder: description.placeholder || undefined,
+            variants: description.variants,
+          })
+          .catch((error: unknown) => {
+            throw new StepFailure("create", error);
+          });
+        attachment = this.recordAttachment(conversationId, clientMessageId, index, {
+          attachmentId: created.attachment.id,
+          uploaded: declared.filter((variant) => !created.missingVariants.includes(variant)),
+        });
+      }
+      for (const variant of description.variants) {
+        if (attachment.uploaded.includes(variant.variant)) continue;
+        let bytes: ArrayBuffer;
+        try {
+          bytes = await this.attachments.readVariant(attachment.handle, variant.variant);
+        } catch {
+          throw new StepFailure("upload", new LocalSendFailure("The image is no longer on this computer. Discard this and add it again."));
+        }
+        const attachmentId = attachment.attachmentId!;
+        const result = await this.api.uploadVariant(conversationId, attachmentId, variant.variant, bytes, variant.contentType).catch((error: unknown) => {
+          throw new StepFailure("upload", error);
+        });
+        if (variant.variant === LIST_VARIANT) {
+          this.attachments.seed(attachmentId, variant.variant, new Blob([bytes], { type: variant.contentType }));
+          this.seeded.add(attachmentId);
+        }
+        const uploaded = declared.filter((name) => !result.missingVariants.includes(name));
+        attachment = this.recordAttachment(conversationId, clientMessageId, index, { uploaded: uploaded.includes(variant.variant) ? uploaded : [...uploaded, variant.variant] });
+      }
+      attachmentIds.push(attachment.attachmentId!);
+    }
+    const { message } = await this.api
+      .send(conversationId, { clientMessageId, body: item.body, replyToMessageId: item.replyTo?.id, ...(attachmentIds.length ? { attachmentIds } : {}) })
+      .catch((error: unknown) => {
+        throw new StepFailure("send", error);
+      });
+    return message;
+  }
+
+  /** After a send: keep the list variant of each image in the cache, then let the files go. */
+  private async finishAttachments(item: PendingMessage, message: ChatMessage) {
+    const sent = message.attachments ?? [];
+    for (const [index, attachment] of (item.attachments ?? []).entries()) {
+      const id = attachment.attachmentId ?? sent[index]?.id;
+      // Uploaded in an earlier session, so not seeded while uploading.
+      if (id && this.attachments && !this.seeded.has(id)) {
+        const variant = attachment.description.variants.find((candidate) => candidate.variant === LIST_VARIANT);
+        if (variant) {
+          await this.attachments.readVariant(attachment.handle, variant.variant).then(
+            (bytes) => this.attachments?.seed(id, variant.variant, new Blob([bytes], { type: variant.contentType })),
+            () => undefined,
+          );
+        }
+      }
+      if (id) this.seeded.delete(id);
+      await this.attachments?.discard(attachment.handle).catch(() => undefined);
+    }
   }
 
   private pump(conversationId: string) {
@@ -447,20 +639,41 @@ export class ChatStore {
     this.sending.add(conversationId);
     if (!this.firstAttemptAt.has(item.clientMessageId)) this.firstAttemptAt.set(item.clientMessageId, this.now());
     this.set(updatePending(this.state, conversationId, item.clientMessageId, { state: "sending", attempts: item.attempts + 1 }));
-    void this.api.send(conversationId, { clientMessageId: item.clientMessageId, body: item.body, replyToMessageId: item.replyTo?.id }).then(
-      ({ message }) => {
+    void this.deliver(conversationId, item.clientMessageId).then(
+      (message) => {
         this.sending.delete(conversationId);
         this.firstAttemptAt.delete(item.clientMessageId);
+        const sent = this.pendingItem(conversationId, item.clientMessageId) ?? item;
         // The event for this message may already have been applied; merging is by id.
         let reduced = applyOwnMessage(this.state, message, this.atBottom.get(conversationId) ?? true);
         reduced = { state: removePending(reduced.state, conversationId, item.clientMessageId), effects: reduced.effects };
         this.apply(reduced);
+        if (sent.attachments?.length) void this.finishAttachments(sent, message);
         this.pump(conversationId);
       },
-      (error) => {
+      (thrown: unknown) => {
         this.sending.delete(conversationId);
+        if (thrown instanceof Withdrawn) {
+          this.firstAttemptAt.delete(item.clientMessageId);
+          this.pump(conversationId);
+          return;
+        }
+        const step = thrown instanceof StepFailure ? thrown.step : "send";
+        const error = thrown instanceof StepFailure ? thrown.cause : thrown;
+        const current = this.pendingItem(conversationId, item.clientMessageId) ?? item;
         const attempts = item.attempts + 1;
-        const failure = classifySendFailure(error, attempts);
+        const failure = current.attachments?.length
+          ? classifySendFailure(error, attempts, { step, reuploaded: current.reuploaded })
+          : classifySendFailure(error, attempts);
+        if (failure.kind === "reupload") {
+          // The server purged the uploads while the message waited. Start them over, once.
+          this.set(updatePending(this.state, conversationId, item.clientMessageId, {
+            reuploaded: true,
+            attachments: current.attachments?.map((attachment) => ({ ...attachment, attachmentId: undefined, uploaded: [], clientUploadId: newClientMessageId() })),
+          }));
+          this.pump(conversationId);
+          return;
+        }
         const started = this.firstAttemptAt.get(item.clientMessageId) ?? this.now();
         if (failure.kind === "retry" && this.now() - started + failure.delayMs <= SEND_RETRY_WINDOW_MS) {
           // It stays "sending" and holds its place; the ones behind it wait.
@@ -656,6 +869,11 @@ export class ChatStore {
 
   /** Stops everything. With `signingOut`, unsent messages are discarded too. */
   dispose(signingOut = false) {
+    if (signingOut) {
+      for (const conversation of Object.values(this.state.conversations)) {
+        for (const item of conversation.pending) this.discardFiles(item);
+      }
+    }
     this.disposed = true;
     for (const timer of [this.listTimer, this.typingTimer, ...this.changesTimers.values(), ...this.sendTimers.values(), ...this.readTimers.values()]) {
       if (timer) clearTimeout(timer);

@@ -113,8 +113,8 @@ func (s *S3Store) Get(ctx context.Context, key string) (Object, error) {
 		return Object{}, errors.New("profile image is unavailable")
 	}
 	defer result.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(result.Body, 5*1024*1024+1))
-	if err != nil || len(body) > 5*1024*1024 {
+	body, err := io.ReadAll(io.LimitReader(result.Body, 10*1024*1024+1))
+	if err != nil || len(body) > 10*1024*1024 {
 		return Object{}, errors.New("profile image could not be read")
 	}
 	return Object{Bytes: body, ContentType: aws.ToString(result.ContentType)}, nil

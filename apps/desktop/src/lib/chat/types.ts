@@ -14,6 +14,36 @@ export interface ChatMember extends ChatUser {
   joinedAt: string;
 }
 
+/**
+ * Something a message carries besides its text. `kind` says how it is shown (an image
+ * now; a gif, sticker, video or file later) and `source` where its bytes come from
+ * (`stored` on the server now; `peer` later). Both are open: a newer Raven may send
+ * kinds and sources this one does not know.
+ */
+export interface ChatAttachment {
+  id: string;
+  kind: string;
+  source: string;
+  /** Of the `full` variant. */
+  contentType: string;
+  /** Bytes of the `full` variant. */
+  size: number;
+  name?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  /** A ThumbHash, base64: a blurred stand-in shown before the image loads. */
+  placeholder?: string;
+  /** What can be fetched, for example ["full", "preview"]. */
+  variants: string[];
+  meta?: Record<string, unknown>;
+}
+
+/** All a list or a quote needs to say what a message holds ("Photo"). */
+export interface ChatAttachmentSummary {
+  kind: string;
+}
+
 /** The quoted line above a reply. */
 export interface ChatReplyRef {
   id: string;
@@ -22,6 +52,7 @@ export interface ChatReplyRef {
   senderName?: string;
   excerpt?: string;
   deleted?: boolean;
+  attachments?: ChatAttachmentSummary[];
   /** This reader may not see the original (it predates them, or they removed it). */
   unavailable?: boolean;
 }
@@ -45,7 +76,9 @@ export interface ChatMessage {
   senderName: string;
   clientMessageId: string;
   kind: "text" | "system";
+  /** The text, or the caption when there are attachments. May be empty then. */
   body: string;
+  attachments?: ChatAttachment[];
   replyTo?: ChatReplyRef;
   system?: ChatSystemPayload;
   createdAt: string;
@@ -60,6 +93,7 @@ export interface ChatMessagePreview {
   senderName: string;
   kind: "text" | "system";
   excerpt: string;
+  attachments?: ChatAttachmentSummary[];
   system?: ChatSystemPayload;
   deleted?: boolean;
   createdAt: string;
@@ -167,6 +201,44 @@ export interface TreeLayout {
 /** The server stops counting unread messages here; show "99+". */
 export const UNREAD_CAP = 100;
 
+/** What plan 02's native preparation returned for one picked, pasted or dropped file. */
+export interface PreparedVariant {
+  variant: string;
+  contentType: string;
+  size: number;
+}
+
+export interface PreparedAttachment {
+  /** The folder on this computer that holds its variants until it is sent. */
+  handle: string;
+  kind: string;
+  contentType: string;
+  size: number;
+  name: string;
+  width: number;
+  height: number;
+  placeholder: string;
+  /** For the tray only (a still preview of a moving image). Not sent. */
+  animated: boolean;
+  variants: PreparedVariant[];
+}
+
+/**
+ * One attachment of an unsent message, and how far sending it got. Each step is
+ * recorded, so a retry or a restart carries on where it stopped.
+ */
+export interface PendingAttachment {
+  handle: string;
+  /** Lets the server recognise a repeated create. One per attachment, never reused. */
+  clientUploadId: string;
+  kind: string;
+  description: PreparedAttachment;
+  /** Set once the server has created it. */
+  attachmentId?: string;
+  /** Variants the server has. */
+  uploaded: string[];
+}
+
 /**
  * A message the person has sent that the server has not acknowledged yet.
  *   queued   waiting its turn (messages to one conversation go one at a time)
@@ -177,12 +249,15 @@ export interface PendingMessage {
   clientMessageId: string;
   conversationId: string;
   body: string;
+  attachments?: PendingAttachment[];
   replyTo?: ChatReplyRef;
   createdAt: string;
   state: "queued" | "sending" | "failed";
   /** Why it failed, in words the person can act on. */
   error?: string;
   attempts: number;
+  /** Its uploads were started over once because the server had let them go. */
+  reuploaded?: boolean;
 }
 
 export interface TypingPerson {

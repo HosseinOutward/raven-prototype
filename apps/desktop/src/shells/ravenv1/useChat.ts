@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
 import { capabilitiesOf } from "@/lib/permissions";
+import { discard, readVariant, sweep } from "@/lib/chat/attachmentPrep";
+import { attachmentLimits, canSendImages, type AttachmentLimits } from "@/lib/chat/attachments";
 import { chatApi } from "@/lib/chat/chatApi";
+import { chatTray, setAttachmentsReady } from "@/lib/chat/composerTray";
+import { seedAttachment } from "@/lib/chat/media";
 import { hasUnread } from "@/lib/chat/reducer";
 import { ChatStore } from "@/lib/chat/store";
 import type { ChatEvent, ChatState, ConversationState } from "@/lib/chat/types";
@@ -37,7 +41,9 @@ export function useChat(data: RavenShellData): ChatStore | null {
       me: { id: userId, username, displayName },
       storage: localStorage,
       onSignedOut: sessionExpired,
+      attachments: { readVariant, discard, sweep, seed: seedAttachment },
     });
+    setAttachmentsReady(next.attachmentsReady);
     setStore(next);
     const unsubscribe = eventStream.subscribe({
       onOpen: () => next.streamOpened(),
@@ -54,6 +60,7 @@ export function useChat(data: RavenShellData): ChatStore | null {
     return () => {
       unsubscribe();
       next.dispose();
+      chatTray.clearAll();
       setStore(null);
     };
     // The display name is only used for messages shown before the server answers.
@@ -76,6 +83,18 @@ export function useChat(data: RavenShellData): ChatStore | null {
   }, [store]);
 
   return store;
+}
+
+/**
+ * What this server lets a message carry, or null when images can't be sent to it. Null
+ * means no attach button, no drop and no paste of images anywhere.
+ */
+export function useImageLimits(data: RavenShellData): AttachmentLimits | null {
+  const properties = data.serverProperties.properties;
+  return useMemo(() => {
+    const limits = attachmentLimits(properties);
+    return canSendImages(limits) ? limits : null;
+  }, [properties]);
 }
 
 const noSubscription = () => () => undefined;

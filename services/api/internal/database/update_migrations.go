@@ -43,6 +43,7 @@ func migrateVersioned(db *sql.DB, driver string) error {
 			version:    "2026102701_call_state",
 			statements: callStateStatements(),
 		},
+		{version: "2026103001_chat_attachments", statements: chatAttachmentStatements()},
 	}
 	for _, migration := range migrations {
 		if err := applyUpdateMigration(db, driver, migration); err != nil {

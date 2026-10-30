@@ -5,7 +5,7 @@ import type { ChatStore } from "@/lib/chat/store";
 import { typingLine } from "@/lib/chat/text";
 import { unreadLabel } from "@/lib/chat/reducer";
 import { buildRows, type ChatRow as Row } from "@/lib/chat/rows";
-import type { ChatMessage, ConversationState, PendingMessage } from "@/lib/chat/types";
+import type { ChatAttachment, ChatMessage, ConversationState, PendingMessage } from "@/lib/chat/types";
 import { MessageRow, PendingRow, type DeliveryStatus } from "./MessageRow";
 
 /** Virtuoso counts rows from here, leaving room to add older ones in front. */
@@ -97,6 +97,7 @@ export interface MessageListProps {
   onEdit: (message: ChatMessage) => void;
   onRemoveForMe: (message: ChatMessage) => void;
   onDeleteForEveryone: (message: ChatMessage) => void;
+  onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
 }
 
 /**
@@ -105,7 +106,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, onReply, onEdit, onRemoveForMe, onDeleteForEveryone },
+  { store, conversation, me, windowActive, intro, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -282,6 +283,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onRemoveForMe={onRemoveForMe}
                 onDeleteForEveryone={onDeleteForEveryone}
                 onOpenReply={openReply}
+                onOpenImage={onOpenImage}
               />
             </div>
           );

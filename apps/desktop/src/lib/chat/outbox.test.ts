@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { classifySendFailure, loadOutbox, newClientMessageId, nextToSend, retryDelayMs, saveOutbox } from "./outbox";
-import type { PendingMessage } from "./types";
+import { classifySendFailure, LocalSendFailure, loadOutbox, newClientMessageId, nextToSend, outboxHandles, retryDelayMs, saveOutbox } from "./outbox";
+import type { PendingAttachment, PendingMessage } from "./types";
 
 function httpError(status: number, message = "refused", retryAfterSeconds?: number) {
   return Object.assign(new Error(message), { status, retryAfterSeconds });
@@ -17,6 +17,35 @@ function memoryStorage() {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => void values.set(key, value),
     removeItem: (key: string) => void values.delete(key),
+    key: (index: number) => [...values.keys()][index] ?? null,
+    get length() {
+      return values.size;
+    },
+  };
+}
+
+function image(handle: string, progress: Partial<PendingAttachment> = {}): PendingAttachment {
+  return {
+    handle,
+    clientUploadId: `upload-${handle}`,
+    kind: "image",
+    description: {
+      handle,
+      kind: "image",
+      contentType: "image/jpeg",
+      size: 2000,
+      name: "سفر.jpg",
+      width: 4000,
+      height: 3000,
+      placeholder: "1QcSHQRnh493V4dIh4eXh1h4kJUI",
+      animated: false,
+      variants: [
+        { variant: "full", contentType: "image/jpeg", size: 2000 },
+        { variant: "preview", contentType: "image/jpeg", size: 200 },
+      ],
+    },
+    uploaded: [],
+    ...progress,
   };
 }
 
@@ -38,6 +67,25 @@ describe("what a failed send means", () => {
     expect(classifySendFailure(httpError(404, "This conversation isn’t available."), 1).kind).toBe("fail");
     expect(classifySendFailure(httpError(413, "That message is too long."), 1).kind).toBe("fail");
     expect(classifySendFailure(httpError(426, "Update required"), 1).kind).toBe("fail");
+  });
+
+  test("an upload refused for its size or type says so in words", () => {
+    expect(classifySendFailure(httpError(413, "Request Entity Too Large"), 1, { step: "upload" })).toEqual({ kind: "fail", message: "That image is too large for this server." });
+    expect(classifySendFailure(httpError(415, "Unsupported Media Type"), 1, { step: "upload" })).toEqual({ kind: "fail", message: "This server can’t take that kind of image." });
+    // A 413 for the message itself is about its text, and keeps the server's words.
+    expect(classifySendFailure(httpError(413, "That message is too long."), 1, { step: "send" })).toEqual({ kind: "fail", message: "That message is too long." });
+  });
+
+  test("uploads the server let go of are made again, once", () => {
+    expect(classifySendFailure(httpError(422, "That attachment isn't ready to send."), 1, { step: "send" })).toEqual({ kind: "reupload" });
+    expect(classifySendFailure(httpError(404, "Not found"), 1, { step: "upload" })).toEqual({ kind: "reupload" });
+    expect(classifySendFailure(httpError(422, "That attachment isn't ready to send."), 1, { step: "send", reuploaded: true })).toEqual({ kind: "fail", message: "That attachment isn't ready to send." });
+    // A description the server refuses is not a purge.
+    expect(classifySendFailure(httpError(422, "That attachment isn't valid."), 1, { step: "create" }).kind).toBe("fail");
+  });
+
+  test("a file missing on this computer is final", () => {
+    expect(classifySendFailure(new LocalSendFailure("gone"), 1, { step: "upload" })).toEqual({ kind: "fail", message: "gone" });
   });
 
   test("an ended session stops sending altogether", () => {
@@ -88,9 +136,45 @@ describe("unsent messages across a restart", () => {
     const storage = memoryStorage();
     storage.setItem("raven.chat.outbox.me", "{not json");
     expect(loadOutbox(storage, "me")).toEqual([]);
-    storage.setItem("raven.chat.outbox.me", JSON.stringify({ version: 2, items: [pending("a", "queued")] }));
+    storage.setItem("raven.chat.outbox.me", JSON.stringify({ version: 3, items: [pending("a", "queued")] }));
     expect(loadOutbox(storage, "me")).toEqual([]);
     storage.setItem("raven.chat.outbox.me", JSON.stringify({ version: 1, items: [null, { clientMessageId: 5 }, pending("ok", "queued")] }));
     expect(loadOutbox(storage, "me").map((item) => item.clientMessageId)).toEqual(["ok"]);
+  });
+});
+
+describe("unsent images across a restart", () => {
+  test("version 1, from before attachments, still loads", () => {
+    const storage = memoryStorage();
+    storage.setItem("raven.chat.outbox.me", JSON.stringify({ version: 1, items: [pending("a", "queued")] }));
+    const [restored] = loadOutbox(storage, "me");
+    expect(restored.clientMessageId).toBe("a");
+    expect(restored.attachments).toBeUndefined();
+  });
+
+  test("attachments and how far each got are kept", () => {
+    const storage = memoryStorage();
+    const attachments = [image("h1", { attachmentId: "at1", uploaded: ["full"] }), image("h2")];
+    saveOutbox(storage, "me", [{ ...pending("a", "sending"), body: "", attachments, reuploaded: true }]);
+    expect(JSON.parse(storage.values.get("raven.chat.outbox.me")!).version).toBe(2);
+
+    const [restored] = loadOutbox(storage, "me");
+    expect(restored.attachments).toEqual(attachments);
+    expect(restored.reuploaded).toBe(true);
+    expect(restored.state).toBe("failed");
+  });
+
+  test("a message whose attachment can't be read is left out rather than sent without it", () => {
+    const storage = memoryStorage();
+    storage.setItem("raven.chat.outbox.me", JSON.stringify({ version: 2, items: [{ ...pending("a", "queued"), attachments: [image("h1"), { handle: 5 }] }, { ...pending("b", "queued"), body: "" }] }));
+    expect(loadOutbox(storage, "me")).toEqual([]);
+  });
+
+  test("the handles every account still needs are kept from the sweep", () => {
+    const storage = memoryStorage();
+    saveOutbox(storage, "me", [{ ...pending("a", "failed"), attachments: [image("h1"), image("h2")] }, pending("b", "failed")]);
+    saveOutbox(storage, "other", [{ ...pending("c", "failed"), attachments: [image("h3")] }]);
+    storage.setItem("unrelated", "x");
+    expect(outboxHandles(storage).sort()).toEqual(["h1", "h2", "h3"]);
   });
 });

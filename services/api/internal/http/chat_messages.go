@@ -87,7 +87,14 @@ func (s *Server) queryChatMessages(q chatQuerier, viewerID string, floor int64, 
 		}
 		messages = append(messages, message)
 	}
-	return messages, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := withChatAttachments(q, messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 // loadChatMessage reads one message as the viewer sees it.
@@ -97,7 +104,12 @@ func (s *Server) loadChatMessage(q chatQuerier, conversationID, messageID, viewe
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatMessage{}, errChatMessageGone
 	}
-	return message, err
+	if err != nil {
+		return message, err
+	}
+	messages := []ChatMessage{message}
+	err = withChatAttachments(q, messages)
+	return messages[0], err
 }
 
 // chatNextSeq takes the conversation's next sequence number. It must be the first
@@ -158,6 +170,11 @@ func chatReplyTargetFor(q chatQuerier, conversationID, parentID string) (*chatRe
 		target.ref.Deleted = true
 	} else {
 		target.ref.Excerpt = chatExcerpt(body)
+		summaries, err := chatAttachmentSummaryMap(q, []any{parentID})
+		if err != nil {
+			return nil, err
+		}
+		target.ref.Attachments = summaries[parentID]
 	}
 	rows, err := q.Query(`SELECT user_id FROM chat_message_hides WHERE message_id = ?`, parentID)
 	if err != nil {
@@ -196,9 +213,10 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 	user := currentUser(c)
 	conversationID := c.Params("id")
 	var input struct {
-		ClientMessageID  string `json:"clientMessageId"`
-		Body             string `json:"body"`
-		ReplyToMessageID string `json:"replyToMessageId"`
+		ClientMessageID  string   `json:"clientMessageId"`
+		Body             string   `json:"body"`
+		ReplyToMessageID string   `json:"replyToMessageId"`
+		AttachmentIDs    []string `json:"attachmentIds"`
 	}
 	if err := c.BodyParser(&input); err != nil {
 		s.metrics.chatSends.inc("invalid")
@@ -208,10 +226,19 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 		s.metrics.chatSends.inc("invalid")
 		return errChatInvalidBody
 	}
-	body, err := normalizeChatBody(input.Body)
+	body, err := normalizeChatCaption(input.Body)
 	if err != nil {
 		s.metrics.chatSends.inc("invalid")
 		return err
+	}
+
+	if len(input.AttachmentIDs) > chatMaxAttachments {
+		s.metrics.chatSends.inc("invalid")
+		return errChatAttachmentNotReady
+	}
+	if body == "" && len(input.AttachmentIDs) == 0 {
+		s.metrics.chatSends.inc("invalid")
+		return fiber.NewError(400, "Write a message first.")
 	}
 
 	// Held until the events are queued, so two sends to one conversation reach the
@@ -219,7 +246,7 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 	unlock := s.chatLocks.lock(conversationID)
 	defer unlock()
 
-	sent, err := s.storeChatMessage(user, conversationID, input.ClientMessageID, body, input.ReplyToMessageID)
+	sent, err := s.storeChatMessage(user, conversationID, input.ClientMessageID, body, input.ReplyToMessageID, input.AttachmentIDs...)
 	if err != nil {
 		s.metrics.chatSends.inc(chatSendOutcome(err))
 		return err
@@ -261,7 +288,7 @@ type chatStored struct {
 }
 
 // storeChatMessage commits one message, or finds the one an earlier attempt committed.
-func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, body, replyToID string) (chatStored, error) {
+func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, body, replyToID string, attachmentIDs ...string) (chatStored, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return chatStored{}, err
@@ -333,6 +360,14 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 		return s.chatAlreadyStored(tx, conversationID, existingID, sender.ID, access.VisibleFromSeq)
 	}
 
+	if err := claimChatAttachments(tx, conversationID, sender.ID, messageID, now, attachmentIDs); err != nil {
+		return chatStored{}, err
+	}
+	attachments := []ChatMessage{{ID: messageID}}
+	if err := withChatAttachments(tx, attachments); err != nil {
+		return chatStored{}, err
+	}
+
 	// Sending means you have seen what came before. In a direct message the other person
 	// may see that too, when both share read status.
 	sharedSeq := access.SharedReadSeq
@@ -371,6 +406,7 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 	committedAt := time.Now()
 
 	message := ChatMessage{
+		Attachments:     attachments[0].Attachments,
 		ID:              messageID,
 		ConversationID:  conversationID,
 		Seq:             seq,
@@ -410,7 +446,7 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	if err := c.BodyParser(&input); err != nil {
 		return errChatInvalidBody
 	}
-	body, err := normalizeChatBody(input.Body)
+	body, err := normalizeChatCaption(input.Body)
 	if err != nil {
 		return err
 	}
@@ -457,6 +493,15 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	}
 	if created, err := time.Parse(time.RFC3339Nano, createdAt); err != nil || time.Since(created) > chatEditWindow {
 		return errChatEditTooLate
+	}
+	if body == "" {
+		var count int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM chat_attachments WHERE message_id = ?`, messageID).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return fiber.NewError(400, "Write a message first.")
+		}
 	}
 	if currentBody == body {
 		// Nothing would change, so nothing is recorded and nobody is told.
@@ -574,6 +619,9 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": message})
 	}
 
+	if err := chatQueuePurgesTx(tx, `message_id = ?`, messageID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(
 		`UPDATE chat_messages SET body = '', deleted_at = ?, deleted_by_user_id = ?, changed_seq = ? WHERE id = ?`,
 		now, user.ID, seq, messageID,
