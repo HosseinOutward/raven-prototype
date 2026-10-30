@@ -7,6 +7,9 @@
 // read it through `useSyncExternalStore`, so a new message re-renders the conversation it
 // belongs to and nothing else.
 
+import { recordEmoji } from "../emoji/prefs";
+import type { ReactionLimits } from "./attachments";
+import { toggledReactions } from "./reactions";
 import { modeFor } from "./notify";
 import type { ChatApi } from "./chatApi";
 import { httpStatusOf } from "./errors";
@@ -41,6 +44,7 @@ import {
   setLayout,
   setLoading,
   setSettings,
+  setReactionsLocally,
   unloadConversation,
   updatePending,
   type PageMode,
@@ -117,6 +121,7 @@ function isNotFound(error: unknown): boolean {
 
 export class ChatStore {
   private state: ChatState;
+  private reactionLimits: ReactionLimits | null = null;
   private readonly incoming = new Set<(message: ChatMessage) => void>();
   private readonly incomingIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
@@ -712,6 +717,33 @@ export class ChatStore {
   }
 
   // ---- changing and removing messages ---------------------------------------------------
+
+
+  setReactionLimits(limits: ReactionLimits | null) {
+    this.reactionLimits = limits;
+  }
+
+  async react(conversationId: string, messageId: string, emoji: string) {
+    const conversation = this.state.conversations[conversationId];
+    const before = conversation?.messages.find((message) => message.id === messageId);
+    if (!this.reactionLimits || !conversation?.summary.canSend || !before || before.deletedAt || before.kind !== "text") return;
+    const previous = before.reactions ?? [];
+    const add = !previous.some((reaction) => reaction.emoji === emoji && reaction.userIds.includes(this.me.id));
+    const reactions = toggledReactions(previous, this.me.id, emoji, this.reactionLimits.maxPerPerson);
+    this.set(setReactionsLocally(this.state, conversationId, messageId, reactions));
+    if (add) recordEmoji(emoji);
+    try {
+      const { message } = await this.api.react(conversationId, messageId, emoji, add);
+      this.apply(applyOwnMessage(this.state, message, this.atBottom.get(conversationId) ?? true));
+    } catch (failure) {
+      const current = this.state.conversations[conversationId]?.messages.find((message) => message.id === messageId);
+      // A newer event or a later local toggle must not be undone by this request.
+      if (current?.changedSeq === before.changedSeq && current.reactions === reactions) {
+        this.set(setReactionsLocally(this.state, conversationId, messageId, previous));
+      }
+      throw failure;
+    }
+  }
 
   async edit(conversationId: string, messageId: string, body: string) {
     const { message } = await this.api.edit(conversationId, messageId, body.trim());

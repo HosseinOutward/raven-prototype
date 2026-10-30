@@ -359,6 +359,10 @@ textarea {
   }
 }
 
+@keyframes raven-reaction-in {
+  from { opacity: 0; transform: scale(0.95); }
+}
+
 @keyframes raven-pop-in {
   from {
     opacity: 0;

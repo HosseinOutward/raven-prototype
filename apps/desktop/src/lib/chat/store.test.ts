@@ -753,3 +753,86 @@ describe("incoming live messages", () => {
     chat.dispose();
   });
 });
+
+
+describe("reacting to messages", () => {
+  async function fixture() {
+    const server = fakeServer();
+    const before = server.receive("Hello");
+    let resolve!: (value: { message: ChatMessage }) => void;
+    let reject!: (reason: Error) => void;
+    const answer = new Promise<{ message: ChatMessage }>((yes, no) => { resolve = yes; reject = no; });
+    const calls: unknown[][] = [];
+    server.api.react = (...args) => { calls.push(args); return answer; };
+    const { store } = await openStore(server);
+    store.setReactionLimits({ maxPerPerson: 3, maxKinds: 20 });
+    const current = () => store.getState().conversations[C].messages[0];
+    return { store, before, resolve, reject, current, calls };
+  }
+  test("shows the reaction before the answer and then uses the server copy", async () => {
+    const f = await fixture();
+    try {
+      const pending = f.store.react(C, f.before.id, "👍");
+      expect(f.current().reactions).toEqual([{ emoji: "👍", count: 1, userIds: [ME.id] }]);
+      expect(f.current().changedSeq).toBe(f.before.changedSeq);
+      expect(f.calls).toEqual([[C, f.before.id, "👍", true]]);
+      const message = { ...f.before, changedSeq: 2, reactions: [{ emoji: "👍", count: 2, userIds: [ME.id, "ava"] }] };
+      f.resolve({ message });
+      await pending;
+      expect(f.current()).toEqual(message);
+    } finally { f.store.dispose(); }
+  });
+  test("failure restores the previous reactions and throws", async () => {
+    const f = await fixture();
+    try {
+      const pending = f.store.react(C, f.before.id, "👍");
+      f.reject(new Error("offline"));
+      await expect(pending).rejects.toThrow("offline");
+      expect(f.current().reactions).toEqual([]);
+      expect(f.current().changedSeq).toBe(f.before.changedSeq);
+    } finally { f.store.dispose(); }
+  });
+  test("a live event during the request wins over its failure", async () => {
+    const f = await fixture();
+    try {
+      const pending = f.store.react(C, f.before.id, "👍");
+      const message = { ...f.before, changedSeq: 2, reactions: [{ emoji: "❤️", count: 1, userIds: ["ava"] }] };
+      f.store.handleEvent({ type: "message.updated", conversationId: C, seq: 2, message });
+      f.reject(new Error("offline"));
+      await expect(pending).rejects.toThrow("offline");
+      expect(f.current()).toEqual(message);
+    } finally { f.store.dispose(); }
+  });
+  test("a later event wins over an older successful response", async () => {
+    const f = await fixture();
+    try {
+      const pending = f.store.react(C, f.before.id, "👍");
+      const message = { ...f.before, changedSeq: 2, reactions: [{ emoji: "❤️", count: 1, userIds: ["ava"] }] };
+      f.store.handleEvent({ type: "message.updated", conversationId: C, seq: 2, message });
+      f.resolve({ message: f.before });
+      await pending;
+      expect(f.current()).toEqual(message);
+    } finally { f.store.dispose(); }
+  });
+  test("clicking mine sends an explicit removal", async () => {
+    const f = await fixture();
+    try {
+      const adding = f.store.react(C, f.before.id, "👍");
+      f.resolve({ message: { ...f.before, changedSeq: 2, reactions: [{ emoji: "👍", count: 1, userIds: [ME.id] }] } });
+      await adding;
+      const removing = f.store.react(C, f.before.id, "👍");
+      expect(f.current().reactions).toEqual([]);
+      expect(f.calls[1]).toEqual([C, f.before.id, "👍", false]);
+      await removing;
+    } finally { f.store.dispose(); }
+  });
+  test("does nothing when the server has no reactions", async () => {
+    const f = await fixture();
+    try {
+      f.store.setReactionLimits(null);
+      await f.store.react(C, f.before.id, "👍");
+      expect(f.calls).toEqual([]);
+      expect(f.current()).toEqual(f.before);
+    } finally { f.store.dispose(); }
+  });
+});

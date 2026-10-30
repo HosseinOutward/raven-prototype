@@ -65,6 +65,12 @@ export interface ChatSystemPayload {
   users?: ChatUser[];
 }
 
+export interface ChatReaction {
+  emoji: string;
+  count: number;
+  userIds: string[];
+}
+
 export interface ChatMessage {
   id: string;
   conversationId: string;
@@ -79,6 +85,7 @@ export interface ChatMessage {
   /** The text, or the caption when there are attachments. May be empty then. */
   body: string;
   attachments?: ChatAttachment[];
+  reactions?: ChatReaction[];
   replyTo?: ChatReplyRef;
   system?: ChatSystemPayload;
   createdAt: string;

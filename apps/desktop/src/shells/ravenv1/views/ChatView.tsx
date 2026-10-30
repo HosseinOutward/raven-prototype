@@ -12,7 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
 import { notifies } from "@/lib/chat/notify";
-import { canShow } from "@/lib/chat/attachments";
+import { canShow, reactionLimits } from "@/lib/chat/attachments";
 import { addToTray } from "@/lib/chat/composerTray";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
 import type { ChatStore } from "@/lib/chat/store";
@@ -323,6 +323,7 @@ function OpenConversation({
         <MessageList
           ref={list}
           store={chat}
+          reactionLimits={reactionLimits(data.serverProperties.properties)}
           conversation={conversation}
           me={me}
           windowActive={windowActive}

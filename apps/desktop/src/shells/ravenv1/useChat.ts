@@ -3,7 +3,7 @@ import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
 import { capabilitiesOf } from "@/lib/permissions";
 import { discard, readVariant, sweep } from "@/lib/chat/attachmentPrep";
-import { attachmentLimits, canSendImages, type AttachmentLimits } from "@/lib/chat/attachments";
+import { attachmentLimits, reactionLimits, canSendImages, type AttachmentLimits } from "@/lib/chat/attachments";
 import { chatApi } from "@/lib/chat/chatApi";
 import { chatTray, setAttachmentsReady } from "@/lib/chat/composerTray";
 import { seedAttachment } from "@/lib/chat/media";
@@ -66,6 +66,10 @@ export function useChat(data: RavenShellData): ChatStore | null {
     // The display name is only used for messages shown before the server answers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, available, sessionExpired]);
+
+  useEffect(() => {
+    store?.setReactionLimits(reactionLimits(data.serverProperties.properties));
+  }, [store, data.serverProperties.properties]);
 
   // The dot on the taskbar icon and on the tray icon.
   useEffect(() => {

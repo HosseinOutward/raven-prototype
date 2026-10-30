@@ -1,11 +1,15 @@
 import { memo, useState } from "react";
-import { AlertCircle, Check, CheckCheck, Clock, Copy, CornerUpLeft, Download, EyeOff, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { AlertCircle, Check, CheckCheck, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, MoreHorizontal, Pencil, SmilePlus, Trash2 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { canShow, messageExcerpt, onlyPictures } from "@/lib/chat/attachments";
+import type { ReactionLimits } from "@/lib/chat/attachments";
+import { QUICK_REACTIONS } from "@/lib/chat/reactions";
+import { failureText } from "@/lib/chat/errors";
 import { saveAttachment } from "@/lib/chat/imageActions";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
 import { emojiOnlyCount } from "@/lib/chat/format";
@@ -14,6 +18,8 @@ import { clockTime, fullTime } from "@/lib/chat/time";
 import type { ChatAttachment, ChatMessage, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
+import { EmojiPicker } from "./EmojiPicker";
+import { Reactions } from "./Reactions";
 import { MessageText } from "./MessageText";
 
 /** What stands above a message without being part of it. */
@@ -69,6 +75,9 @@ export interface MessageRowProps {
   /** The current copy of the message this replies to, when it is loaded. */
   parent?: ChatMessage;
   canReply: boolean;
+  reactionLimits?: ReactionLimits | null;
+  nameOf?: (id: string) => string;
+  onReact?: (emoji: string) => Promise<void>;
   canEdit: boolean;
   canDeleteForEveryone: boolean;
   dayHeading?: string;
@@ -111,6 +120,8 @@ function MessageMeta({ message, mine, deleted, status, overImage, alignStart }: 
 export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const { message, mine, showSender, continuation, status, parent } = props;
   const [menuOpen, setMenuOpen] = useState(false);
+  const [reactionOpen, setReactionOpen] = useState(false);
+  const [fullPicker, setFullPicker] = useState(false);
 
   if (message.kind === "system") {
     return (
@@ -152,8 +163,38 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
     );
   };
 
+  const canReact = Boolean(props.reactionLimits && props.canReply && !deleted && props.onReact);
+  const react = (emoji: string) => {
+    setReactionOpen(false);
+    setMenuOpen(false);
+    void props.onReact?.(emoji).catch((failure: unknown) => toast({ title: failureText(failure, "Couldn’t react to that."), tone: "error" }));
+  };
+  const yours = (emoji: string) => message.reactions?.some((reaction) => reaction.emoji === emoji && reaction.userIds.includes(props.me));
+  const chips = !deleted && props.reactionLimits && message.reactions?.length ? <Reactions
+    reactions={message.reactions} me={props.me} mine={mine} limits={props.reactionLimits}
+    canSend={props.canReply} nameOf={props.nameOf ?? (() => "Someone")} onReact={react}
+  /> : null;
+
   const actions = (
-    <div className={cn("flex shrink-0 items-center self-center", menuOpen ? "visible" : "invisible group-focus-within:visible group-hover:visible")}>
+    <div className={cn("flex shrink-0 items-center self-center", menuOpen || reactionOpen ? "opacity-100" : "pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100")}>
+      {canReact ? <Popover open={reactionOpen} onOpenChange={(open) => { setReactionOpen(open); if (open) setFullPicker(false); }}>
+        <Tooltip label="React"><PopoverTrigger asChild>
+          <button type="button" aria-label="React" className="flex h-7 w-7 items-center justify-center rounded-control text-subtle transition-colors hover:bg-secondary hover:text-foreground"><SmilePlus className="h-4 w-4" /></button>
+        </PopoverTrigger></Tooltip>
+        <PopoverContent side="top" align={mine ? "end" : "start"} className="w-auto p-0">
+          {fullPicker ? <EmojiPicker autoFocus onPick={react} /> : <div className="flex p-1" onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+            event.preventDefault();
+            const buttons = Array.from(event.currentTarget.querySelectorAll("button"));
+            const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            const step = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+            buttons[(index + step + buttons.length) % buttons.length]?.focus();
+          }}>
+            {QUICK_REACTIONS.map((emoji) => <button key={emoji} type="button" aria-label={`React with ${emoji}`} aria-pressed={Boolean(yours(emoji))} onClick={() => react(emoji)} className={cn("flex h-9 w-9 items-center justify-center rounded-control text-[22px] leading-none hover:bg-secondary", yours(emoji) && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/40")}>{emoji}</button>)}
+            <button type="button" aria-label="More emoji" onClick={() => setFullPicker(true)} className="flex h-9 w-9 items-center justify-center rounded-control text-muted-foreground hover:bg-secondary"><ChevronDown className="h-4 w-4" /></button>
+          </div>}
+        </PopoverContent>
+      </Popover> : null}
       {props.canReply && !deleted ? (
         <Tooltip label="Reply">
           <button type="button" aria-label="Reply" onClick={() => props.onReply(message)} className="flex h-7 w-7 items-center justify-center rounded-control text-subtle transition-colors hover:bg-secondary hover:text-foreground">
@@ -168,6 +209,19 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align={mine ? "end" : "start"}>
+          {canReact ? <>
+            <div className="flex" onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              event.stopPropagation();
+              const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+              const index = items.indexOf(document.activeElement as HTMLElement);
+              items[(index + (event.key === "ArrowLeft" ? -1 : 1) + items.length) % items.length]?.focus();
+            }}>
+              {QUICK_REACTIONS.map((emoji) => <DropdownMenuItem key={emoji} aria-label={`React with ${emoji}`} onSelect={() => react(emoji)} className={cn("h-8 w-8 justify-center p-0 text-[22px] leading-none", yours(emoji) && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/40")}>{emoji}</DropdownMenuItem>)}
+            </div>
+            <DropdownMenuSeparator />
+          </> : null}
           {props.canReply && !deleted ? (
             <DropdownMenuItem onSelect={() => props.onReply(message)}>
               <CornerUpLeft className="text-muted-foreground" />
@@ -230,6 +284,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
             {bareEmoji ? <>
               <MessageText body={message.body} />
+              {chips}
               <MessageMeta message={message} mine={mine} deleted={deleted} status={status} alignStart={!mine} />
             </> : <MessageAttachments
               conversationId={message.conversationId}
@@ -238,6 +293,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               onOpen={(attachment) => props.onOpenImage(message, attachment)}
               footer={<MessageMeta message={message} mine={mine} deleted={deleted} status={status} overImage />}
             />}
+            {!bareEmoji ? chips : null}
           </div>
         ) : (
           <div
@@ -264,6 +320,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             ) : hasText ? (
               <MessageText body={message.body} />
             ) : null}
+            {chips}
             <MessageMeta message={message} mine={mine} deleted={deleted} status={status} />
           </div>
         )}

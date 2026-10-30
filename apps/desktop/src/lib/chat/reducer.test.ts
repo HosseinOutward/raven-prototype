@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyChanges,
+  setReactionsLocally,
   applyEvent,
   applyList,
   applyOwnMessage,
@@ -490,5 +491,33 @@ describe("small things", () => {
     expect(unreadLabel(7)).toBe("7");
     expect(unreadLabel(UNREAD_CAP)).toBe("99+");
     expect(unreadLabel(UNREAD_CAP + 50)).toBe("99+");
+  });
+});
+
+
+describe("optimistic reactions", () => {
+  const reactions = [{ emoji: "👍", count: 1, userIds: [ME] }];
+  test("the local toggle keeps all revisions, activity, read state and preview", () => {
+    const start = chat({ lastSeq: 1, lastMessage: preview(1) }, [message(1)]);
+    const next = setReactionsLocally(start, C, "m1", reactions);
+    expect(next.conversations[C].messages[0].reactions).toEqual(reactions);
+    expect(next.conversations[C].messages[0].changedSeq).toBe(1);
+    expect(next.conversations[C].syncedSeq).toBe(start.conversations[C].syncedSeq);
+    expect(next.conversations[C].summary).toBe(start.conversations[C].summary);
+    expect(setReactionsLocally(start, C, "missing", reactions)).toBe(start);
+  });
+  test("a higher server revision replaces optimism without bumping the conversation", () => {
+    const start = chat({ lastSeq: 1, lastMessage: preview(1) }, [message(1)]);
+    const optimistic = setReactionsLocally(start, C, "m1", reactions);
+    const server = message(1, { changedSeq: 2, reactions: [{ emoji: "❤️", count: 1, userIds: [AVA] }] });
+    const next = applyEvent(optimistic, { type: "message.updated", conversationId: C, seq: 2, message: server }, NOW).state;
+    expect(next.conversations[C].messages[0]).toEqual(server);
+    expect(next.conversations[C].summary.lastActivityMs).toBe(start.conversations[C].summary.lastActivityMs);
+    expect(next.conversations[C].summary.unreadCount).toBe(start.conversations[C].summary.unreadCount);
+  });
+  test("an idempotent server answer at the same revision also corrects optimism", () => {
+    const optimistic = setReactionsLocally(chat({ lastSeq: 1 }, [message(1)]), C, "m1", reactions);
+    const next = applyOwnMessage(optimistic, message(1)).state;
+    expect(next.conversations[C].messages[0].reactions).toBeUndefined();
   });
 });

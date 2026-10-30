@@ -26,6 +26,7 @@ import {
   type ChatMessage,
   type ChatMessagePreview,
   type ChatPage,
+  type ChatReaction,
   type ChatSettings,
   type ChatState,
   type ConversationState,
@@ -105,8 +106,8 @@ function previewOf(message: ChatMessage): ChatMessagePreview {
 export function upsertMessage(messages: ChatMessage[], message: ChatMessage): ChatMessage[] {
   const index = messages.findIndex((candidate) => candidate.id === message.id);
   if (index >= 0) {
-    // An older copy loses; the same version again is the copy already held.
-    if (message.changedSeq <= messages[index].changedSeq) return messages;
+    // Equal revisions can still correct an optimistic reaction; identical copies do nothing.
+    if (message.changedSeq < messages[index].changedSeq || (message.changedSeq === messages[index].changedSeq && JSON.stringify(message.reactions ?? []) === JSON.stringify(messages[index].reactions ?? []))) return messages;
     const next = messages.slice();
     next[index] = message;
     return next;
@@ -544,6 +545,17 @@ export function markReadLocally(state: ChatState, conversationId: string, seq: n
   const stillUnread = existing.messages.filter((message) => message.seq > readSeq && message.senderId !== state.me && message.kind === "text" && !message.deletedAt).length;
   const unreadCount = readSeq >= existing.summary.lastSeq ? 0 : existing.loaded && !existing.hasMoreAfter ? stillUnread : existing.summary.unreadCount;
   return put(state, { ...existing, summary: { ...existing.summary, readSeq, unreadCount } });
+}
+
+/** Reactions change immediately without pretending the server advanced its revision. */
+export function setReactionsLocally(state: ChatState, conversationId: string, messageId: string, reactions: ChatReaction[]): ChatState {
+  const conversation = state.conversations[conversationId];
+  if (!conversation?.messages.some((message) => message.id === messageId)) return state;
+  const messages = conversation.messages.map((message) => {
+    if (message.id !== messageId) return message;
+    return { ...message, reactions };
+  });
+  return put(state, { ...conversation, messages });
 }
 
 export function removeMessageLocally(state: ChatState, conversationId: string, messageId: string, hideRev: number, unreadCount: number): Reduced {

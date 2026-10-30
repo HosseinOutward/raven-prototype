@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import type { ReactionLimits } from "@/lib/chat/attachments";
 import type { ChatStore } from "@/lib/chat/store";
 import { typingLine } from "@/lib/chat/text";
 import { unreadLabel } from "@/lib/chat/reducer";
@@ -87,6 +88,7 @@ export interface MessageListHandle {
 
 export interface MessageListProps {
   store: ChatStore;
+  reactionLimits?: ReactionLimits | null;
   conversation: ConversationState;
   me: string;
   /** The person can see the window, so what is on screen counts as read. */
@@ -106,7 +108,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage },
+  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -128,6 +130,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
 
   const keys = useMemo(() => rows.map((row) => row.key), [rows]);
   const { firstItemIndex, epoch } = useWindowAnchor(keys);
+  const nameOf = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const message of messages) if (message.senderName && !names.has(message.senderId)) names.set(message.senderId, message.senderName);
+    for (const member of conversation.members) names.set(member.id, member.displayName || member.username);
+    return (id: string) => names.get(id) || "Someone";
+  }, [messages, conversation.members]);
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
 
   const initialIndex = useMemo(() => {
@@ -272,6 +280,9 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 continuation={row.continuation}
                 status={status}
                 parent={message.replyTo ? byId.get(message.replyTo.id) : undefined}
+                reactionLimits={reactionLimits}
+                nameOf={nameOf}
+                onReact={(emoji) => store.react(id, message.id, emoji)}
                 canReply={summary.canSend}
                 canEdit={editable}
                 canDeleteForEveryone={mine || summary.canManage}

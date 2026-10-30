@@ -326,6 +326,13 @@ so a restart does not bring every client back in the same instant.
 
 ## Client
 
+Reactions toggle optimistically, then use the server's message copy; a failed request
+restores the previous chips unless a newer event or toggle has arrived. React opens a
+six-emoji quick row and the full emoji picker, and the message menu (including right-click)
+has the same quick row. Chips show counts and highlight your reactions; clicking toggles
+yours, and tooltips name people using conversation members, then loaded message senders.
+Reactions and controls are hidden when the server has no reaction limits.
+
 Twemoji is bundled as a color font for consistent emoji on Windows and Linux, including
 flags on Windows. Messages of one to three emoji appear large without a bubble unless
 they include a reply or attachments. The composer has a searchable emoji picker with

@@ -56,6 +56,7 @@ export interface ChatApi {
   /** Stores the bytes of one variant. Uploading one the server already has is harmless. */
   uploadVariant(id: string, attachmentId: string, variant: string, bytes: ArrayBuffer | Blob, contentType: string): Promise<AttachmentUploadState>;
   fetchVariant(id: string, attachmentId: string, variant: string): Promise<Blob>;
+  react(id: string, messageId: string, emoji: string, add: boolean): Promise<{ message: ChatMessage }>;
   edit(id: string, messageId: string, body: string): Promise<{ message: ChatMessage }>;
   deleteForEveryone(id: string, messageId: string): Promise<{ message: ChatMessage }>;
   deleteForMe(id: string, messageId: string): Promise<{ hideRev: number; unreadCount: number }>;
@@ -103,6 +104,7 @@ export const chatApi: ChatApi = {
   uploadVariant: (id, attachmentId, variant, bytes, contentType) =>
     api.call(variantPath(id, attachmentId, variant), { method: "PUT", headers: { "Content-Type": contentType }, body: bytes }),
   fetchVariant: (id, attachmentId, variant) => api.callBlob(variantPath(id, attachmentId, variant)),
+  react: (id, messageId, emoji, add) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}/reactions`, json({ emoji, add })),
   edit: (id, messageId, body) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}/edit`, json({ body })),
   deleteForEveryone: (id, messageId) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}?for=everyone`, { method: "DELETE" }),
   deleteForMe: (id, messageId) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}?for=me`, { method: "DELETE" }),

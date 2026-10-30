@@ -53,6 +53,19 @@ export function attachmentLimits(properties: Record<string, unknown> | undefined
   return { kinds, sources, maxPerMessage: Math.floor(raw.maxPerMessage) };
 }
 
+export interface ReactionLimits {
+  maxPerPerson: number;
+  maxKinds: number;
+}
+
+/** Missing or malformed limits mean this server does not support reactions. */
+export function reactionLimits(properties: Record<string, unknown> | undefined): ReactionLimits | null {
+  const chat = properties?.chat;
+  const raw = isRecord(chat) ? chat.reactions : undefined;
+  if (!isRecord(raw) || !isPositive(raw.maxPerPerson) || !Number.isInteger(raw.maxPerPerson) || !isPositive(raw.maxKinds) || !Number.isInteger(raw.maxKinds)) return null;
+  return { maxPerPerson: raw.maxPerPerson, maxKinds: raw.maxKinds };
+}
+
 /** Whether images can be sent to this server. */
 export function canSendImages(limits: AttachmentLimits | null): limits is AttachmentLimits {
   return Boolean(limits?.kinds.image && limits.sources.includes("stored"));
