@@ -7,6 +7,7 @@
 // read it through `useSyncExternalStore`, so a new message re-renders the conversation it
 // belongs to and nothing else.
 
+import { modeFor } from "./notify";
 import type { ChatApi } from "./chatApi";
 import { httpStatusOf } from "./errors";
 import {
@@ -116,6 +117,8 @@ function isNotFound(error: unknown): boolean {
 
 export class ChatStore {
   private state: ChatState;
+  private readonly incoming = new Set<(message: ChatMessage) => void>();
+  private readonly incomingIds = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private readonly api: ChatApi;
   private readonly me: ChatUser;
@@ -188,6 +191,11 @@ export class ChatStore {
     };
   };
 
+  onIncoming(listener: (message: ChatMessage) => void): () => void {
+    this.incoming.add(listener);
+    return () => { this.incoming.delete(listener); };
+  }
+
   private set(next: ChatState) {
     if (next === this.state || this.disposed) return;
     const pendingChanged = this.storage && this.pendingOf(next) !== this.pendingOf(this.state);
@@ -237,8 +245,16 @@ export class ChatStore {
 
   handleEvent(event: ChatEvent) {
     if (this.disposed || !event || typeof event.type !== "string") return;
+    const message = event.type === "message.created" ? event.message : undefined;
+    const fresh = message && !this.incomingIds.has(message.id) && !this.state.conversations[event.conversationId]?.messages.some((item) => item.id === message.id);
+    if (message) {
+      this.incomingIds.add(message.id);
+      // Bound deduplication for conversations whose messages are not loaded.
+      if (this.incomingIds.size > 2000) this.incomingIds.delete(this.incomingIds.values().next().value!);
+    }
     if (this.listFetching && event.conversationId) this.listDirty.add(event.conversationId);
     this.apply(applyEvent(this.state, event, this.now(), this.atBottom.get(event.conversationId) ?? true));
+    if (fresh) for (const listener of this.incoming) listener(message);
     if (event.type === "conversation.removed") this.forget(event.conversationId);
   }
 
@@ -805,6 +821,11 @@ export class ChatStore {
     this.forget(conversationId);
   }
 
+  async setNotify(conversationId: string, on: boolean) {
+    const summary = this.state.conversations[conversationId]?.summary;
+    if (summary) this.take(await this.api.setNotify(conversationId, modeFor(summary.kind, on)));
+  }
+
   async setArchived(conversationId: string, archived: boolean) {
     this.take(await this.api.setArchived(conversationId, archived));
   }
@@ -879,6 +900,8 @@ export class ChatStore {
       if (timer) clearTimeout(timer);
     }
     this.listeners.clear();
+    this.incoming.clear();
+    this.incomingIds.clear();
     if (signingOut && this.storage) clearOutbox(this.storage, this.me.id);
   }
 }

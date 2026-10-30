@@ -358,6 +358,7 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 		avatar = serverAvatarRoute(storedAvatar)
 	}
 	chat := map[string]any{"version": chatProtocolVersion, "maxMessageLength": chatMaxBodyRunes, "editWindowSeconds": int(chatEditWindow.Seconds()), "maxGroupMembers": chatMaxGroupMembers}
+	chat["notifications"] = true
 	if attachments := s.chatAttachmentCapabilities(); attachments != nil {
 		chat["attachments"] = attachments
 	}

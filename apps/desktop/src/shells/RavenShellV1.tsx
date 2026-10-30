@@ -20,6 +20,7 @@ import { useRavenMediaAdapter } from "./ravenv1/useRavenMediaAdapter";
 import { useNestEntry } from "./ravenv1/useNestEntry";
 import { useEntryToasts } from "./ravenv1/useEntryToasts";
 import { connectedPeerIds } from "@/lib/callArrivals";
+import { useMessageNotifications } from "./ravenv1/useMessageNotifications";
 import { useChat } from "./ravenv1/useChat";
 import { audioCommands } from "@/lib/audio";
 import { useRavenUpdater } from "@/lib/updater";
@@ -113,6 +114,7 @@ export function RavenShellV1() {
   );
   const entryToasts = useEntryToasts(activeEntryNotices, activeConnectedPeers);
   const view = history.entries[history.index] ?? { kind: "home" };
+  useMessageNotifications(chat, data, view);
   const canGoBack = history.index > 0;
   const canGoForward = history.index < history.entries.length - 1;
 

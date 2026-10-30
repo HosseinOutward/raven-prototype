@@ -2,21 +2,26 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Knock } from "./api";
 
 /**
- * Operating-system notifications, kept per device. Only profile knocks for now; when
- * message notifications come they get their own switch here.
+ * Operating-system notifications, kept per device.
  */
 export interface NotificationSettings {
   knocks: boolean;
+  messages: boolean;
+  messageText: boolean;
 }
 
 const SETTINGS_KEY = "raven.notificationSettings";
 
-export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = { knocks: false };
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = { knocks: false, messages: false, messageText: true };
 
 export function loadNotificationSettings(storage: Pick<Storage, "getItem"> = localStorage): NotificationSettings {
   try {
     const parsed = JSON.parse(storage.getItem(SETTINGS_KEY) ?? "null") as Partial<NotificationSettings> | null;
-    return { knocks: parsed?.knocks === true };
+    return {
+      knocks: typeof parsed?.knocks === "boolean" ? parsed.knocks : false,
+      messages: typeof parsed?.messages === "boolean" ? parsed.messages : false,
+      messageText: typeof parsed?.messageText === "boolean" ? parsed.messageText : true,
+    };
   } catch {
     return { ...DEFAULT_NOTIFICATION_SETTINGS };
   }
@@ -54,6 +59,7 @@ export function newProfileKnocks(seen: SeenKnocks | null, userId: string, knocks
 }
 
 export const notificationCommands = {
+  notifyMessage: (title: string, body: string) => invoke<boolean>("notify_message", { title, body }),
   supported: () => invoke<boolean>("notifications_supported"),
   /** Resolves to whether a notification was shown: none while Raven is in front. */
   notifyKnock: (title: string, body: string) => invoke<boolean>("notify_knock", { title, body }),

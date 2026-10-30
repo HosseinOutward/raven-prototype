@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Archive, ArchiveRestore, Eraser, Hand, ImagePlus, LogIn, LogOut, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
+import { Archive, ArchiveRestore, Bell, BellOff, Eraser, Hand, ImagePlus, LogIn, LogOut, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
 import { GroupPeopleDialog, RenameDialog } from "@/components/chat/ChatDialogs";
 import { ImageViewer } from "@/components/chat/ImageViewer";
 import { Composer } from "@/components/chat/Composer";
@@ -11,6 +11,7 @@ import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
+import { notifies } from "@/lib/chat/notify";
 import { canShow } from "@/lib/chat/attachments";
 import { addToTray } from "@/lib/chat/composerTray";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
@@ -287,6 +288,12 @@ function OpenConversation({
                   <DropdownMenuItem onSelect={() => void chat.setArchived(id, !summary.archived).catch(report("Couldn’t change that."))}>
                     {summary.archived ? <ArchiveRestore className="text-muted-foreground" /> : <Archive className="text-muted-foreground" />}
                     {summary.archived ? "Move out of archive" : "Archive"}
+                  </DropdownMenuItem>
+                ) : null}
+                {(data.serverProperties.properties?.chat as { notifications?: boolean } | undefined)?.notifications === true ? (
+                  <DropdownMenuItem onSelect={() => void chat.setNotify(id, !notifies(summary.kind, summary.notify)).catch(report("Couldn’t change that."))}>
+                    {notifies(summary.kind, summary.notify) ? <BellOff className="text-muted-foreground" /> : <Bell className="text-muted-foreground" />}
+                    {notifies(summary.kind, summary.notify) ? "Mute notifications" : "Turn on notifications"}
                   </DropdownMenuItem>
                 ) : null}
                 <DropdownMenuSeparator />

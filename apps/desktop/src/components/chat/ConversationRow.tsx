@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Hash, Users } from "lucide-react";
+import { BellOff, Hash, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { api } from "@/lib/api";
 import { unreadLabel } from "@/lib/chat/reducer";
@@ -33,6 +33,11 @@ export function UnreadDot({ className, label = "Unread messages" }: { className?
  */
 export function GroupIndicator({ className }: { className?: string }) {
   return <Users role="img" aria-label="Group" className={cn("h-3.5 w-3.5 shrink-0 text-subtle", className)} />;
+}
+
+/** Explicitly muted people and groups; silence is normal for a text nest. */
+export function MutedIndicator({ conversation }: { conversation?: ChatConversation }) {
+  return conversation?.kind !== "nest" && conversation?.notify === "off" ? <BellOff role="img" aria-label="Muted" className="h-3 w-3 shrink-0 text-subtle" /> : null;
 }
 
 /** The picture for a conversation: the other person, the group's initials, or a text nest's mark. */
@@ -78,6 +83,7 @@ export const ConversationRowCompact = memo(function ConversationRowCompact({
       <span className={cn("min-w-0 flex-1 truncate text-small", unread || active ? "font-medium text-foreground" : "text-muted-foreground")}>
         <bdi>{conversation.name}</bdi>
       </span>
+      <MutedIndicator conversation={conversation} />
       {conversation.kind === "group" ? <GroupIndicator /> : null}
       <UnreadCount count={conversation.unreadCount} />
     </button>
@@ -102,6 +108,7 @@ export const ConversationRow = memo(function ConversationRow({
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
           <span className={cn("min-w-0 flex-1 truncate text-body", unread ? "font-semibold" : "font-medium")}><bdi>{conversation.name}</bdi></span>
+          <MutedIndicator conversation={conversation} />
           {conversation.kind === "group" ? <GroupIndicator className="self-center" /> : null}
           <time className="shrink-0 text-caption tabular-nums text-subtle">{listTime(conversation.lastActivityMs)}</time>
         </span>

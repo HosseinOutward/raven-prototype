@@ -24,8 +24,8 @@ export function NotificationSettingsPanel() {
   if (supported === null) return null;
   if (!supported) return <SettingsHint>Notifications work on Windows only for now.</SettingsHint>;
 
-  const setKnocks = (knocks: boolean) => {
-    const next = { ...settings, knocks };
+  const set = (patch: Partial<NotificationSettings>) => {
+    const next = { ...settings, ...patch };
     setSettings(next);
     saveNotificationSettings(next);
   };
@@ -36,7 +36,20 @@ export function NotificationSettingsPanel() {
         label="Knocks"
         description="Show a Windows notification when someone knocks on you while Raven is in the background. Do not disturb silences it."
         checked={settings.knocks}
-        onChange={setKnocks}
+        onChange={(knocks) => set({ knocks })}
+      />
+      <SettingsToggleRow
+        label="Messages"
+        description="Show a Windows notification for new messages while Raven is in the background. Muted conversations and Do not disturb stay quiet."
+        checked={settings.messages}
+        onChange={(messages) => set({ messages })}
+      />
+      <SettingsToggleRow
+        label="Show message text"
+        description="Include the start of the message. Off shows only who it’s from."
+        checked={settings.messageText}
+        disabled={!settings.messages}
+        onChange={(messageText) => set({ messageText })}
       />
     </SettingsRows>
   );

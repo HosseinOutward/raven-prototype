@@ -29,6 +29,9 @@ describe("sound cue settings", () => {
   it("default to everything on", () => {
     expect(normalizeSoundCueSettings(undefined)).toEqual(DEFAULT_SOUND_CUE_SETTINGS);
     expect(DEFAULT_SOUND_CUE_SETTINGS.enabled).toBe(true);
+    expect(normalizeSoundCueSettings({ knocks: false }).messages).toBe(true);
+    expect(normalizeSoundCueSettings({ messages: false }).messages).toBe(false);
+    expect(normalizeSoundCueSettings({ messages: "yes" }).messages).toBe(true);
   });
 
   it("keep what was chosen and repair the rest", () => {

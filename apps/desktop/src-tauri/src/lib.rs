@@ -184,6 +184,7 @@ pub fn run() {
             thumbnail_toolbar::thumbnail_toolbar_update,
             notifications::notifications_supported,
             notifications::notify_knock,
+            notifications::notify_message,
             tray::tray_update,
             tray::tray_set_unread,
             tray::tray_get_settings,

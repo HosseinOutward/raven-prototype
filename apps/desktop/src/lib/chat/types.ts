@@ -122,6 +122,7 @@ export interface ChatConversation {
   hideRev: number;
   visibleFromSeq: number;
   archived: boolean;
+  notify?: import("./notify").NotifyMode;
   createdAt: string;
 }
 

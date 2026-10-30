@@ -397,6 +397,7 @@ export type SoundCue =
   | "mute"
   | "unmute"
   | "profileKnock"
+  | "message"
   | "shareStarted"
   | "shareStopped"
   | "personJoined"
@@ -410,6 +411,7 @@ export interface SoundCueSettings {
   volume: number;
   microphone: boolean;
   knocks: boolean;
+  messages: boolean;
   screenShares: boolean;
   people: boolean;
   entryHeadsUp: boolean;

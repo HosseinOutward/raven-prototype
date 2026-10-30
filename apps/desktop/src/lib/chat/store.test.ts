@@ -702,3 +702,54 @@ describe("sending images", () => {
     store.dispose();
   });
 });
+
+
+describe("incoming live messages", () => {
+  test("does not replay messages already fetched when an event repeats", async () => {
+    const server = fakeServer();
+    const message = server.receive("while disconnected");
+    const chat = new ChatStore({ api: server.api, me: ME });
+    const received: ChatMessage[] = [];
+    chat.onIncoming((item) => received.push(item));
+    await chat.openConversation(C);
+    chat.handleEvent({ type: "message.created", conversationId: C, message, seq: message.seq });
+    expect(received).toEqual([]);
+    chat.dispose();
+  });
+
+  test("changing notification choice applies the returned summary", async () => {
+    const server = fakeServer();
+    const chat = new ChatStore({ api: server.api, me: ME });
+    await chat.openConversation(C);
+    const modes: string[] = [];
+    server.api.setNotify = async (_id, mode) => {
+      modes.push(mode);
+      return { conversation: { ...chat.getState().conversations[C].summary, notify: mode } };
+    };
+    await chat.setNotify(C, false);
+    expect(chat.getState().conversations[C].summary.notify).toBe("off");
+    await chat.setNotify(C, true);
+    expect(chat.getState().conversations[C].summary.notify).toBe("default");
+    expect(modes).toEqual(["off", "default"]);
+    chat.dispose();
+  });
+
+  test("notifies once for an unloaded conversation, never for updates or catch-up", async () => {
+    const server = fakeServer();
+    const chat = new ChatStore({ api: server.api, me: ME });
+    const received: string[] = [];
+    const off = chat.onIncoming((message) => received.push(message.id));
+    const message = server.receive("hello");
+    chat.handleEvent({ type: "message.created", conversationId: C, message, seq: message.seq });
+    chat.handleEvent({ type: "message.created", conversationId: C, message, seq: message.seq });
+    chat.handleEvent({ type: "message.updated", conversationId: C, message: { ...message, body: "edited" }, seq: message.seq });
+    expect(received).toEqual([message.id]);
+    await chat.openConversation(C);
+    expect(received).toEqual([message.id]);
+    off();
+    const next = server.receive("another");
+    chat.handleEvent({ type: "message.created", conversationId: C, message: next, seq: next.seq });
+    expect(received).toEqual([message.id]);
+    chat.dispose();
+  });
+});

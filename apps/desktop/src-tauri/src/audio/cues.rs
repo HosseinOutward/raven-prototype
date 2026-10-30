@@ -33,6 +33,8 @@ pub enum SoundCue {
     Unmute,
     /// Someone knocked on your profile.
     ProfileKnock,
+    /// A message arrived in a conversation you aren't looking at.
+    Message,
     /// Someone in your room started sharing their screen.
     ShareStarted,
     /// A screen share in your room ended.
@@ -50,6 +52,7 @@ pub enum SoundCue {
 pub(crate) enum CueGroup {
     Microphone,
     Knock,
+    Message,
     Share,
     Presence,
     HeadsUp,
@@ -60,6 +63,7 @@ impl SoundCue {
         match self {
             SoundCue::Mute | SoundCue::Unmute => CueGroup::Microphone,
             SoundCue::ProfileKnock => CueGroup::Knock,
+            SoundCue::Message => CueGroup::Message,
             SoundCue::ShareStarted | SoundCue::ShareStopped => CueGroup::Share,
             SoundCue::PersonJoined | SoundCue::PersonLeft => CueGroup::Presence,
             SoundCue::EntryHeadsUp => CueGroup::HeadsUp,
@@ -75,7 +79,10 @@ impl SoundCue {
     /// Cues that still make sense outside a call. They play on a one-off stream when the
     /// call's speaker is not open.
     pub(crate) fn plays_outside_call(self) -> bool {
-        matches!(self, SoundCue::ProfileKnock | SoundCue::EntryHeadsUp)
+        matches!(
+            self,
+            SoundCue::ProfileKnock | SoundCue::EntryHeadsUp | SoundCue::Message
+        )
     }
 
     /// A repeat of the same cue sooner than this is dropped: two people joining together,
@@ -87,7 +94,7 @@ impl SoundCue {
             CueGroup::Microphone => Duration::ZERO,
             CueGroup::Presence => Duration::from_millis(900),
             CueGroup::Share => Duration::from_millis(600),
-            CueGroup::Knock | CueGroup::HeadsUp => Duration::from_millis(1500),
+            CueGroup::Message | CueGroup::Knock | CueGroup::HeadsUp => Duration::from_millis(1500),
         }
     }
 }
@@ -106,6 +113,7 @@ pub struct SoundCueSettings {
     pub volume: f32,
     pub microphone: bool,
     pub knocks: bool,
+    pub messages: bool,
     pub screen_shares: bool,
     pub people: bool,
     pub entry_heads_up: bool,
@@ -118,6 +126,7 @@ impl Default for SoundCueSettings {
             volume: DEFAULT_CUE_VOLUME,
             microphone: true,
             knocks: true,
+            messages: true,
             screen_shares: true,
             people: true,
             entry_heads_up: true,
@@ -144,6 +153,7 @@ impl SoundCueSettings {
         match cue.group() {
             CueGroup::Microphone => self.microphone,
             CueGroup::Knock => self.knocks,
+            CueGroup::Message => self.messages,
             CueGroup::Share => self.screen_shares,
             CueGroup::Presence => self.people,
             CueGroup::HeadsUp => self.entry_heads_up,
@@ -251,6 +261,8 @@ const WOOD: &[(f32, f32)] = &[(1.0, 1.0), (2.76, 0.28), (5.4, 0.05)];
 /// Pure sine, as the heads-up chime has always been.
 const PURE: &[(f32, f32)] = &[(1.0, 1.0)];
 
+const F5: f32 = 698.46;
+const C6: f32 = 1046.50;
 const E5: f32 = 659.26;
 const A5: f32 = 880.0;
 const G4: f32 = 392.0;
@@ -287,6 +299,11 @@ fn notes(cue: SoundCue) -> Vec<Note> {
         SoundCue::Mute => vec![
             note(0.0, A5, 150.0, 60.0, 0.8, SOFT),
             note(70.0, E5, 230.0, 90.0, 1.0, SOFT),
+        ],
+        // A quick rising fifth, warm and light: something new to read.
+        SoundCue::Message => vec![
+            note(0.0, F5, 110.0, 45.0, 0.72, BELL),
+            note(70.0, C6, 280.0, 110.0, 0.9, BELL),
         ],
         // Two taps, the second a touch quieter, like knuckles on a door.
         SoundCue::ProfileKnock => vec![
@@ -578,10 +595,11 @@ impl PresenceCues {
 mod tests {
     use super::*;
 
-    const ALL: [SoundCue; 8] = [
+    const ALL: [SoundCue; 9] = [
         SoundCue::Mute,
         SoundCue::Unmute,
         SoundCue::ProfileKnock,
+        SoundCue::Message,
         SoundCue::ShareStarted,
         SoundCue::ShareStopped,
         SoundCue::PersonJoined,
@@ -629,6 +647,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn message_gate_respects_settings_deafen_and_spacing() {
+        let mut gate = CueGate::default();
+        let now = Instant::now();
+        assert!(matches!(
+            gate.admit(SoundCue::Message, now, false, false),
+            CueDecision::Detached(_)
+        ));
+        assert_eq!(
+            gate.admit(
+                SoundCue::Message,
+                now + Duration::from_millis(1499),
+                false,
+                true
+            ),
+            CueDecision::Drop
+        );
+        assert!(matches!(
+            gate.admit(
+                SoundCue::Message,
+                now + Duration::from_millis(1500),
+                false,
+                true
+            ),
+            CueDecision::Mix(_)
+        ));
+        assert_eq!(
+            gate.admit(SoundCue::Message, now + Duration::from_secs(3), true, true),
+            CueDecision::Drop
+        );
+        gate.set_settings(SoundCueSettings {
+            messages: false,
+            ..SoundCueSettings::default()
+        });
+        assert_eq!(
+            gate.admit(
+                SoundCue::Message,
+                now + Duration::from_secs(3),
+                false,
+                false
+            ),
+            CueDecision::Drop
+        );
+        let saved: SoundCueSettings = serde_json::from_str(r#"{"knocks":false}"#).unwrap();
+        assert!(saved.messages);
     }
 
     #[test]

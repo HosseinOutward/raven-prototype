@@ -76,14 +76,22 @@ describe("notification settings", () => {
 
   it("are off by default and survive a save", () => {
     const storage = memory();
-    expect(loadNotificationSettings(storage)).toEqual({ knocks: false });
-    saveNotificationSettings({ knocks: true }, storage);
-    expect(loadNotificationSettings(storage)).toEqual({ knocks: true });
+    expect(loadNotificationSettings(storage)).toEqual({ knocks: false, messages: false, messageText: true });
+    saveNotificationSettings({ knocks: true, messages: true, messageText: false }, storage);
+    expect(loadNotificationSettings(storage)).toEqual({ knocks: true, messages: true, messageText: false });
+  });
+
+  it("loads older settings and repairs each malformed flag independently", () => {
+    const storage = memory();
+    for (const value of [{ knocks: true }, { knocks: true, messages: "yes", messageText: null }]) {
+      storage.setItem("raven.notificationSettings", JSON.stringify(value));
+      expect(loadNotificationSettings(storage)).toEqual({ knocks: true, messages: false, messageText: true });
+    }
   });
 
   it("fall back to off when the stored value is broken", () => {
     const storage = memory();
     storage.setItem("raven.notificationSettings", "{not json");
-    expect(loadNotificationSettings(storage)).toEqual({ knocks: false });
+    expect(loadNotificationSettings(storage)).toEqual({ knocks: false, messages: false, messageText: true });
   });
 });

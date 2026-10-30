@@ -1,6 +1,6 @@
 //! Operating-system notifications for things that reach the user while Raven is in the
-//! background. Today that is only a profile knock; the page decides which knocks are new
-//! and whether the user wants them, and this side decides whether Raven is in front.
+//! background. The page decides what is new and whether the user wants it; this side
+//! decides whether Raven is in front.
 
 /// Whether this build can show a notification at all.
 #[tauri::command]
@@ -12,7 +12,13 @@ pub fn notifications_supported() -> bool {
 /// focused. Returns whether one was shown.
 #[tauri::command]
 pub fn notify_knock(app: tauri::AppHandle, title: String, body: String) -> Result<bool, String> {
-    platform::notify_knock(&app, title.trim(), body.trim())
+    platform::notify(&app, title.trim(), body.trim())
+}
+
+/// Show a message notification while Raven is in the background.
+#[tauri::command]
+pub fn notify_message(app: tauri::AppHandle, title: String, body: String) -> Result<bool, String> {
+    platform::notify(&app, title.trim(), body.trim())
 }
 
 /// The user is looking at Raven only when its main window is shown, not minimised and
@@ -28,7 +34,7 @@ mod platform {
     use tauri::{AppHandle, Manager};
     use tauri_plugin_notification::NotificationExt;
 
-    pub(super) fn notify_knock(app: &AppHandle, title: &str, body: &str) -> Result<bool, String> {
+    pub(super) fn notify(app: &AppHandle, title: &str, body: &str) -> Result<bool, String> {
         if title.is_empty() {
             return Ok(false);
         }
@@ -57,7 +63,7 @@ mod platform {
 mod platform {
     use tauri::AppHandle;
 
-    pub(super) fn notify_knock(
+    pub(super) fn notify(
         _app: &AppHandle,
         _title: &str,
         _body: &str,

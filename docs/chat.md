@@ -23,7 +23,7 @@ These were decided with Soroush on 2026-10-11.
 | Layout | The sidebar stays the live map. One **Friends and groups** section (changed on 2026-10-16, replacing a separate Messages section) has a row per friend, which opens your conversation with them, and a row per recent group; a round avatar with presence is a person, a square one a group. "All conversations" opens the full list. An expanded tree lists its live voice nests, its text nests with unread messages and the open one; the rest are in the tree lobby, where categories and order for voice and text nests are managed. |
 | Who can write to whom | Friends only, for direct messages and for adding to a group. If a friendship ends, the history stays readable and new messages and edits are refused. Deleting your own messages still works. |
 | Read status | Shown to the other person in direct messages only. It is mutual: one setting (Settings › Messages) turns it off in both directions. Groups and text nests never show who has read. Your own read position always syncs across your devices. |
-| Unread | A neutral count on the conversation's own row; a plain dot on tree rows, the collapsed rail and the Windows taskbar icon. No sound and no OS notifications. |
+| Unread | A neutral count on the conversation's own row; a plain dot on tree rows, the collapsed rail and the Windows taskbar icon. A soft sound for new live messages in conversations that notify; optional Windows notifications while Raven is in the background. |
 
 Defaults chosen during the build. Each is one constant or one check to change:
 
@@ -51,7 +51,7 @@ Defaults chosen during the build. Each is one constant or one check to change:
 
 Not in the desktop client yet: attachments (the server supports stored images).
 Not in this version: reactions, mentions, search, forwarding, pinning, link
-previews, an emoji picker (the system picker works), OS notifications, end-to-end
+previews, an emoji picker (the system picker works), end-to-end
 encryption, auto-delete timers, per-nest permissions, and "last seen".
 
 ## Architecture
@@ -167,12 +167,35 @@ Unsent messages are kept per account in local storage. After a restart they come
 marked "Not sent" and wait for the person: they may be hours old, so nothing is resent on
 its own. Signing out on purpose forgets them.
 
+### Message notifications
+
+Direct messages and groups notify by default; text nests only notify when turned on.
+Each conversation's menu offers **Mute notifications** / **Turn on notifications**.
+This choice is per person and syncs across devices. Servers announce support with
+`properties.chat.notifications: true`.
+
+Only new live text messages from someone else notify. Edits, reactions, system notes,
+deleted messages, your own messages and messages fetched after a reconnect stay quiet.
+So do muted conversations, Do not disturb, and the conversation you are looking at in
+the focused window. A friend's first message waits up to five seconds for its conversation
+summary before deciding.
+
+A soft message sound is on by default in Settings › Sounds. It follows the sound volume,
+the Messages switch and deafen in a call, with at most one sound per 1.5 seconds.
+Windows notifications are off by default in Settings › Notifications. When enabled,
+they show only while Raven is in the background, at most once per conversation per
+20 seconds. They show who sent the message and the first non-empty plain-text line
+(up to 120 characters), or the attachment description. **Show message text**, on by
+default, can hide the text. These device settings are separate from the synced mute choice.
+
 ### Per-person state
 
 What is private to one person is state, not a log entry: `read_seq` (only moves forward,
 never past `last_seq`), `shared_read_seq` (what a direct-message peer may see),
 `hide_rev` (bumped by "remove for me"), `visible_from_seq` (the history floor) and
-`archived_at`. History and catch-up responses carry `me: {readSeq, hideRev,
+`archived_at` and `notify` (`''` for the kind's default, `on`, `off`). Summaries send
+`notify: "default" | "on" | "off"`. Changing it publishes `conversation.changed` only to
+the caller's devices and does not advance the conversation sequence. History and catch-up responses carry `me: {readSeq, hideRev,
 visibleFromSeq}`, so a second device notices a change made on the first without refetching
 the list.
 
@@ -184,12 +207,13 @@ focused, the conversation is open and its newest messages are in view.
 
 The base migration, `2026101101_chat`, and additive attachment migration,
 `2026103001_chat_attachments`, create tables without rewriting existing messages.
+`2026103101_chat_notify` adds `chat_members.notify TEXT NOT NULL DEFAULT ''`.
 The SQL runs on PostgreSQL (production) and SQLite (local use and the default test run).
 
 | Table | Holds |
 |---|---|
 | `chat_conversations` | One row per direct message, group or text nest: kind, tree, name, `last_seq`, `last_message_seq`, `last_activity_ms`, status. `dm_key` is unique, so two friends have exactly one direct message. |
-| `chat_members` | Membership and per-person state. Authoritative for direct messages and groups. For text nests access always comes from `tree_members`, and the row only holds the person's read position, hides and archive flag. |
+| `chat_members` | Membership and per-person state. Authoritative for direct messages and groups. For text nests access always comes from `tree_members`, and the row only holds the person's read position, hides, archive flag and notification choice. |
 | `chat_messages` | `seq`, `changed_seq`, sender, `client_message_id`, kind (`text` or `system`), body, reply target, edit and delete marks. Unique on `(conversation_id, seq)` and on `(conversation_id, sender_id, client_message_id)`. |
 | `chat_attachments` | Ordered attachment descriptions, uploader and retry id, conversation, optional message, open `kind`/`source`, dimensions, placeholder and metadata. `message_id` deliberately has no foreign key so bulk message deletes never depend on order. |
 | `chat_attachment_variants` | Named variants declared at create time; an immutable object key and upload time are filled by PUT. All declared variants must have keys before send; a future peer source with no variants is ready immediately. |

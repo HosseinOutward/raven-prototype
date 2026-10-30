@@ -359,6 +359,13 @@ function SoundCueSection({ media, nest }: { media: RavenMediaAdapterState; nest:
           disabled={off}
           onChange={(knocks) => media.setSoundCues({ knocks })}
         />
+        <SettingsToggleRow
+          label="Messages"
+          description="When a message arrives in a conversation you aren’t looking at. Muted conversations and Do not disturb stay quiet."
+          checked={cues.messages}
+          disabled={off}
+          onChange={(messages) => media.setSoundCues({ messages })}
+        />
       </SettingsRows>
     </SettingsSection>
   );

@@ -138,6 +138,7 @@ type ChatMessagePreview struct {
 
 // ChatConversation is a conversation as one person sees it.
 type ChatConversation struct {
+	Notify         string              `json:"notify"`
 	ID             string              `json:"id"`
 	Kind           string              `json:"kind"`
 	Name           string              `json:"name"`
@@ -191,6 +192,7 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	conversation.Post("/settings", s.chatLimiter("rename", 30, time.Hour), s.chatRoute("rename", s.updateChatConversation))
 	conversation.Post("/members", s.chatLimiter("add", 60, time.Hour), s.chatRoute("add members", s.addChatMembers))
 	conversation.Delete("/members/:userId", s.chatRoute("remove member", s.removeChatMember))
+	conversation.Post("/notifications", s.chatRoute("notifications", s.setChatNotifications))
 	conversation.Post("/archive", s.chatRoute("archive", s.archiveChatConversation))
 	conversation.Post("/unarchive", s.chatRoute("unarchive", s.unarchiveChatConversation))
 	conversation.Post("/clear", s.chatRoute("clear", s.clearChatConversation))

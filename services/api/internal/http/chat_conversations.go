@@ -23,7 +23,7 @@ func chatSummarySQL(one bool) string {
 		filter = ` AND c.id = ?`
 	}
 	return fmt.Sprintf(`SELECT b.id, b.kind, b.name, b.topic, b.tree_id, b.last_seq, b.last_activity_ms, b.created_at,
-		b.member_role, b.visible_from_seq, b.read_seq, b.hide_rev, b.archived, b.listed, b.tree_role,
+		b.notify, b.member_role, b.visible_from_seq, b.read_seq, b.hide_rev, b.archived, b.listed, b.tree_role,
 		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_is_friend, b.shares_read,
 		b.member_count, b.preview_seq, b.unread_count,
 		COALESCE(pm.id, ''), COALESCE(pm.sender_id, ''), COALESCE(NULLIF(TRIM(pmp.display_name), ''), pmu.username, ''),
@@ -32,6 +32,7 @@ func chatSummarySQL(one bool) string {
 	 FROM (
 		SELECT c.id AS id, c.kind AS kind, c.name AS name, c.topic AS topic, COALESCE(c.tree_id, '') AS tree_id,
 			c.last_seq AS last_seq, c.last_activity_ms AS last_activity_ms, c.created_at AS created_at,
+			CASE WHEN cm.notify = '' THEN 'default' ELSE cm.notify END AS notify,
 			cm.role AS member_role, cm.visible_from_seq AS visible_from_seq, cm.read_seq AS read_seq, cm.hide_rev AS hide_rev,
 			CASE WHEN cm.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
 			CASE WHEN cm.listed THEN 1 ELSE 0 END AS listed,
@@ -109,7 +110,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 		var previewDeleted int
 		if err := rows.Scan(
 			&item.ID, &item.Kind, &item.Name, &item.Topic, &item.TreeID, &item.LastSeq, &item.LastActivityMs, &item.CreatedAt,
-			&memberRole, &item.VisibleFromSeq, &item.ReadSeq, &item.HideRev, &archived, &listed, &treeRole,
+			&item.Notify, &memberRole, &item.VisibleFromSeq, &item.ReadSeq, &item.HideRev, &archived, &listed, &treeRole,
 			&peerID, &peerUsername, &peerName, &peerReadSeq, &peerIsFriend, &sharesRead,
 			&item.MemberCount, &previewSeq, &item.UnreadCount,
 			&preview.ID, &preview.SenderID, &preview.SenderName, &preview.Kind, &previewBody, &previewSystem, &preview.CreatedAt,
@@ -924,6 +925,34 @@ func (s *Server) archiveChatConversation(c *fiber.Ctx) error {
 
 func (s *Server) unarchiveChatConversation(c *fiber.Ctx) error {
 	return s.setChatArchived(c, false)
+}
+
+func (s *Server) setChatNotifications(c *fiber.Ctx) error {
+	user := currentUser(c)
+	conversationID := c.Params("id")
+	access, err := s.chatAccessFor(s.db, conversationID, user.ID)
+	if err != nil {
+		return err
+	}
+	var input struct {
+		Mode string `json:"mode"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return errChatInvalidBody
+	}
+	mode := input.Mode
+	switch mode {
+	case "default":
+		mode = ""
+	case "on", "off":
+	default:
+		return errChatInvalidBody
+	}
+	if _, err := s.db.Exec(`UPDATE chat_members SET notify = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`, mode, database.Now(), conversationID, user.ID); err != nil {
+		return err
+	}
+	s.publishChatEvent(ChatEvent{Type: "conversation.changed", ConversationID: conversationID}, []string{user.ID})
+	return s.chatConversationResponse(c, fiber.StatusOK, user.ID, access)
 }
 
 func (s *Server) setChatArchived(c *fiber.Ctx, archived bool) error {

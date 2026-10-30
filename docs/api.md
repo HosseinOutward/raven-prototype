@@ -332,6 +332,7 @@ POST   /v1/chat/conversations/:id/members
 DELETE /v1/chat/conversations/:id/members/:userId
 POST   /v1/chat/conversations/:id/archive
 POST   /v1/chat/conversations/:id/unarchive
+POST   /v1/chat/conversations/:id/notifications
 POST   /v1/chat/conversations/:id/clear
 GET    /v1/chat/settings
 POST   /v1/chat/settings
@@ -358,7 +359,8 @@ conversation is described as the caller sees it:
   "peerReadSeq": 19,
   "hideRev": 1,
   "visibleFromSeq": 0,
-  "archived": false
+  "archived": false,
+  "notify": "default"
 }
 ```
 
@@ -375,6 +377,16 @@ conversation is described as the caller sees it:
 - `DELETE …/members/:userId` removes someone (owner) or, with the caller's own id, leaves.
 - `DELETE /v1/chat/conversations/:id` deletes a group (owner) or a text Nest (Tree owner or
   moderator) for everyone. `archive`, `unarchive` and `clear` only affect the caller.
+- `POST …/notifications` with `{ "mode": "default" | "on" | "off" }` changes only the
+  caller's notification choice and returns `{ conversation, members }`. Direct messages
+  and groups notify by default; text nests default to quiet. Invalid modes return `400`;
+  missing or inaccessible conversations return the same `404`. No sequence is allocated;
+  only the caller's devices receive `conversation.changed`. Support is announced by
+  `properties.chat.notifications: true`. Older servers omit `notify` from summaries.
+  The desktop plays a soft sound for new live messages outside the focused conversation,
+  respecting mute and Do not disturb. Windows notifications are optional and only shown
+  in the background, with an optional message preview. Sound bursts are spaced by 1.5 s;
+  shown Windows notifications by 20 s per conversation.
 - `POST /v1/chat/settings` with `{ "shareReadStatus": false }`.
 
 Someone who is not in a conversation gets `404` from every one of these routes.

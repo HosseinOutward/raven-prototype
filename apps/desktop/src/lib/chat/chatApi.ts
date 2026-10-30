@@ -1,3 +1,4 @@
+import type { NotifyMode } from "./notify";
 import { api } from "@/lib/api";
 import type {
   ChatAttachment,
@@ -44,6 +45,7 @@ export interface ChatApi {
   deleteConversation(id: string): Promise<void>;
   addMembers(id: string, userIds: string[]): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   removeMember(id: string, userId: string): Promise<void>;
+  setNotify(id: string, mode: NotifyMode): Promise<{ conversation: ChatConversation }>;
   setArchived(id: string, archived: boolean): Promise<{ conversation: ChatConversation }>;
   clearConversation(id: string): Promise<void>;
   messages(id: string, cursor?: { before?: number; after?: number; around?: number; limit?: number }): Promise<ChatPage>;
@@ -83,6 +85,7 @@ export const chatApi: ChatApi = {
   deleteConversation: (id) => api.call(conversationPath(id), { method: "DELETE" }),
   addMembers: (id, userIds) => api.call(`${conversationPath(id)}/members`, json({ userIds })),
   removeMember: (id, userId) => api.call(`${conversationPath(id)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" }),
+  setNotify: (id, mode) => api.call(`${conversationPath(id)}/notifications`, json({ mode })),
   setArchived: (id, archived) => api.call(`${conversationPath(id)}/${archived ? "archive" : "unarchive"}`, { method: "POST" }),
   clearConversation: (id) => api.call(`${conversationPath(id)}/clear`, { method: "POST" }),
   messages: (id, cursor = {}) => {
