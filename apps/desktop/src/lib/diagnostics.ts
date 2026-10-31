@@ -20,7 +20,13 @@ export function logUiError(kind: string, error: unknown, componentStack?: string
 
 /** Errors that escape React entirely: event handlers, timers, rejected promises. */
 export function installGlobalErrorLogging() {
-  window.addEventListener("error", (event) => logUiError("window error", event.error ?? event.message));
+  window.addEventListener("error", (event) => {
+    // A browser notice, not a thrown error: the chat list measures rows in the frame they
+    // change (`skipAnimationFrameInResizeObserver` in MessageList.tsx), which react-virtuoso
+    // documents as producing it. Nothing breaks, so keep it out of the log.
+    if (!event.error && typeof event.message === "string" && event.message.startsWith("ResizeObserver loop")) return;
+    logUiError("window error", event.error ?? event.message);
+  });
   window.addEventListener("unhandledrejection", (event) => logUiError("unhandled rejection", event.reason));
 }
 
