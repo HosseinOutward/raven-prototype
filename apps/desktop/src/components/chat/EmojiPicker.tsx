@@ -40,7 +40,8 @@ export function EmojiPicker({ onPick, autoFocus = false }: { onPick: (emoji: str
   const [query, setQuery] = useState("");
   const [tone, updateTone] = useState(skinTone);
   const [tonesOpen, setTonesOpen] = useState(false);
-  const [recent, setRecent] = useState(recentEmoji);
+  // Read once per open, so a picked emoji stays under the cursor until the picker reopens.
+  const [recent] = useState(recentEmoji);
   const [preview, setPreview] = useState<{ entry: EmojiEntry; emoji: string }>();
   const [current, setCurrent] = useState("Smileys and people");
   const [active, setActive] = useState(0);
@@ -64,7 +65,7 @@ export function EmojiPicker({ onPick, autoFocus = false }: { onPick: (emoji: str
       name: category.name,
       items: category.name === "Recent" ? recentEntries : (data?.list ?? []).filter((entry) => category.groups.includes(entry.group)).map((entry) => ({ entry, emoji: withTone(entry, tone) })),
     }));
-  const pick = (emoji: string) => { recordEmoji(emoji); setRecent(recentEmoji()); onPick(emoji); };
+  const pick = (emoji: string) => { recordEmoji(emoji); onPick(emoji); };
   const cells = () => Array.from(grid.current?.querySelectorAll<HTMLButtonElement>("button[data-emoji]") ?? []);
   const gridKey = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key.startsWith("Arrow")) {
