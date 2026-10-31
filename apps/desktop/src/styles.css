@@ -13,6 +13,14 @@
   }
 }
 
+/* The bundled emoji font: Twemoji, patched by scripts/patch-twemoji.py so its sequences
+   also match without U+FE0F, which Chromium drops before shaping. */
+@font-face {
+  font-family: "Twemoji";
+  src: url("./assets/fonts/twemoji.woff2") format("woff2");
+  font-display: block;
+}
+
 /* One theme for every Raven window (main, Studio, overlay).
    Chrome is graphite; colour is reserved for people: presence, live and speaking.
    Elevation runs canvas -> surface -> raised, one step each. */

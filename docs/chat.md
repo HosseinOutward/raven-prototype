@@ -334,7 +334,9 @@ yours, and tooltips name people using conversation members, then loaded message 
 Reactions and controls are hidden when the server has no reaction limits.
 
 Twemoji is bundled as a color font for consistent emoji on Windows and Linux, including
-flags on Windows. Messages of one to three emoji appear large without a bubble unless
+flags on Windows. It is a patched copy (`apps/desktop/scripts/patch-twemoji.py`): every
+ligature that contains U+FE0F also matches without it, because Chromium drops the
+selector before shaping, and keycaps and sequences like 🏳️‍🌈 otherwise fall apart. Messages of one to three emoji appear large without a bubble unless
 they include a reply or attachments. The composer has a searchable emoji picker with
 recents and a skin tone preference, plus `:shortcode` suggestions and completion. The
 picker offers emoji through Unicode 15.0, matching the bundled font.

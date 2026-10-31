@@ -18,7 +18,7 @@ func chatReact(t *testing.T, s *Server, person chatPerson, conversationID, messa
 }
 
 func TestValidChatReaction(t *testing.T) {
-	for _, s := range []string{"👍", "❤️", "👍🏽", "👨‍👩‍👧", "🧑🏻‍❤️‍💋‍🧑🏼", "🇮🇷", "🏳️‍🌈", "1️⃣", "🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", "#️⃣", "*️⃣"} {
+	for _, s := range []string{"👍", "❤️", "👍🏽", "👨‍👩‍👧", "🧑🏻‍❤️‍💋‍🧑🏼", "🇮🇷", "🏳️‍🌈", "1️⃣", "🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", "#️⃣", "*️⃣", "©️", "®️", "™️"} {
 		if !validChatReaction(s) {
 			t.Errorf("rejected %q", s)
 		}

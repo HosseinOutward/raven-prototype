@@ -71,6 +71,9 @@ for (const chunk of [bundle].flat().flatMap((result) => result.output)) {
     packageDirs.add(`${path.slice(0, at)}/node_modules/${first.startsWith("@") ? `${first}/${second}` : first}`);
   }
 }
+// The emoji font is bundled from src/assets as a patched copy of this package's font
+// (scripts/patch-twemoji.py), so the bundle never references the package itself.
+packageDirs.add(join(desktop, "node_modules", "twemoji-colr-font").replaceAll("\\", "/"));
 for (const dir of packageDirs) {
   const { name, version, license } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   add(name, version, typeof license === "string" ? license : license?.type ?? "Unknown", dir);

@@ -123,9 +123,12 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
     recordEmoji(emoji); insertEmoji(emoji, token.start, caret);
   };
 
-  // Loading may finish after the closing colon was typed.
+  // Only typing the closing colon completes a `:code:`: moving the caret, pasting or
+  // undoing a completion leaves the text alone. Loading may finish just after the colon.
+  const typedColon = useRef(false);
   useEffect(() => {
-    if (!emojiData) return;
+    if (!emojiData || !typedColon.current) return;
+    typedColon.current = false;
     const complete = completedShortcode(text, caret, emojiData);
     if (!complete) return;
     const entry = emojiData.byShortcode.get(text.slice(complete.start + 1, caret - 1))!;
@@ -280,6 +283,7 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
             const element = event.currentTarget;
             selection.current = { start: element.selectionStart, end: element.selectionEnd };
             setCaret(element.selectionStart); setSuggestionIndex(0); setDismissed(null);
+            typedColon.current = element.value.length === text.length + 1 && element.value[element.selectionStart - 1] === ":";
             if (element.value.includes(":")) void loadEmoji().then(setEmojiData);
             setText(element.value);
             if (event.currentTarget.value.trim() && !editing) onTyping();

@@ -26,7 +26,7 @@ export function Reactions({ reactions, me, mine, limits, canSend, nameOf, onReac
           "inline-flex h-6 items-center gap-1 rounded-full px-2",
           yours ? "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/40" : "bg-foreground/5 text-muted-foreground",
           canSend && !yours && "hover:bg-foreground/10",
-          !seen.current.has(reaction.emoji) && "animate-pop-in [animation-duration:150ms] [animation-name:raven-reaction-in] motion-reduce:animate-none",
+          !seen.current.has(reaction.emoji) && "animate-pop-in [animation-duration:150ms] motion-reduce:animate-none",
         )}>
           <span className="text-[16px] leading-none">{reaction.emoji}</span>
           <span className="text-caption tabular-nums">{reaction.count}</span>

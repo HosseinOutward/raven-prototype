@@ -112,9 +112,9 @@ func validChatReaction(s string) bool {
 			if i != 0 || !strings.ContainsRune(s, '\u20e3') {
 				return false
 			}
-		case r >= 0x203c && r <= 0x3299, r >= 0x1f000 && r <= 0x1faff:
+		case r == 0xa9, r == 0xae, r >= 0x203c && r <= 0x3299, r >= 0x1f000 && r <= 0x1faff:
 			hasEmoji = true
-		case r == 0xa9, r == 0xae, r == 0xfe0f, r == 0x200d, r >= 0xe0020 && r <= 0xe007f:
+		case r == 0xfe0f, r == 0x200d, r >= 0xe0020 && r <= 0xe007f:
 		default:
 			return false
 		}

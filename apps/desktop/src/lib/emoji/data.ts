@@ -41,8 +41,11 @@ export function searchEmoji(data: EmojiData, query: string, limit = 64): EmojiEn
     if (entry.tags.some((tag) => tag.toLowerCase().startsWith(q))) return 2;
     return entry.label.toLowerCase().includes(q) ? 3 : 4;
   };
+  // Among shortcode matches the closest wins: `:hea` offers :heart: before :heart_eyes:.
+  const closeness = (entry: EmojiEntry) => Math.min(...entry.shortcodes.filter((code) => code.toLowerCase().startsWith(q)).map((code) => code.length));
   return data.list.map((entry) => ({ entry, rank: rank(entry) })).filter((item) => item.rank < 4)
-    .sort((a, b) => a.rank - b.rank || a.entry.order - b.entry.order).slice(0, limit).map((item) => item.entry);
+    .sort((a, b) => a.rank - b.rank || (a.rank === 0 ? closeness(a.entry) - closeness(b.entry) : 0) || a.entry.order - b.entry.order)
+    .slice(0, limit).map((item) => item.entry);
 }
 
 export function withTone(entry: EmojiEntry, tone: number): string {

@@ -12,6 +12,7 @@ describe("bundled emoji data", () => {
   });
   test("searches shortcodes, words and tags with exact shortcodes first", () => {
     expect(searchEmoji(data, "heart")[0].emoji).toBe("❤️");
+    expect(searchEmoji(data, ":hea")[0].emoji).toBe("❤️");
     expect(searchEmoji(data, ":+1")[0].emoji).toBe("👍");
     expect(searchEmoji(data, "  :SMI  ", 6).map((entry) => entry.emoji)).toContain("😄");
     expect(searchEmoji(data, "no_such_emoji_123")).toEqual([]);

@@ -148,7 +148,6 @@ type ChatMessagePreview struct {
 
 // ChatConversation is a conversation as one person sees it.
 type ChatConversation struct {
-	Notify         string              `json:"notify"`
 	ID             string              `json:"id"`
 	Kind           string              `json:"kind"`
 	Name           string              `json:"name"`
@@ -170,7 +169,10 @@ type ChatConversation struct {
 	HideRev        int64  `json:"hideRev"`
 	VisibleFromSeq int64  `json:"visibleFromSeq"`
 	Archived       bool   `json:"archived"`
-	CreatedAt      string `json:"createdAt"`
+	// Notify is "default" (on for direct messages and groups, off for text nests), "on"
+	// or "off".
+	Notify    string `json:"notify"`
+	CreatedAt string `json:"createdAt"`
 }
 
 // ChatViewerState is the caller's own position in a conversation. It rides along with
