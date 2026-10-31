@@ -93,7 +93,7 @@ export interface MessageRowProps {
 }
 
 /** The time, and for my own messages whether it has been read. */
-function MessageMeta({ message, mine, deleted, status, overImage, alignStart }: { message: ChatMessage; mine: boolean; deleted: boolean; status?: DeliveryStatus; overImage?: boolean; alignStart?: boolean }) {
+function MessageMeta({ message, mine, deleted, status, overImage, alignStart, className }: { message: ChatMessage; mine: boolean; deleted: boolean; status?: DeliveryStatus; overImage?: boolean; alignStart?: boolean; className?: string }) {
   return (
     <div
       className={cn(
@@ -101,6 +101,7 @@ function MessageMeta({ message, mine, deleted, status, overImage, alignStart }: 
         alignStart && "justify-start",
         // Over a picture the colours behind are anyone's guess, so it gets a scrim.
         overImage ? "pointer-events-none absolute bottom-1.5 right-1.5 rounded-chip bg-black/55 px-1.5 py-0.5 text-white backdrop-blur-md" : "mt-0.5 text-subtle",
+        className,
       )}
     >
       {message.editedAt && !deleted ? <span title={`Edited ${fullTime(message.editedAt)}`}>edited</span> : null}
@@ -170,10 +171,19 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
     void props.onReact?.(emoji).catch((failure: unknown) => toast({ title: failureText(failure, "Couldn’t react to that."), tone: "error" }));
   };
   const yours = (emoji: string) => message.reactions?.some((reaction) => reaction.emoji === emoji && reaction.userIds.includes(props.me));
-  const chips = !deleted && props.reactionLimits && message.reactions?.length ? <Reactions
-    reactions={message.reactions} me={props.me} mine={mine} limits={props.reactionLimits}
+  const hasChips = Boolean(!deleted && props.reactionLimits && message.reactions?.length);
+  const chips = (align: "start" | "end") => hasChips ? <Reactions
+    reactions={message.reactions!} me={props.me} align={align} limits={props.reactionLimits!}
     canSend={props.canReply} nameOf={props.nameOf ?? (() => "Someone")} onReact={react}
   /> : null;
+  // One look for the quick row, in the popover and at the top of the menu.
+  const quickClass = (emoji: string) => cn(
+    "group/quick flex h-9 w-9 items-center justify-center rounded-full p-0 text-[22px] leading-none transition-colors hover:bg-secondary focus:bg-secondary",
+    yours(emoji) && "bg-foreground/[0.16] ring-1 ring-inset ring-foreground/25",
+  );
+  const quickEmoji = (emoji: string) => (
+    <span className="transition-transform duration-150 group-hover/quick:scale-[1.15] motion-reduce:transition-none">{emoji}</span>
+  );
 
   const actions = (
     <div className={cn("flex shrink-0 items-center self-center", menuOpen || reactionOpen ? "opacity-100" : "pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100")}>
@@ -181,8 +191,8 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
         <Tooltip label="React"><PopoverTrigger asChild>
           <button type="button" aria-label="React" className="flex h-7 w-7 items-center justify-center rounded-control text-subtle transition-colors hover:bg-secondary hover:text-foreground"><SmilePlus className="h-4 w-4" /></button>
         </PopoverTrigger></Tooltip>
-        <PopoverContent side="top" align={mine ? "end" : "start"} className="w-auto p-0">
-          {fullPicker ? <EmojiPicker autoFocus onPick={react} /> : <div className="flex p-1" onKeyDown={(event) => {
+        <PopoverContent side="top" align={mine ? "end" : "start"} className={fullPicker ? "w-auto p-0" : "w-auto rounded-full p-1"}>
+          {fullPicker ? <EmojiPicker autoFocus onPick={react} /> : <div className="flex items-center gap-0.5" onKeyDown={(event) => {
             if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
             event.preventDefault();
             const buttons = Array.from(event.currentTarget.querySelectorAll("button"));
@@ -190,8 +200,11 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             const step = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
             buttons[(index + step + buttons.length) % buttons.length]?.focus();
           }}>
-            {QUICK_REACTIONS.map((emoji) => <button key={emoji} type="button" aria-label={`React with ${emoji}`} aria-pressed={Boolean(yours(emoji))} onClick={() => react(emoji)} className={cn("flex h-9 w-9 items-center justify-center rounded-control text-[22px] leading-none hover:bg-secondary", yours(emoji) && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/40")}>{emoji}</button>)}
-            <button type="button" aria-label="More emoji" onClick={() => setFullPicker(true)} className="flex h-9 w-9 items-center justify-center rounded-control text-muted-foreground hover:bg-secondary"><ChevronDown className="h-4 w-4" /></button>
+            {QUICK_REACTIONS.map((emoji) => <button key={emoji} type="button" aria-label={`React with ${emoji}`} aria-pressed={Boolean(yours(emoji))} onClick={() => react(emoji)} className={quickClass(emoji)}>{quickEmoji(emoji)}</button>)}
+            <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
+            <Tooltip label="More emoji">
+              <button type="button" aria-label="More emoji" onClick={() => setFullPicker(true)} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"><ChevronDown className="h-4 w-4" /></button>
+            </Tooltip>
           </div>}
         </PopoverContent>
       </Popover> : null}
@@ -210,7 +223,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align={mine ? "end" : "start"}>
           {canReact ? <>
-            <div className="flex" onKeyDown={(event) => {
+            <div className="flex gap-0.5" onKeyDown={(event) => {
               if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
               event.preventDefault();
               event.stopPropagation();
@@ -218,7 +231,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               const index = items.indexOf(document.activeElement as HTMLElement);
               items[(index + (event.key === "ArrowLeft" ? -1 : 1) + items.length) % items.length]?.focus();
             }}>
-              {QUICK_REACTIONS.map((emoji) => <DropdownMenuItem key={emoji} aria-label={`React with ${emoji}`} onSelect={() => react(emoji)} className={cn("h-8 w-8 justify-center p-0 text-[22px] leading-none", yours(emoji) && "bg-primary/15 text-foreground ring-1 ring-inset ring-primary/40")}>{emoji}</DropdownMenuItem>)}
+              {QUICK_REACTIONS.map((emoji) => <DropdownMenuItem key={emoji} aria-label={`React with ${emoji}`} onSelect={() => react(emoji)} className={quickClass(emoji)}>{quickEmoji(emoji)}</DropdownMenuItem>)}
             </div>
             <DropdownMenuSeparator />
           </> : null}
@@ -284,7 +297,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
             {bareEmoji ? <>
               <MessageText body={message.body} />
-              {chips}
+              {hasChips ? <div className="mt-1">{chips(mine ? "end" : "start")}</div> : null}
               <MessageMeta message={message} mine={mine} deleted={deleted} status={status} alignStart={!mine} />
             </> : <MessageAttachments
               conversationId={message.conversationId}
@@ -293,7 +306,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               onOpen={(attachment) => props.onOpenImage(message, attachment)}
               footer={<MessageMeta message={message} mine={mine} deleted={deleted} status={status} overImage />}
             />}
-            {!bareEmoji ? chips : null}
+            {!bareEmoji && hasChips ? <div className="mt-1">{chips(mine ? "end" : "start")}</div> : null}
           </div>
         ) : (
           <div
@@ -320,8 +333,15 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             ) : hasText ? (
               <MessageText body={message.body} />
             ) : null}
-            {chips}
-            <MessageMeta message={message} mine={mine} deleted={deleted} status={status} />
+            {hasChips ? (
+              // Reactions share the last line with the time, as in a printed note's footer.
+              <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
+                {chips("start")}
+                <MessageMeta message={message} mine={mine} deleted={deleted} status={status} className="ml-auto mt-0 h-7" />
+              </div>
+            ) : (
+              <MessageMeta message={message} mine={mine} deleted={deleted} status={status} />
+            )}
           </div>
         )}
         {actions}

@@ -6,7 +6,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Geist Variable", "Vazirmatn Variable", "Twemoji", "Segoe UI Variable Text", "Segoe UI", "system-ui", "-apple-system", "sans-serif", "Segoe UI Emoji", "Noto Color Emoji"],
+        sans: ["Geist Variable", "IRANYekanX", "Twemoji", "Segoe UI Variable Text", "Segoe UI", "system-ui", "-apple-system", "sans-serif", "Segoe UI Emoji", "Noto Color Emoji"],
         mono: ["Geist Mono Variable", "Twemoji", "Cascadia Mono", "Consolas", "ui-monospace", "monospace", "Segoe UI Emoji", "Noto Color Emoji"],
       },
       // The whole product uses these six sizes. 12px is the floor.

@@ -10,7 +10,6 @@ import { parseRoute } from "@/lib/route";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 // Persian and Arabic script, which Geist does not cover.
-import "@fontsource-variable/vazirmatn";
 import "@/styles.css";
 
 const route = parseRoute();

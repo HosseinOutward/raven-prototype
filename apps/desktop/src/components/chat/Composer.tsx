@@ -294,7 +294,7 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
         />
         <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
           <Tooltip label="Emoji"><PopoverTrigger asChild><Button size="icon" variant="ghost" title="" aria-label="Emoji"><Smile className="h-4 w-4" /></Button></PopoverTrigger></Tooltip>
-          <PopoverContent side="top" align="end" className="w-[344px] p-0" onCloseAutoFocus={(event) => { event.preventDefault(); field.current?.focus(); }}>
+          <PopoverContent side="top" align="end" className="w-auto p-0" onCloseAutoFocus={(event) => { event.preventDefault(); field.current?.focus(); }}>
             <EmojiPicker autoFocus onPick={(emoji) => insertEmoji(emoji)} />
           </PopoverContent>
         </Popover>

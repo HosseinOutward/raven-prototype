@@ -21,15 +21,25 @@
   font-display: block;
 }
 
+/* Persian and Arabic: IRANYekanX, the variable font (weight 100–1000) as it was supplied,
+   only rewrapped as WOFF2. Its licence forbids subsetting, so it is whole. It comes after
+   Geist in every stack, so Latin letters and digits stay Geist. */
+@font-face {
+  font-family: "IRANYekanX";
+  src: url("./assets/fonts/IRANYekanX-VF.woff2") format("woff2");
+  font-weight: 100 1000;
+  font-display: swap;
+}
+
 /* One theme for every Raven window (main, Studio, overlay).
    Chrome is graphite; colour is reserved for people: presence, live and speaking.
    Elevation runs canvas -> surface -> raised, one step each. */
 :root {
-  /* Geist has no Arabic-script glyphs; Vazirmatn is bundled so Persian and Arabic read
+  /* Geist has no Arabic-script glyphs; IRANYekanX is bundled so Persian and Arabic read
      well everywhere instead of falling to whatever the system has. Bundled Twemoji gives
      emoji one look everywhere and draws flags on Windows; system fonts cover newer emoji. */
   font-family:
-    "Geist Variable", "Vazirmatn Variable", "Twemoji", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif,
+    "Geist Variable", "IRANYekanX", "Twemoji", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif,
     "Segoe UI Emoji", "Noto Color Emoji";
   font-size: 16px;
   color-scheme: dark;

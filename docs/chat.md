@@ -329,8 +329,9 @@ so a restart does not bring every client back in the same instant.
 Reactions toggle optimistically, then use the server's message copy; a failed request
 restores the previous chips unless a newer event or toggle has arrived. React opens a
 six-emoji quick row and the full emoji picker, and the message menu (including right-click)
-has the same quick row. Chips show counts and highlight your reactions; clicking toggles
-yours, and tooltips name people using conversation members, then loaded message senders.
+has the same quick row. Chips show up to three reactors as small faces and more as a count,
+share the bubble's last line with the time, and mark yours with a brighter neutral fill
+(colour stays reserved for people); clicking toggles yours, and tooltips name people using conversation members, then loaded message senders.
 Reactions and controls are hidden when the server has no reaction limits.
 
 Twemoji is bundled as a color font for consistent emoji on Windows and Linux, including
@@ -350,7 +351,7 @@ picker offers emoji through Unicode 15.0, matching the bundled font.
   loaded messages. Older pages load on scroll; a replied-to message can be jumped to.
 - Message text is never treated as HTML. Each line gets its own direction (`dir="auto"`),
   names are isolated with `<bdi>`, bidirectional control characters are stripped from web
-  addresses, and Vazirmatn is bundled as the Persian and Arabic fallback behind Geist.
+  addresses, and IRANYekanX is bundled as the Persian and Arabic font behind Geist.
 - Attachments are handled by kind and source, never by "image" outside the drawing code
   (`lib/chat/attachments.ts`). Images can be pasted, dropped (Tauri's drag-and-drop event,
   only on the open conversation) or picked; each goes to a per-conversation tray

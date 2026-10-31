@@ -4,7 +4,7 @@ import { Reactions } from "./Reactions";
 
 const props = {
   reactions: [{ emoji: "👍", count: 2, userIds: ["sara", "me"] }, { emoji: "❤️", count: 1, userIds: ["sara"] }],
-  me: "me", mine: false, limits: { maxPerPerson: 3, maxKinds: 20 }, canSend: true,
+  me: "me", align: "start" as const, limits: { maxPerPerson: 3, maxKinds: 20 }, canSend: true,
   nameOf: (id: string) => id === "sara" ? "Sara" : "Someone", onReact: () => {},
 };
 
@@ -13,18 +13,24 @@ describe("reaction chips", () => {
     const html = renderToStaticMarkup(<Reactions {...props} />);
     expect(html).toContain('aria-pressed="true" aria-label="👍 2, Sara and you"');
     expect(html).toContain('aria-pressed="false" aria-label="❤️ 1, Sara"');
-    expect(html).toContain("ring-primary/40");
-    expect(html).toContain("bg-foreground/5 text-muted-foreground");
+    expect(html).toContain("ring-foreground/25");
+    expect(html).toContain("bg-foreground/[0.07] text-muted-foreground");
     expect(html.indexOf("👍")).toBeLessThan(html.indexOf("❤️"));
   });
   test("an older server draws nothing", () => {
     expect(renderToStaticMarkup(<Reactions {...props} limits={null} />)).toBe("");
   });
+  test("a few reactors show as faces, more as a count", () => {
+    const many = { emoji: "🎉", count: 4, userIds: ["a", "b", "c", "d"] };
+    const html = renderToStaticMarkup(<Reactions {...props} reactions={[props.reactions[0], many]} />);
+    expect(html.slice(html.indexOf("🎉"))).toContain(">4<");
+    expect(html.slice(0, html.indexOf("🎉"))).not.toContain(">2<");
+  });
   test("no empty row", () => {
     expect(renderToStaticMarkup(<Reactions {...props} reactions={[]} />)).toBe("");
   });
   test("chips remain readable but cannot toggle when sending is forbidden", () => {
-    const html = renderToStaticMarkup(<Reactions {...props} canSend={false} mine />);
+    const html = renderToStaticMarkup(<Reactions {...props} canSend={false} align="end" />);
     expect(html).toContain("justify-end");
     expect(html.match(/disabled=""/g)).toHaveLength(2);
     expect(html).not.toContain("hover:bg-");
