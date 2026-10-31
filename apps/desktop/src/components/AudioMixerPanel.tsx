@@ -26,6 +26,7 @@ import {
 import {
   AudioMixerState,
   AudioMeterUpdate,
+  MeterState,
   AppAudioSource,
   AudioInputDevice,
   AudioOutputDevice,
@@ -43,11 +44,20 @@ import {
   NoiseSuppressionRuntime,
   PublishedTrackMetadata,
   RemoteAudioTrackState,
+  RemoteAutoLevelState,
   WebRtcAudioProcessingSettings,
   audioCommands,
   subscribeAudioMeterChanged,
   subscribeAudioStateChanged,
 } from "@/lib/audio";
+import { setAutoLevel } from "@/lib/autoLevelPreference";
+import {
+  commitOutputVolume,
+  OUTPUT_VOLUME_MAX_DB,
+  OUTPUT_VOLUME_MIN_DB,
+  OUTPUT_VOLUME_STEP_DB,
+  previewOutputVolume,
+} from "@/lib/outputVolume";
 import { cn } from "@/lib/utils";
 import { NoiseSuppressionDepthRow, NoiseSuppressionRow } from "@/components/NoiseSuppressionRow";
 import { Badge } from "@/components/ui/badge";
@@ -117,8 +127,12 @@ const emptyMixerState: AudioMixerState = {
     outputDeviceName: null,
     outputFallback: false,
     outputMuted: false,
+    outputVolumeDb: 0,
+    outputVolumeSaved: false,
+    outputMeter: { peakDb: -90, rmsDb: -90, clipping: false },
     connectionLost: null,
   },
+  autoLevel: { enabled: false },
 };
 
 type ChannelStripView =
@@ -156,6 +170,7 @@ type ChannelStripView =
       sourceType: AudioSourceType;
       enabled: boolean;
       noiseCleanup: boolean;
+      autoLevel: RemoteAutoLevelState;
       gainDb: GainDb;
       muted: boolean;
       meterPeakDb: GainDb;
@@ -172,8 +187,10 @@ type ChannelStripView =
       inputDeviceName: string | null;
     };
 
-export function AudioMixerPanel() {
+export function AudioMixerPanel({ deafen }: { deafen?: { deafened: boolean; onToggle: () => void } } = {}) {
   const [mixerState, setMixerState] = useState<AudioMixerState>(emptyMixerState);
+  // The volume follows the hand while it is down; the engine value takes over after.
+  const [draftVolumeDb, setDraftVolumeDb] = useState<number | null>(null);
   const [presets, setPresets] = useState<AudioPresetDefinition[]>([]);
   const [inputDevices, setInputDevices] = useState<AudioInputDevice[]>([]);
   const [outputDevices, setOutputDevices] = useState<AudioOutputDevice[]>([]);
@@ -644,8 +661,46 @@ export function AudioMixerPanel() {
         </MixerSection>
         <MixerSection
           title="What you hear"
-          description="Adjust each person for yourself. Nobody else hears the difference."
+          description={
+            mixerState.autoLevel.enabled
+              ? "Everything you hear sets how loud Raven is. The faders beside it set the balance between people, and Auto-level evens out their microphones as they talk. Move a fader to set someone yourself. Nobody else hears the difference."
+              : "Everything you hear sets how loud Raven is. The faders beside it set the balance between people. Nobody else hears the difference."
+          }
           emptyText="Nobody else is sending sound right now."
+          lead={
+            <OutputStrip
+              volumeDb={mixerState.session.outputVolumeDb}
+              deafened={deafen ? deafen.deafened : mixerState.session.outputMuted}
+              draftDb={draftVolumeDb}
+              meter={mixerState.session.outputMeter}
+              onVolumeInput={(volumeDb) => {
+                setDraftVolumeDb(volumeDb);
+                previewOutputVolume(volumeDb);
+              }}
+              onVolumeCommit={(volumeDb) => {
+                setDraftVolumeDb(volumeDb);
+                void commitOutputVolume(volumeDb)
+                  .then(applyCanonicalState)
+                  .catch(() => undefined)
+                  .finally(() => setDraftVolumeDb(null));
+              }}
+              onToggleDeafen={() =>
+                deafen
+                  ? deafen.onToggle()
+                  : void runMutation(() => audioCommands.setOutputMuted(!mixerState.session.outputMuted))
+              }
+            />
+          }
+          action={
+            <label className="flex items-center gap-2 text-small font-medium">
+              Auto-level
+              <Switch
+                checked={mixerState.autoLevel.enabled}
+                disabled={status === "loading"}
+                onCheckedChange={(enabled) => void runMutation(() => setAutoLevel(enabled))}
+              />
+            </label>
+          }
         >
           {remoteGroups.map((participant) => (
             <div key={participant.participantId} className="flex shrink-0 flex-col gap-2 rounded-lg border bg-secondary/30 p-2">
@@ -697,6 +752,9 @@ export function AudioMixerPanel() {
                     }
                     onNoiseCleanupChange={(participantId, trackId, enabled) =>
                       runMutation(() => audioCommands.setRemoteNoiseCleanup(participantId, trackId, enabled), strip.id)
+                    }
+                    onResumeAutoLevel={(participantId) =>
+                      runMutation(() => audioCommands.resumeAutoLevel(participantId), strip.id)
                     }
                     onProcessorParameterChange={draftProcessorParameter}
                     onProcessorParameterCommit={flushProcessorParameter}
@@ -1033,11 +1091,17 @@ function MixerSection({
   title,
   description,
   emptyText,
+  action,
+  lead,
   children,
 }: {
   title: string;
   description: string;
   emptyText: string;
+  /** A control for the whole section, beside its count. */
+  action?: React.ReactNode;
+  /** A strip that is always there and not one of the section items, set apart from them. */
+  lead?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const childCount = useMemo(() => {
@@ -1052,15 +1116,164 @@ function MixerSection({
           <h3 className="text-title-sm font-semibold">{title}</h3>
           <p className="text-small text-muted-foreground">{description}</p>
         </div>
-        <Badge variant="outline">{childCount}</Badge>
+        <div className="flex shrink-0 items-center gap-3">
+          {action}
+          <Badge variant="outline">{childCount}</Badge>
+        </div>
       </div>
       {/* scrollbar-gutter:stable reserves the horizontal scrollbar's space at all times, so a
           strip changing width (e.g. revealing the monitor fader) can't toggle the scrollbar and
           squeeze every strip's height via items-stretch. */}
       <div className="flex items-stretch gap-3 overflow-x-auto pb-2 [scrollbar-gutter:stable]">
+        {lead}
+        {lead ? <div role="separator" aria-orientation="vertical" className="w-px shrink-0 self-stretch bg-border" /> : null}
         {childCount ? children : <EmptyMixerState text={emptyText} />}
       </div>
     </section>
+  );
+}
+
+/**
+ * "Everything you hear": the one volume for all of Raven. It sits after the per-person
+ * faders and Auto-level, so it changes how loud Raven is without moving anyone out of
+ * balance. Its M button is deafen itself, the same switch as the dock.
+ */
+function OutputStrip({
+  volumeDb,
+  deafened,
+  draftDb,
+  meter,
+  onVolumeInput,
+  onVolumeCommit,
+  onToggleDeafen,
+}: {
+  volumeDb: number;
+  deafened: boolean;
+  draftDb: number | null;
+  meter: MeterState;
+  onVolumeInput: (volumeDb: number) => void;
+  onVolumeCommit: (volumeDb: number) => void;
+  onToggleDeafen: () => void;
+}) {
+  const shown = draftDb ?? volumeDb;
+  return (
+    <div className="group relative flex w-32 shrink-0 flex-col overflow-hidden rounded-lg border bg-background/70 p-2.5">
+      <div className="absolute inset-x-0 top-0 h-0.5 bg-foreground/40" />
+      <div className="flex items-center gap-1.5">
+        <Volume2 className="h-4 w-4 shrink-0" />
+        <div className="min-w-0 flex-1 px-1 text-xs font-semibold leading-tight" title="Everything you hear">
+          Everything you hear
+        </div>
+      </div>
+      <div className="mt-0.5 px-1 text-caption leading-tight text-muted-foreground">All sound from Raven</div>
+      <div className="mt-2 flex flex-1 justify-center gap-0.5" style={{ minHeight: 188 }}>
+        <div className="flex w-6 shrink-0 flex-col gap-0.5">
+          <div className="h-1.5 shrink-0" />
+          <div className="relative min-h-0 flex-1">
+            {[...DBFS_METER_TICKS].reverse().map((db) => (
+              <span
+                key={db}
+                className="absolute right-0 -translate-y-1/2 text-[9px] leading-none tabular-nums text-muted-foreground/60"
+                style={{ top: `${100 - meterPercent(db)}%` }}
+              >
+                {db}
+              </span>
+            ))}
+          </div>
+          <div className="mt-1 h-4 shrink-0" />
+        </div>
+
+        <OutputMeter initial={meter} />
+
+        <div className="flex w-7 shrink-0 flex-col items-center">
+          <div className="flex min-h-0 w-full flex-1 justify-center">
+            <RavenFader
+              value={shown}
+              min={OUTPUT_VOLUME_MIN_DB}
+              max={OUTPUT_VOLUME_MAX_DB}
+              step={OUTPUT_VOLUME_STEP_DB}
+              unityDb={0}
+              ariaLabel="Everything you hear"
+              onInput={onVolumeInput}
+              onCommit={onVolumeCommit}
+              onReset={() => {
+                onVolumeInput(0);
+                onVolumeCommit(0);
+              }}
+            />
+          </div>
+          <span className="mt-1 h-4 w-full text-center text-caption font-medium leading-4 tabular-nums" title={`Volume ${formatDb(shown)}`}>
+            {formatDbCompact(shown)}
+          </span>
+        </div>
+
+        <div className="flex w-7 shrink-0 flex-col items-center">
+          <Button
+            size="icon"
+            variant="ghost"
+            className={cn(
+              "h-7 w-7 text-sm font-bold",
+              deafened ? "text-destructive hover:text-destructive" : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={onToggleDeafen}
+            aria-label={deafened ? "Hear people again" : "Stop hearing people"}
+            title={deafened ? "Hear people again" : "Stop hearing people"}
+          >
+            M
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OutputMeter({ initial }: { initial: MeterState }) {
+  const [visual, setVisual] = useState(() => ({
+    meter: initial,
+    peakHoldDb: Number.NEGATIVE_INFINITY,
+  }));
+
+  useEffect(() => {
+    let mounted = true;
+    let unsubscribe: (() => void) | null = null;
+    void subscribeAudioMeterChanged((update) => {
+      if (!mounted || !update.output) return;
+      setVisual((current) => ({
+        meter: update.meter,
+        peakHoldDb: Math.max(current.peakHoldDb, update.meter.peakDb),
+      }));
+    })
+      .then((unlisten) => {
+        if (!mounted) unlisten();
+        else unsubscribe = unlisten;
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const held = visual.peakHoldDb === Number.NEGATIVE_INFINITY;
+  return (
+    <div className="flex w-6 shrink-0 flex-col items-center">
+      <div className="flex min-h-0 w-full flex-1 justify-center">
+        <VerticalMeter
+          peakDb={visual.meter.peakDb}
+          rmsDb={visual.meter.rmsDb}
+          muted={false}
+          clipping={visual.meter.clipping}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => setVisual((current) => ({ ...current, peakHoldDb: Number.NEGATIVE_INFINITY }))}
+        title={`Peak hold ${held ? "−∞" : formatDb(visual.peakHoldDb)} — click to reset`}
+        className="mt-1 h-4 w-full text-center text-caption font-normal leading-4 tabular-nums text-subtle transition-colors hover:text-foreground"
+      >
+        {held ? "−∞" : formatDbCompact(visual.peakHoldDb)}
+      </button>
+    </div>
   );
 }
 
@@ -1093,6 +1306,7 @@ function ChannelStrip({
   onSafetyLimiterCeilingChange,
   onWebRtcProcessingChange,
   onNoiseCleanupChange,
+  onResumeAutoLevel,
   onProcessorParameterChange,
   onProcessorParameterCommit,
   draftProcessorParams = {},
@@ -1125,6 +1339,7 @@ function ChannelStrip({
   onSafetyLimiterCeilingChange?: (sourceId: string, ceilingDb: GainDb) => void;
   onWebRtcProcessingChange?: (sourceId: string, processing: WebRtcAudioProcessingSettings) => void;
   onNoiseCleanupChange?: (participantId: string, trackId: string, enabled: boolean) => void;
+  onResumeAutoLevel?: (participantId: string) => void;
   onProcessorParameterChange?: (
     sourceId: string,
     processorId: string,
@@ -1433,7 +1648,13 @@ function ChannelStrip({
           <span className={cn("h-1.5 w-1.5 rounded-full", strip.publishedTrack ? "bg-primary" : "bg-muted-foreground/50")} />
           {strip.publishedTrack ? "Live" : "Publish"}
         </Button>
-      ) : null}
+      ) : (
+        <AutoLevelLine
+          status={strip.autoLevel.status}
+          disabled={busy}
+          onResume={() => onResumeAutoLevel?.(strip.remoteParticipantId)}
+        />
+      )}
       {/*
         Source On/Off (local capture enable) intentionally omitted — sources always
         capture once added. Restore here if a "run locally without transmitting" mode
@@ -2008,6 +2229,60 @@ function MetricRow({ label, value, danger }: { label: string; value: string; dan
       >
         {value}
       </span>
+    </div>
+  );
+}
+
+const AUTO_LEVEL_LINE: Record<Exclude<RemoteAutoLevelState["status"], "off" | "manual">, { label: string; hint: string }> = {
+  listening: { label: "Listening…", hint: "Auto-level waits until it has heard them talk." },
+  adjusting: { label: "Leveling…", hint: "Auto-level is moving this fader." },
+  leveled: { label: "Auto-level", hint: "Auto-level keeps this fader even with everyone else." },
+  atLimit: {
+    label: "At the limit",
+    hint: "Still quiet at the top of the fader. They could move closer to their mic or turn it up.",
+  },
+};
+
+/** What Auto-level is doing with an incoming microphone, under its fader. */
+function AutoLevelLine({
+  status,
+  disabled,
+  onResume,
+}: {
+  status: RemoteAutoLevelState["status"];
+  disabled?: boolean;
+  onResume: () => void;
+}) {
+  if (status === "off") return null;
+  if (status === "manual") {
+    return (
+      // The strip is too narrow for "Set by you" and a button side by side; the
+      // button alone says it, and the tooltip explains.
+      <div className="mt-2 flex h-8 items-center justify-center px-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2 text-caption"
+          disabled={disabled}
+          onClick={onResume}
+          title="You set this fader, so Auto-level leaves it alone. Resume hands it back."
+          aria-label="You set this fader. Hand it back to Auto-level"
+        >
+          Resume Auto-level
+        </Button>
+      </div>
+    );
+  }
+  const { label, hint } = AUTO_LEVEL_LINE[status];
+  return (
+    <div
+      className={cn(
+        "mt-2 flex h-8 items-center justify-center truncate px-1 text-caption",
+        status === "atLimit" ? "text-muted-foreground" : "text-subtle",
+      )}
+      title={hint}
+    >
+      {label}
     </div>
   );
 }
@@ -3232,6 +3507,7 @@ function remoteTrackToStrip(remoteTrack: RemoteAudioTrackState, participantTitle
     sourceType: remoteTrack.track.sourceType,
     enabled: remoteTrack.subscribed,
     noiseCleanup: remoteTrack.receiverChannelStrip.noiseCleanup,
+    autoLevel: remoteTrack.receiverChannelStrip.autoLevel ?? { status: "off", speechLoudnessDb: null },
     gainDb: remoteTrack.receiverChannelStrip.gainDb,
     muted: remoteTrack.receiverChannelStrip.mute.muted,
     meterPeakDb: remoteTrack.receiverChannelStrip.meter.peakDb,

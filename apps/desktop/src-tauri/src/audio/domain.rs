@@ -451,6 +451,9 @@ pub struct AudioMeterUpdate {
     /// already shows, so keyboards and coughs do not light it. It is not emotion or
     /// behaviour analysis.
     pub voice_probability: Option<f32>,
+    /// True for the whole output bus (everything you hear, after the volume). It names no
+    /// strip.
+    pub output: bool,
 }
 
 impl AudioMeterUpdate {
@@ -463,6 +466,7 @@ impl AudioMeterUpdate {
             health: Some(health),
             input_meter: None,
             voice_probability: None,
+            output: false,
         }
     }
 
@@ -480,6 +484,7 @@ impl AudioMeterUpdate {
             health: None,
             input_meter: Some(input_meter),
             voice_probability: None,
+            output: false,
         }
     }
 }
@@ -494,6 +499,7 @@ impl Default for AudioMeterUpdate {
             voice_probability: None,
             meter: MeterState::default(),
             health: None,
+            output: false,
         }
     }
 }
@@ -775,6 +781,8 @@ pub struct RemoteChannelStripState {
     pub pinned: bool,
     /// Run noise suppression on this person's microphone, for this listener only.
     pub noise_cleanup: bool,
+    /// What Auto-level is doing with this fader. Microphones only; `Off` otherwise.
+    pub auto_level: RemoteAutoLevelState,
     pub preset: AudioPreset,
     pub preset_id: Option<String>,
     pub safety_limiter_ceiling_db: GainDb,
@@ -790,6 +798,7 @@ impl Default for RemoteChannelStripState {
             mute: MuteState::default(),
             pinned: false,
             noise_cleanup: false,
+            auto_level: RemoteAutoLevelState::default(),
             preset: AudioPreset::default(),
             preset_id: None,
             safety_limiter_ceiling_db: GainDb::new(-1.0),
@@ -801,6 +810,40 @@ impl Default for RemoteChannelStripState {
 }
 
 pub type RemoteTrackChannelStripState = RemoteChannelStripState;
+
+/// What Auto-level is doing with one person's microphone fader.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoLevelStatus {
+    /// Auto-level is off, or this is not a microphone.
+    #[default]
+    Off,
+    /// Not enough of this person's speech heard yet.
+    Listening,
+    /// The fader is where it should be.
+    Leveled,
+    /// The fader is gliding toward where it should be.
+    Adjusting,
+    /// The fader is at the end of Auto-level's range and it would go further.
+    AtLimit,
+    /// The listener moved this fader by hand; Auto-level leaves it alone.
+    Manual,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RemoteAutoLevelState {
+    pub status: AutoLevelStatus,
+    /// How loud this person's speech is, K-weighted, before the listener's fader.
+    pub speech_loudness_db: Option<f32>,
+}
+
+/// Auto-level for the whole mixer: whether it moves the incoming microphones' faders.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AutoLevelState {
+    pub enabled: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1036,6 +1079,14 @@ pub struct AudioSessionHealth {
     pub output_fallback: bool,
     /// Master output mute (deafen).
     pub output_muted: bool,
+    /// The one volume for everything Raven plays, in dB (0 is unchanged). Applied on the
+    /// output bus after deafen; it never moves a strip fader or Auto-level.
+    pub output_volume_db: f32,
+    /// True once the engine has a saved volume on disk (read at start or written on a
+    /// commit). The UI uses it to move a volume an older version kept in the WebView.
+    pub output_volume_saved: bool,
+    /// What the whole bus played, after the volume and before the limiter.
+    pub output_meter: MeterState,
     /// Set when the sidecar lost the room for good: whether rejoining can fix it. A
     /// duplicate sign-in or a removal must not be retried automatically.
     pub connection_lost: Option<AudioConnectionLoss>,
@@ -1058,6 +1109,7 @@ pub struct AudioMixerState {
     pub remote_participants: Vec<RemoteParticipantAudioState>,
     pub track_events: Vec<TrackLifecycleEvent>,
     pub session: AudioSessionHealth,
+    pub auto_level: AutoLevelState,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1159,6 +1211,7 @@ mod tests {
             remote_participants: Vec::new(),
             track_events: Vec::new(),
             session: AudioSessionHealth::default(),
+            auto_level: Default::default(),
         };
 
         let serialized = serde_json::to_string(&state).expect("serialize mixer state");

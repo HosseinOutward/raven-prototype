@@ -30,11 +30,12 @@ use audio::state::{
     audio_reorder_processors, audio_reorder_remote_processors,
     audio_reset_local_channel_processor_chain, audio_reset_local_channel_to_safe_defaults,
     audio_reset_remote_track_processor_chain, audio_reset_remote_track_to_safe_defaults,
-    audio_save_local_channel_as_preset, audio_save_remote_track_as_preset, audio_set_call_active,
-    audio_set_local_channel_gain, audio_set_local_channel_mute,
-    audio_set_local_safety_limiter_ceiling, audio_set_local_source_capture_device,
-    audio_set_local_source_enabled, audio_set_local_webrtc_processing, audio_set_monitoring,
-    audio_set_output_device, audio_set_output_muted, audio_set_processor_enabled,
+    audio_resume_auto_level, audio_save_local_channel_as_preset, audio_save_remote_track_as_preset,
+    audio_set_auto_level, audio_set_call_active, audio_set_local_channel_gain,
+    audio_set_local_channel_mute, audio_set_local_safety_limiter_ceiling,
+    audio_set_local_source_capture_device, audio_set_local_source_enabled,
+    audio_set_local_webrtc_processing, audio_set_monitoring, audio_set_output_device,
+    audio_set_output_muted, audio_set_output_volume, audio_set_processor_enabled,
     audio_set_processor_parameter, audio_set_remote_audio_receiving,
     audio_set_remote_noise_cleanup, audio_set_remote_processor_enabled,
     audio_set_remote_safety_limiter_ceiling, audio_set_remote_track_gain,
@@ -93,6 +94,7 @@ pub fn run() {
             audio_get_selected_output_device,
             audio_set_output_device,
             audio_set_output_muted,
+            audio_set_output_volume,
             audio_play_ui_sound,
             audio_play_sound_cue,
             audio_preview_sound_cue,
@@ -133,6 +135,8 @@ pub fn run() {
             audio_add_or_update_remote_track,
             audio_remove_remote_track,
             audio_set_remote_track_gain,
+            audio_set_auto_level,
+            audio_resume_auto_level,
             audio_set_remote_track_mute,
             audio_set_remote_noise_cleanup,
             audio_add_processor_to_remote_track,
@@ -203,6 +207,10 @@ pub fn run() {
             }
             thumbnail_toolbar::initialize(app.handle());
             audio::state::load_remembered_volumes(
+                app.handle(),
+                &app.state::<audio::state::SharedAudioEngineState>(),
+            );
+            audio::state::load_output_volume(
                 app.handle(),
                 &app.state::<audio::state::SharedAudioEngineState>(),
             );

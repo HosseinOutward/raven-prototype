@@ -30,8 +30,14 @@ use crate::audio::capture::list_output_devices;
 use crate::audio::cues::{
     render_cue, CueDecision, CueGate, CueVoice, CueVoices, SoundCue, SoundCueSettings,
 };
-use crate::audio::domain::{AudioOutputDevice, AudioPlaybackStatus};
-use crate::audio::state::{SharedAudioEngineState, AUDIO_STATE_CHANGED_EVENT};
+use crate::audio::domain::{
+    AudioMeterUpdate, AudioOutputDevice, AudioPlaybackStatus, GainDb, MeterState,
+};
+use crate::audio::processor::linear_to_db;
+use crate::audio::safety::{clamp_output_volume_db, db_to_linear};
+use crate::audio::state::{
+    SharedAudioEngineState, AUDIO_METER_CHANGED_EVENT, AUDIO_STATE_CHANGED_EVENT,
+};
 
 /// The mix bus is always stereo; the device stream maps it onto the endpoint's real
 /// channel count.
@@ -58,6 +64,11 @@ const OPEN_RETRY_DELAYS: [Duration; 3] = [
 
 /// Master mute / unmute ramp, so deafening never clicks.
 const MASTER_RAMP_MS: f32 = 6.0;
+/// The output volume glides to a new value over this long, so dragging it never zips or
+/// clicks.
+const VOLUME_RAMP_MS: f32 = 30.0;
+/// How often the output worker reports the bus meter while a speaker is open.
+const OUTPUT_METER_INTERVAL: Duration = Duration::from_millis(120);
 /// Release time of the mix-bus limiter.
 const LIMITER_RELEASE_MS: f32 = 180.0;
 
@@ -303,6 +314,46 @@ struct MixBus {
     cues: Mutex<CueVoices>,
     sample_rate: AtomicU32,
     muted: AtomicBool,
+    /// The output volume as linear gain (`f32` bits), shared with the cues and the test
+    /// tone that play outside the bus.
+    volume: AtomicU32,
+    /// Peak and energy of what the bus played since the meter was last read.
+    meter: Mutex<BusMeterWindow>,
+}
+
+/// Accumulated output level between two meter reads.
+#[derive(Debug, Default)]
+struct BusMeterWindow {
+    peak: f32,
+    square_sum: f64,
+    samples: u64,
+}
+
+impl BusMeterWindow {
+    fn add(&mut self, block: &[f32]) {
+        let mut peak = self.peak;
+        let mut square_sum = 0.0_f32;
+        for sample in block {
+            peak = peak.max(sample.abs());
+            square_sum += sample * sample;
+        }
+        self.peak = peak;
+        self.square_sum += f64::from(square_sum);
+        self.samples += block.len() as u64;
+    }
+
+    fn take(&mut self) -> MeterState {
+        let window = std::mem::take(self);
+        if window.samples == 0 {
+            return MeterState::default();
+        }
+        let rms = (window.square_sum / window.samples as f64).sqrt() as f32;
+        MeterState {
+            peak_db: linear_to_db(window.peak),
+            rms_db: linear_to_db(rms),
+            clipping: window.peak > 1.0,
+        }
+    }
 }
 
 impl Default for MixBus {
@@ -312,7 +363,22 @@ impl Default for MixBus {
             cues: Mutex::new(CueVoices::default()),
             sample_rate: AtomicU32::new(48_000),
             muted: AtomicBool::new(false),
+            volume: AtomicU32::new(1.0_f32.to_bits()),
+            meter: Mutex::new(BusMeterWindow::default()),
         }
+    }
+}
+
+impl MixBus {
+    fn volume_gain(&self) -> f32 {
+        f32::from_bits(self.volume.load(Ordering::Relaxed))
+    }
+
+    fn take_meter(&self) -> MeterState {
+        self.meter
+            .lock()
+            .map(|mut meter| meter.take())
+            .unwrap_or_default()
     }
 }
 
@@ -323,11 +389,13 @@ struct BusRenderer {
     sample_rate: u32,
     limits: PlayoutLimits,
     master_gain: f32,
+    volume: VolumeRamp,
     limiter_gain: f32,
 }
 
 impl BusRenderer {
     fn new(bus: Arc<MixBus>, reference: Arc<RenderReference>, sample_rate: u32) -> Self {
+        let bus_volume = bus.volume_gain();
         let master_gain = if bus.muted.load(Ordering::Relaxed) {
             0.0
         } else {
@@ -339,6 +407,7 @@ impl BusRenderer {
             sample_rate,
             limits: PlayoutLimits::for_rate(sample_rate),
             master_gain,
+            volume: VolumeRamp::new(bus_volume),
             limiter_gain: 1.0,
         }
     }
@@ -370,9 +439,62 @@ impl BusRenderer {
             cues.mix_into(out, true);
         }
         drop(cues);
+        // The volume comes after deafen and both cue groups, and before the limiter, so
+        // +6 dB can only lean on the limiter. The meter and the echo reference see its result.
+        self.volume
+            .apply(out, self.bus.volume_gain(), self.sample_rate);
+        if let Ok(mut meter) = self.bus.meter.try_lock() {
+            meter.add(out);
+        }
         self.limiter_gain = limit_bus(out, self.limiter_gain, self.sample_rate);
         // The canceller must see exactly what reached the speaker, post mute and limiter.
         self.reference.push_stereo(out, self.sample_rate);
+    }
+}
+
+/// Glides the output volume to its target in a straight line over [`VOLUME_RAMP_MS`].
+struct VolumeRamp {
+    gain: f32,
+    target: f32,
+    step: f32,
+}
+
+impl VolumeRamp {
+    fn new(gain: f32) -> Self {
+        Self {
+            gain,
+            target: gain,
+            step: 0.0,
+        }
+    }
+
+    /// Multiply `out` (interleaved stereo) by the gain, moving toward `target`.
+    fn apply(&mut self, out: &mut [f32], target: f32, sample_rate: u32) {
+        if target != self.target {
+            self.target = target;
+            let ramp_frames = (sample_rate as f32 * VOLUME_RAMP_MS / 1000.0).max(1.0);
+            self.step = (target - self.gain) / ramp_frames;
+        }
+        if self.gain == self.target {
+            if self.gain != 1.0 {
+                for sample in out.iter_mut() {
+                    *sample *= self.gain;
+                }
+            }
+            return;
+        }
+        for frame in out.chunks_mut(BUS_CHANNELS) {
+            self.gain += self.step;
+            if (self.step > 0.0 && self.gain >= self.target)
+                || (self.step < 0.0 && self.gain <= self.target)
+            {
+                self.gain = self.target;
+                self.step = 0.0;
+            }
+            for sample in frame {
+                *sample *= self.gain;
+            }
+        }
     }
 }
 
@@ -590,12 +712,33 @@ impl OutputMixer {
         self.bus.muted.load(Ordering::Relaxed)
     }
 
+    /// The one volume for everything Raven plays, in dB (clamped; returns what was set).
+    /// It glides on the bus and scales the cues and test tone that play outside it, so it
+    /// works with no call running.
+    pub fn set_volume_db(&self, volume_db: f32) -> f32 {
+        let volume_db = clamp_output_volume_db(volume_db);
+        self.bus.volume.store(
+            db_to_linear(GainDb::new(volume_db)).to_bits(),
+            Ordering::Relaxed,
+        );
+        volume_db
+    }
+
+    /// The level the bus played since the last read, after the volume and before the limiter.
+    pub fn take_output_meter(&self) -> MeterState {
+        self.bus.take_meter()
+    }
+
     /// Play the speaker test tone. Blocks for the tone's duration.
     pub fn play_test_tone(&self, device_id: Option<String>) -> Result<(), String> {
         let target = device_id
             .filter(|value| !value.trim().is_empty())
             .or_else(|| self.preferred_device_id());
-        play_tones(target.as_deref(), UiSound::SpeakerTest)
+        play_tones(
+            target.as_deref(),
+            UiSound::SpeakerTest,
+            self.bus.volume_gain(),
+        )
     }
 
     pub fn set_cue_settings(&self, settings: SoundCueSettings) {
@@ -648,6 +791,7 @@ impl OutputMixer {
                 Ok(())
             }
             CueDecision::Detached(gain) => {
+                let gain = gain * self.bus.volume_gain();
                 play_detached(self.preferred_device_id().as_deref(), |sample_rate| {
                     render_cue(cue, sample_rate, gain)
                 })
@@ -808,9 +952,14 @@ impl OutputWorker {
         fallback: bool,
     ) -> SuperviseOutcome {
         let mut last_probe = Instant::now();
+        let mut last_meter = Instant::now();
         loop {
             if !self.alive() {
                 return SuperviseOutcome::Stopped;
+            }
+            if last_meter.elapsed() >= OUTPUT_METER_INTERVAL {
+                last_meter = Instant::now();
+                self.report_output_meter();
             }
             if self.reopen.load(Ordering::SeqCst) {
                 return SuperviseOutcome::Reopen;
@@ -836,6 +985,23 @@ impl OutputWorker {
             }
             thread::sleep(WORKER_TICK);
         }
+    }
+
+    /// Publish what the bus played since the last report. Best-effort: a busy state lock
+    /// only costs the snapshot copy, the event below still drives the live meter.
+    fn report_output_meter(&self) {
+        let meter = self.bus.take_meter();
+        if let Ok(mut guard) = self.shared.try_write() {
+            guard.mixer.session.output_meter = meter.clone();
+        }
+        let _ = self.app.emit(
+            AUDIO_METER_CHANGED_EVENT,
+            AudioMeterUpdate {
+                output: true,
+                meter,
+                ..Default::default()
+            },
+        );
     }
 
     /// Sleep that ends early when the session stops or a new device is chosen.
@@ -1087,10 +1253,10 @@ struct ToneRenderer {
 }
 
 impl ToneRenderer {
-    fn new(sound: UiSound, sample_rate: u32) -> Self {
+    fn new(sound: UiSound, sample_rate: u32, volume: f32) -> Self {
         Self {
             tones: sound.tones(),
-            level: sound.level(),
+            level: sound.level() * volume,
             sample_rate: sample_rate.max(1) as f32,
             tone_index: 0,
             frame_in_tone: 0,
@@ -1140,9 +1306,9 @@ impl ToneRenderer {
     }
 }
 
-fn play_tones(device_id: Option<&str>, sound: UiSound) -> Result<(), String> {
+fn play_tones(device_id: Option<&str>, sound: UiSound, volume: f32) -> Result<(), String> {
     let (device, supported) = open_detached_output(device_id)?;
-    let mut renderer = ToneRenderer::new(sound, supported.sample_rate().0);
+    let mut renderer = ToneRenderer::new(sound, supported.sample_rate().0, volume);
     play_on_stream(
         &device,
         &supported,
@@ -1500,7 +1666,7 @@ mod tests {
     #[test]
     fn interface_sounds_are_finite_and_silent_after_they_end() {
         for sound in [UiSound::SpeakerTest] {
-            let mut renderer = ToneRenderer::new(sound, 48_000);
+            let mut renderer = ToneRenderer::new(sound, 48_000, 1.0);
             let total = (ToneRenderer::total_duration(sound).as_secs_f32() * 48_000.0) as usize;
             let mut audio = vec![0.0_f32; (total + 4_800) * BUS_CHANNELS];
             renderer.render(&mut audio);
@@ -1515,8 +1681,20 @@ mod tests {
     }
 
     fn bus_with_cues(cues: &[SoundCue], muted: bool) -> (BusRenderer, Arc<RenderReference>) {
+        bus_with_cues_at(cues, muted, 0.0)
+    }
+
+    fn bus_with_cues_at(
+        cues: &[SoundCue],
+        muted: bool,
+        volume_db: f32,
+    ) -> (BusRenderer, Arc<RenderReference>) {
         let bus = Arc::new(MixBus::default());
         bus.muted.store(muted, Ordering::Relaxed);
+        bus.volume.store(
+            db_to_linear(GainDb::new(volume_db)).to_bits(),
+            Ordering::Relaxed,
+        );
         for cue in cues {
             let voice = CueVoice::new(*cue, render_cue(*cue, 48_000, 1.0));
             bus.cues.lock().unwrap().push(voice, 48_000);
@@ -1572,5 +1750,208 @@ mod tests {
             .iter()
             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
         assert!(peak > 0.2, "the unmute cue plays while deafened ({peak})");
+    }
+
+    // -- Output volume -------------------------------------------------------------
+
+    fn peak_of(samples: &[f32]) -> f32 {
+        samples
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+    }
+
+    fn ratio_db(quiet: f32, loud: f32) -> f32 {
+        20.0 * (quiet / loud).log10()
+    }
+
+    /// Render `blocks` of a steady track at `amplitude`, topping the playout buffer up
+    /// before each block so it never underruns.
+    fn render_track_blocks(renderer: &mut BusRenderer, amplitude: f32, blocks: usize) -> Vec<f32> {
+        let mut played = Vec::new();
+        for _ in 0..blocks {
+            let feed = vec![amplitude; 480 * BUS_CHANNELS];
+            renderer
+                .bus
+                .tracks
+                .lock()
+                .unwrap()
+                .entry("track".to_string())
+                .or_default()
+                .push(&feed, limits());
+            let mut out = vec![0.0; 480 * BUS_CHANNELS];
+            renderer.render(&mut out);
+            played.extend(out);
+        }
+        played
+    }
+
+    fn track_renderer() -> BusRenderer {
+        BusRenderer::new(
+            Arc::new(MixBus::default()),
+            Arc::new(RenderReference::default()),
+            48_000,
+        )
+    }
+
+    fn set_bus_volume(renderer: &BusRenderer, volume_db: f32) {
+        renderer.bus.volume.store(
+            db_to_linear(GainDb::new(volume_db)).to_bits(),
+            Ordering::Relaxed,
+        );
+    }
+
+    #[test]
+    fn the_volume_is_clamped_and_works_without_a_call() {
+        let mixer = OutputMixer::new();
+        assert_eq!(mixer.bus.volume_gain(), 1.0);
+        assert_eq!(mixer.set_volume_db(99.0), 6.0);
+        assert!((mixer.bus.volume_gain() - 1.995_262_3).abs() < 1e-4);
+        assert_eq!(mixer.set_volume_db(-99.0), -40.0);
+        assert!((mixer.bus.volume_gain() - 0.01).abs() < 1e-6);
+        assert_eq!(mixer.set_volume_db(f32::NAN), 0.0);
+        assert_eq!(mixer.bus.volume_gain(), 1.0);
+        assert!(!mixer.is_running());
+    }
+
+    #[test]
+    fn the_test_tone_plays_at_the_volume_it_will_use() {
+        let loud = ToneRenderer::new(UiSound::SpeakerTest, 48_000, 1.0);
+        let quiet = ToneRenderer::new(UiSound::SpeakerTest, 48_000, 0.1);
+        assert!((quiet.level / loud.level - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn minus_12_db_is_12_db_quieter_for_tracks() {
+        let mut flat = track_renderer();
+        let flat_out = render_track_blocks(&mut flat, 0.25, 30);
+        let mut quiet = track_renderer();
+        set_bus_volume(&quiet, -12.0);
+        let quiet_out = render_track_blocks(&mut quiet, 0.25, 30);
+        // Measured after the 30 ms glide has settled.
+        let drop = ratio_db(
+            peak_of(&quiet_out[quiet_out.len() - 960..]),
+            peak_of(&flat_out[flat_out.len() - 960..]),
+        );
+        assert!((drop + 12.0).abs() < 0.1, "dropped {drop} dB");
+    }
+
+    #[test]
+    fn minus_12_db_is_12_db_quieter_for_both_cue_groups() {
+        for cue in [SoundCue::ShareStarted, SoundCue::Unmute] {
+            let muted = cue == SoundCue::Unmute;
+            let (mut flat, _) = bus_with_cues_at(&[cue], muted, 0.0);
+            let flat_peak = peak_of(&render_blocks(&mut flat, 30));
+            let (mut quiet, _) = bus_with_cues_at(&[cue], muted, -12.0);
+            let quiet_peak = peak_of(&render_blocks(&mut quiet, 30));
+            let drop = ratio_db(quiet_peak, flat_peak);
+            assert!((drop + 12.0).abs() < 0.1, "{cue:?} dropped {drop} dB");
+        }
+    }
+
+    #[test]
+    fn deafen_silences_tracks_and_its_cues_at_any_volume_but_not_your_own_toggle() {
+        for volume_db in [-12.0_f32, 6.0] {
+            let (mut renderer, _) = bus_with_cues_at(&[SoundCue::ShareStarted], true, volume_db);
+            let out = render_track_blocks(&mut renderer, 0.5, 30);
+            assert!(
+                out[out.len() - 960..].iter().all(|sample| *sample == 0.0),
+                "tracks and deafen-silenced cues stay silent at {volume_db} dB"
+            );
+
+            let (mut flat, _) = bus_with_cues_at(&[SoundCue::Unmute], true, 0.0);
+            let flat_peak = peak_of(&render_blocks(&mut flat, 20));
+            let (mut scaled, _) = bus_with_cues_at(&[SoundCue::Unmute], true, volume_db);
+            let scaled_peak = peak_of(&render_blocks(&mut scaled, 20));
+            let expected = (flat_peak * 10.0_f32.powf(volume_db / 20.0)).min(1.0);
+            assert!(scaled_peak > 0.05, "your own mute toggle is heard");
+            assert!(
+                (scaled_peak - expected).abs() < 0.02,
+                "toggle scaled by the volume ({scaled_peak} vs {expected})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_volume_step_glides_over_about_30_ms_without_a_jump() {
+        let mut ramp = VolumeRamp::new(1.0);
+        let mut block = vec![1.0_f32; 4_800 * BUS_CHANNELS];
+        ramp.apply(&mut block, db_to_linear(GainDb::new(-40.0)), 48_000);
+        let left: Vec<f32> = block.chunks(BUS_CHANNELS).map(|frame| frame[0]).collect();
+        // No larger a step per sample than the deafen ramp already allows.
+        let deafen_step = 1.0 / (48_000.0 * MASTER_RAMP_MS / 1000.0);
+        let biggest = left
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(biggest <= deafen_step, "step {biggest} > {deafen_step}");
+        // It arrives after about 30 ms (1440 frames): neither instantly nor slowly.
+        let settled = left
+            .iter()
+            .position(|sample| (*sample - 0.01).abs() < 1e-6)
+            .expect("reaches the target");
+        assert!((1_400..=1_480).contains(&settled), "settled at {settled}");
+        assert!(left[0] > 0.99, "starts from where it was");
+        assert!((ramp.gain - 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn plus_6_db_on_a_full_scale_track_never_passes_the_limiter_ceiling() {
+        let mut renderer = track_renderer();
+        set_bus_volume(&renderer, 6.0);
+        let out = render_track_blocks(&mut renderer, 1.0, 40);
+        assert!(out.iter().all(|sample| sample.abs() <= 1.0));
+        assert!(renderer.limiter_gain < 1.0, "the limiter did the work");
+    }
+
+    #[test]
+    fn the_echo_reference_is_what_reached_the_speaker_at_a_non_zero_volume() {
+        let (mut renderer, reference) = bus_with_cues_at(&[SoundCue::PersonJoined], false, -12.0);
+        let played = render_blocks(&mut renderer, 10);
+        // Read from the first frame, so the two can be compared sample for sample.
+        let mut cursor = RenderCursor {
+            synced: true,
+            ..RenderCursor::default()
+        };
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut heard = Vec::new();
+        while reference
+            .next_frame(&mut cursor, &mut left, &mut right)
+            .is_some()
+        {
+            heard.extend_from_slice(&left);
+        }
+        assert!(!heard.is_empty());
+        for (reference_sample, frame) in heard.iter().zip(played.chunks(BUS_CHANNELS)) {
+            assert!((reference_sample - frame[0]).abs() < 1e-6);
+        }
+        let flat = render_cue(SoundCue::PersonJoined, 48_000, 1.0);
+        let drop = ratio_db(peak_of(&played), peak_of(&flat));
+        assert!(
+            (drop + 12.0).abs() < 0.1,
+            "reference sits after the volume ({drop})"
+        );
+    }
+
+    #[test]
+    fn the_bus_meter_reads_12_db_lower_at_minus_12_db() {
+        let mut flat = track_renderer();
+        render_track_blocks(&mut flat, 0.25, 20);
+        flat.bus.take_meter();
+        render_track_blocks(&mut flat, 0.25, 20);
+        let flat_meter = flat.bus.take_meter();
+
+        let mut quiet = track_renderer();
+        set_bus_volume(&quiet, -12.0);
+        render_track_blocks(&mut quiet, 0.25, 20);
+        quiet.bus.take_meter();
+        render_track_blocks(&mut quiet, 0.25, 20);
+        let quiet_meter = quiet.bus.take_meter();
+
+        assert!(flat_meter.rms_db.0 > -20.0, "{flat_meter:?}");
+        let rms_drop = quiet_meter.rms_db.0 - flat_meter.rms_db.0;
+        let peak_drop = quiet_meter.peak_db.0 - flat_meter.peak_db.0;
+        assert!((rms_drop + 12.0).abs() < 0.5, "rms dropped {rms_drop}");
+        assert!((peak_drop + 12.0).abs() < 0.5, "peak dropped {peak_drop}");
+        assert_eq!(quiet.bus.take_meter(), MeterState::default());
     }
 }

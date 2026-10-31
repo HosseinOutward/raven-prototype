@@ -16,6 +16,8 @@ import {
   subscribeAudioStateChanged,
   WebRtcAudioProcessingSettings,
 } from "@/lib/audio";
+import { readAutoLevelPreference } from "@/lib/autoLevelPreference";
+import { commitOutputVolume, migrateLegacyOutputVolume, readLegacyOutputVolume } from "@/lib/outputVolume";
 import {
   CameraDevice,
   DEFAULT_VIDEO_PROFILE,
@@ -184,6 +186,8 @@ export interface RavenMediaAdapterState {
   networkActivity: NetworkActivitySettings;
   /** Sound cue switches and volume, kept on this device. */
   soundCues: SoundCueSettings;
+  /** The one volume for everything Raven plays, -40 to +6 dB. */
+  outputVolumeDb: number;
   bitrateSupported: boolean;
   bitrateLabel: string;
   micLabel: string;
@@ -225,6 +229,8 @@ export interface RavenMediaAdapterState {
   setMicProcessing: (processing: WebRtcAudioProcessingSettings) => Promise<void>;
   setNetworkActivity: (patch: Partial<NetworkActivitySettings>) => void;
   setSoundCues: (patch: Partial<SoundCueSettings>) => void;
+  /** Set the volume for good and remember it. While dragging, use `previewOutputVolume`. */
+  setOutputVolume: (volumeDb: number) => Promise<void>;
   /** Play a sample cue at this volume, whatever the switches say. */
   previewSoundCue: (volume: number) => void;
   setSelfMediaPreviewMode: (mode: SelfMediaPreviewMode) => Promise<void>;
@@ -390,6 +396,14 @@ export function useRavenMediaAdapter(
     void audioCommands.setSoundCueSettings(soundCues).catch(() => undefined);
   }, [soundCues]);
 
+  // Read before anything saves the media settings again, which would drop the old key.
+  const legacyOutputVolume = useMemo(readLegacyOutputVolume, []);
+  const outputVolumeDb = audioState?.session.outputVolumeDb ?? 0;
+
+  const setOutputVolume = useCallback(async (volumeDb: number) => {
+    setAudioState(await commitOutputVolume(volumeDb));
+  }, []);
+
   const previewSoundCue = useCallback((volume: number) => {
     void audioCommands.previewSoundCue("personJoined", volume).catch(() => undefined);
   }, []);
@@ -427,6 +441,17 @@ export function useRavenMediaAdapter(
       videoCommands.setPresentationProfile(initialSettings.videoPresentationProfile ?? "balanced").then((state) => mounted && setVideoState(state)),
       refreshNativeState(),
       refreshMediaDevices(),
+      // The engine starts with Auto-level off; bring back the listener's choice.
+      readAutoLevelPreference()
+        ? audioCommands.setAutoLevel(true).then((state) => mounted && setAudioState(state))
+        : Promise.resolve(),
+      // The engine keeps the volume itself; move one an older version saved here.
+      audioCommands
+        .getState()
+        .then((state) => migrateLegacyOutputVolume(legacyOutputVolume, state.session.outputVolumeSaved))
+        .then((next) => {
+          if (mounted && next) setAudioState(next);
+        }),
     ]).catch(() => undefined);
     void subscribeAudioStateChanged((state) => {
       if (mounted) setAudioState(state);
@@ -1463,6 +1488,7 @@ export function useRavenMediaAdapter(
     screenSharingUserIds,
     networkActivity: networkActivitySettings,
     soundCues,
+    outputVolumeDb,
     bitrateSupported: false,
     bitrateLabel: "Managed by the native video profile",
     micLabel: micStateLabel(micSources, localMicEnabled),
@@ -1502,6 +1528,7 @@ export function useRavenMediaAdapter(
     setMicProcessing,
     setNetworkActivity,
     setSoundCues,
+    setOutputVolume,
     previewSoundCue,
     setSelfMediaPreviewMode,
     setVideoPresentationProfile,

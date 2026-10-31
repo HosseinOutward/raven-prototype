@@ -3,7 +3,7 @@ use std::{
     fs,
     path::Path,
     sync::{Arc, RwLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -23,12 +23,13 @@ use crate::audio::domain::{
     AudioSourceId, AudioSourceRuntimeStatus, AudioSourceState, AudioSourceType,
     AudioSubscriptionStatus, ChannelHealthState, GainDb, MeterState, NoiseSuppressionMode,
     ParticipantId, ProcessorChainState, PublishedTrackId, PublishedTrackMetadata,
-    PublishedTrackMetadataPatch, RemoteAudioTrackState, RemoteParticipantAudioState,
-    TrackLifecycleEvent, WebRtcAudioProcessingSettings,
+    PublishedTrackMetadataPatch, RemoteAudioTrackState, RemoteAutoLevelState,
+    RemoteParticipantAudioState, TrackLifecycleEvent, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{
     measure_audio_network_totals, AudioEngine, AudioNetworkTotals, OutputMixer,
 };
+use crate::audio::leveler::{AutoLeveler, LevelObservation};
 use crate::audio::processor::{
     AudioParameterValue, AudioProcessorRuntime, ProcessorChainRuntime, ProcessorRuntime,
 };
@@ -37,8 +38,8 @@ use crate::audio::publisher::{
     PlaceholderMediaTrackPublisher,
 };
 use crate::audio::safety::{
-    chain_cpu_estimate, chain_latency_samples, clamp_channel_gain, clamp_safety_limiter_ceiling,
-    health_from_meter,
+    chain_cpu_estimate, chain_latency_samples, clamp_channel_gain, clamp_output_volume_db,
+    clamp_safety_limiter_ceiling, health_from_meter,
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -47,6 +48,7 @@ pub const AUDIO_METER_CHANGED_EVENT: &str = "audio-meter-changed";
 pub const AUDIO_TRACK_PUBLISH_INSTRUCTION_EVENT: &str = "audio-track-publish-instruction";
 const USER_PRESETS_FILE_NAME: &str = "audio-presets.json";
 const REMEMBERED_VOLUMES_FILE_NAME: &str = "remembered-volumes.json";
+const OUTPUT_VOLUME_FILE_NAME: &str = "output-volume.json";
 
 pub type SharedAudioEngineState = Arc<RwLock<AudioEngineState>>;
 
@@ -127,15 +129,36 @@ pub struct AudioEngineState {
     /// and whether they clean up that person's noise. Unlike `remembered_remote_strips` it
     /// is saved to disk, so it holds across calls and restarts. A remote participant id is
     /// the person's user id, which never changes.
-    remembered_volumes: HashMap<(ParticipantId, AudioSourceType), (GainDb, bool)>,
+    remembered_volumes: HashMap<(ParticipantId, AudioSourceType), RememberedChoice>,
     remembered_volumes_changed: bool,
+    /// Auto-level: learns how loud each person's microphone is and, when on, moves their
+    /// receiver fader. Its view is copied into each snapshot.
+    auto_leveler: AutoLeveler,
+    /// When the leveler was last stepped.
+    auto_level_stepped_at: Option<Instant>,
     /// LiveKit username per remote participant id, used as the Incoming Tracks group header.
     /// Not serialized into the mixer snapshot; it feeds `refresh_remote_participants`.
     pub remote_owner_names: HashMap<ParticipantId, String>,
 }
 
+/// What is remembered about one person's source of one kind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RememberedChoice {
+    gain_db: GainDb,
+    noise_cleanup: bool,
+    /// Microphones only: how loud their speech is, for Auto-level. Rounded to 0.5 dB, so
+    /// it does not count as changed on every window.
+    speech_loudness_db: Option<f32>,
+}
+
+impl RememberedChoice {
+    fn is_default(&self) -> bool {
+        self.gain_db == GainDb::UNITY && !self.noise_cleanup && self.speech_loudness_db.is_none()
+    }
+}
+
 /// One entry of `remembered-volumes.json`: how loud this listener wants one person's
-/// source of a given kind, and whether noise is cleaned up on it.
+/// source of a given kind, whether noise is cleaned up on it, and how loud they speak.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RememberedVolume {
@@ -145,6 +168,17 @@ pub struct RememberedVolume {
     /// Absent from files written before cleanup existed.
     #[serde(default)]
     pub noise_cleanup: bool,
+    /// Absent from files written before Auto-level existed, and for anything but a
+    /// microphone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_loudness_db: Option<f32>,
+}
+
+/// What one Auto-level step did.
+#[derive(Debug, Default)]
+pub struct AutoLevelStep {
+    pub changed: bool,
+    pub volumes_to_save: Option<Vec<RememberedVolume>>,
 }
 
 /// How a remembered receiver strip is found again: by the exact track, or failing that
@@ -167,7 +201,25 @@ const MAX_TRACK_EVENTS: usize = 64;
 
 impl AudioEngineState {
     pub fn snapshot(&self) -> AudioMixerState {
-        self.mixer.clone()
+        let mut mixer = self.mixer.clone();
+        mixer.auto_level.enabled = self.auto_leveler.enabled();
+        let leveler = &self.auto_leveler;
+        let view = |remote: &mut RemoteAudioTrackState| {
+            if remote.track.source_type == AudioSourceType::Microphone {
+                let participant_id = remote.track.participant_id;
+                remote.receiver_channel_strip.auto_level = RemoteAutoLevelState {
+                    status: leveler.status(participant_id),
+                    speech_loudness_db: leveler.loudness_db(participant_id),
+                };
+            }
+        };
+        mixer.remote_tracks.iter_mut().for_each(view);
+        mixer
+            .remote_participants
+            .iter_mut()
+            .flat_map(|participant| participant.tracks.iter_mut())
+            .for_each(view);
+        mixer
     }
 
     fn record_track_event(&mut self, event: TrackLifecycleEvent) {
@@ -796,13 +848,13 @@ impl AudioEngineState {
             let mut remote_track = RemoteAudioTrackState::new(metadata);
             if let Some(strip) = self.recall_remote_strip(&remote_track.track) {
                 remote_track.receiver_channel_strip = strip;
-            } else if let Some((gain_db, noise_cleanup)) = self.remembered_volumes.get(&(
+            } else if let Some(choice) = self.remembered_volumes.get(&(
                 remote_track.track.participant_id,
                 remote_track.track.source_type.clone(),
             )) {
-                remote_track.receiver_channel_strip.gain_db = *gain_db;
-                remote_track.receiver_channel_strip.noise_cleanup = *noise_cleanup;
-                remote_track.preference.gain_db = *gain_db;
+                remote_track.receiver_channel_strip.gain_db = choice.gain_db;
+                remote_track.receiver_channel_strip.noise_cleanup = choice.noise_cleanup;
+                remote_track.preference.gain_db = choice.gain_db;
                 refresh_remote_channel_health(&mut remote_track);
             }
             self.mixer.remote_tracks.push(remote_track.clone());
@@ -845,9 +897,13 @@ impl AudioEngineState {
     /// reconnect attempt too; only `audio_set_call_active(false)` ends the call.
     fn reset_after_disconnect(&mut self, output_muted: bool) {
         self.clear_remote_tracks();
+        let output_volume_db = self.mixer.session.output_volume_db;
+        let output_volume_saved = self.mixer.session.output_volume_saved;
         self.mixer.session = AudioSessionHealth {
-            // Deafen is a user choice that outlives the room.
+            // Deafen and the volume are user choices that outlive the room.
             output_muted,
+            output_volume_db,
+            output_volume_saved,
             ..Default::default()
         };
     }
@@ -864,6 +920,7 @@ impl AudioEngineState {
         // Levels describe a moment of audio, not a setting.
         strip.meter = MeterState::default();
         strip.health = ChannelHealthState::default();
+        strip.auto_level = Default::default();
         if strip == RemoteChannelStripState::default() {
             // Nothing was customised; make sure a stale memory does not resurface either.
             self.remembered_remote_strips.remove(&RemoteStripKey::Track(
@@ -894,9 +951,21 @@ impl AudioEngineState {
         self.remembered_volumes = volumes
             .into_iter()
             .map(|volume| {
+                let speech_loudness_db = volume
+                    .speech_loudness_db
+                    .filter(|loudness| loudness.is_finite());
+                if let (Some(loudness), AudioSourceType::Microphone) =
+                    (speech_loudness_db, &volume.source_type)
+                {
+                    self.auto_leveler.seed(volume.participant_id, loudness);
+                }
                 (
                     (volume.participant_id, volume.source_type),
-                    (clamp_channel_gain(volume.gain_db), volume.noise_cleanup),
+                    RememberedChoice {
+                        gain_db: clamp_channel_gain(volume.gain_db),
+                        noise_cleanup: volume.noise_cleanup,
+                        speech_loudness_db,
+                    },
                 )
             })
             .collect();
@@ -912,11 +981,22 @@ impl AudioEngineState {
                 remote.track.participant_id,
                 remote.track.source_type.clone(),
             );
-            let choice = (
-                remote.receiver_channel_strip.gain_db,
-                remote.receiver_channel_strip.noise_cleanup,
-            );
-            let changed = if choice == (GainDb::UNITY, false) {
+            let speech_loudness_db = (remote.track.source_type == AudioSourceType::Microphone)
+                .then(|| self.auto_leveler.loudness_db(remote.track.participant_id))
+                .flatten()
+                .map(|loudness| (loudness * 2.0).round() / 2.0)
+                .or_else(|| {
+                    // Not heard enough in this call yet: keep what an earlier one learned.
+                    self.remembered_volumes
+                        .get(&key)
+                        .and_then(|choice| choice.speech_loudness_db)
+                });
+            let choice = RememberedChoice {
+                gain_db: remote.receiver_channel_strip.gain_db,
+                noise_cleanup: remote.receiver_channel_strip.noise_cleanup,
+                speech_loudness_db,
+            };
+            let changed = if choice.is_default() {
                 self.remembered_volumes.remove(&key).is_some()
             } else {
                 self.remembered_volumes.insert(key, choice) != Some(choice)
@@ -929,14 +1009,13 @@ impl AudioEngineState {
         Some(
             self.remembered_volumes
                 .iter()
-                .map(
-                    |((participant_id, source_type), (gain_db, noise_cleanup))| RememberedVolume {
-                        participant_id: *participant_id,
-                        source_type: source_type.clone(),
-                        gain_db: *gain_db,
-                        noise_cleanup: *noise_cleanup,
-                    },
-                )
+                .map(|((participant_id, source_type), choice)| RememberedVolume {
+                    participant_id: *participant_id,
+                    source_type: source_type.clone(),
+                    gain_db: choice.gain_db,
+                    noise_cleanup: choice.noise_cleanup,
+                    speech_loudness_db: choice.speech_loudness_db,
+                })
                 .collect(),
         )
     }
@@ -1062,6 +1141,112 @@ impl AudioEngineState {
         let remote = remote.clone();
         self.refresh_remote_participants();
         Ok(remote)
+    }
+
+    /// The listener moved a fader by hand. While Auto-level is on, that person's
+    /// microphone is theirs from now on, until they resume it.
+    pub fn set_remote_track_gain_by_hand(
+        &mut self,
+        remote_participant_id: ParticipantId,
+        remote_track_id: PublishedTrackId,
+        gain_db: GainDb,
+    ) -> Result<RemoteAudioTrackState, AudioStateError> {
+        let remote = self.set_remote_track_gain(remote_participant_id, remote_track_id, gain_db)?;
+        if remote.track.source_type == AudioSourceType::Microphone {
+            self.auto_leveler.hold(remote_participant_id);
+        }
+        Ok(remote)
+    }
+
+    pub fn set_auto_level(&mut self, enabled: bool) {
+        self.auto_leveler.set_enabled(enabled);
+        self.auto_level_stepped_at = None;
+    }
+
+    pub fn resume_auto_level(&mut self, remote_participant_id: ParticipantId) {
+        self.auto_leveler.resume(remote_participant_id);
+    }
+
+    /// One meter window of a remote track, measured before this listener's fader.
+    /// Only microphones are levelled.
+    pub fn observe_auto_level(
+        &mut self,
+        remote_participant_id: ParticipantId,
+        remote_track_id: PublishedTrackId,
+        loudness_db: f32,
+        voice_probability: f32,
+        duration: Duration,
+        now: Instant,
+    ) {
+        let Some(remote) = self.mixer.remote_tracks.iter().find(|remote| {
+            remote.track.participant_id == remote_participant_id
+                && remote.track.track_id == remote_track_id
+        }) else {
+            return;
+        };
+        if remote.track.source_type != AudioSourceType::Microphone {
+            return;
+        }
+        let observation = LevelObservation {
+            loudness_db,
+            voice_probability,
+            sender_muted: remote.track.muted,
+            duration,
+        };
+        self.auto_leveler
+            .observe(remote_participant_id, observation, now);
+    }
+
+    /// The listener's own microphone, so their voice coming back through someone's
+    /// speakers is not learned as that person.
+    pub fn observe_own_voice(&mut self, loudness_db: f32, voice_probability: f32, now: Instant) {
+        self.auto_leveler
+            .observe_own_voice(loudness_db, voice_probability, now);
+    }
+
+    /// Move the faders Auto-level wants moved. Returns whether anything changed, and the
+    /// volumes to save when a glide settled.
+    pub fn step_auto_level(&mut self, now: Instant) -> AutoLevelStep {
+        let elapsed = self
+            .auto_level_stepped_at
+            .map_or(Duration::ZERO, |then| now.saturating_duration_since(then))
+            .min(Duration::from_secs(1));
+        self.auto_level_stepped_at = Some(now);
+        let faders: Vec<(ParticipantId, f32)> = self
+            .mixer
+            .remote_tracks
+            .iter()
+            .filter(|remote| remote.track.source_type == AudioSourceType::Microphone)
+            .map(|remote| {
+                (
+                    remote.track.participant_id,
+                    remote.receiver_channel_strip.gain_db.0,
+                )
+            })
+            .collect();
+        let moves = self.auto_leveler.step(&faders, elapsed);
+        let mut step = AutoLevelStep::default();
+        for change in &moves {
+            let gain_db = clamp_channel_gain(GainDb::new(change.gain_db));
+            for remote in self.mixer.remote_tracks.iter_mut().filter(|remote| {
+                remote.track.participant_id == change.participant_id
+                    && remote.track.source_type == AudioSourceType::Microphone
+            }) {
+                remote.receiver_channel_strip.gain_db = gain_db;
+                remote.preference.gain_db = gain_db;
+                refresh_remote_channel_health(remote);
+            }
+            step.changed = true;
+        }
+        if step.changed {
+            self.refresh_remote_participants();
+        }
+        // Save when a glide lands, and when nothing is moving so a refined loudness is
+        // kept too; never mid-glide. Loudness is rounded to 0.5 dB, so this rarely writes.
+        if moves.is_empty() || moves.iter().any(|change| change.settled) {
+            step.volumes_to_save = self.take_changed_remembered_volumes();
+        }
+        step
     }
 
     pub fn set_remote_safety_limiter_ceiling(
@@ -1518,6 +1703,7 @@ impl Default for AudioEngineState {
                 remote_participants: Vec::new(),
                 track_events: Vec::new(),
                 session: Default::default(),
+                auto_level: Default::default(),
             },
             publisher: PlaceholderMediaTrackPublisher::default(),
             user_presets: Vec::new(),
@@ -1527,6 +1713,8 @@ impl Default for AudioEngineState {
             remembered_remote_strips: HashMap::new(),
             remembered_volumes: HashMap::new(),
             remembered_volumes_changed: false,
+            auto_leveler: AutoLeveler::default(),
+            auto_level_stepped_at: None,
             remote_owner_names: HashMap::new(),
         }
     }
@@ -1709,6 +1897,31 @@ pub fn audio_set_output_muted(
 ) -> Result<AudioMixerState, AudioStateError> {
     audio_runtime(&state)?.output.set_muted(muted);
     let snapshot = update_session(&state, |session| session.output_muted = muted)?;
+    emit_audio_state_changed(&app, &snapshot)?;
+    Ok(snapshot)
+}
+
+/// The one volume for everything Raven plays (-40 to +6 dB, clamped). It works with no call
+/// running and moves no strip fader and no Auto-level status. The engine owns the saved
+/// value: `persist` (default true) writes it to disk off the lock, and a drag sends
+/// `persist: false` for its live values so only the final one is written.
+#[tauri::command]
+pub fn audio_set_output_volume(
+    app: AppHandle,
+    state: State<'_, SharedAudioEngineState>,
+    volume_db: f32,
+    persist: Option<bool>,
+) -> Result<AudioMixerState, AudioStateError> {
+    let persist = persist.unwrap_or(true);
+    let volume_db = audio_runtime(&state)?.output.set_volume_db(volume_db);
+    let snapshot = update_session(&state, |session| {
+        session.output_volume_db = volume_db;
+        session.output_volume_saved |= persist;
+    })?;
+    if persist {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || save_output_volume(&app, volume_db));
+    }
     emit_audio_state_changed(&app, &snapshot)?;
     Ok(snapshot)
 }
@@ -2468,7 +2681,35 @@ pub async fn audio_set_remote_track_gain(
     gain_db: GainDb,
 ) -> Result<AudioMixerState, AudioStateError> {
     mutate_audio_state(&app, &state, |engine| {
-        engine.set_remote_track_gain(remote_participant_id, remote_track_id, gain_db)?;
+        engine.set_remote_track_gain_by_hand(remote_participant_id, remote_track_id, gain_db)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Turn Auto-level on or off for the incoming microphones.
+#[tauri::command]
+pub async fn audio_set_auto_level(
+    app: AppHandle,
+    state: State<'_, SharedAudioEngineState>,
+    enabled: bool,
+) -> Result<AudioMixerState, AudioStateError> {
+    mutate_audio_state(&app, &state, |engine| {
+        engine.set_auto_level(enabled);
+        Ok(())
+    })
+    .await
+}
+
+/// Hand a person's microphone fader back to Auto-level after it was moved by hand.
+#[tauri::command]
+pub async fn audio_resume_auto_level(
+    app: AppHandle,
+    state: State<'_, SharedAudioEngineState>,
+    remote_participant_id: ParticipantId,
+) -> Result<AudioMixerState, AudioStateError> {
+    mutate_audio_state(&app, &state, |engine| {
+        engine.resume_auto_level(remote_participant_id);
         Ok(())
     })
     .await
@@ -3381,7 +3622,60 @@ pub fn load_remembered_volumes(app: &AppHandle, state: &SharedAudioEngineState) 
     }
 }
 
-fn save_remembered_volumes(app: &AppHandle, volumes: &[RememberedVolume]) {
+/// The saved output volume, so the first state snapshot and the first cue already use it.
+/// A missing or corrupt file means 0 dB.
+pub fn load_output_volume(app: &AppHandle, state: &SharedAudioEngineState) {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let saved = load_output_volume_from_path(&app_data_dir.join(OUTPUT_VOLUME_FILE_NAME));
+    let Ok(mut guard) = state.write() else {
+        return;
+    };
+    let volume_db = saved.unwrap_or(0.0);
+    guard.runtime.output.set_volume_db(volume_db);
+    guard.mixer.session.output_volume_db = volume_db;
+    guard.mixer.session.output_volume_saved = saved.is_some();
+}
+
+fn save_output_volume(app: &AppHandle, volume_db: f32) {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = app_data_dir.join(OUTPUT_VOLUME_FILE_NAME);
+    if let Err(error) = save_output_volume_to_path(&path, volume_db) {
+        eprintln!("[raven] could not save the output volume: {error}");
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedOutputVolume {
+    output_volume_db: f32,
+}
+
+fn load_output_volume_from_path(path: &Path) -> Option<f32> {
+    let saved: SavedOutputVolume = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    Some(clamp_output_volume_db(saved.output_volume_db))
+}
+
+fn save_output_volume_to_path(path: &Path, volume_db: f32) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(&SavedOutputVolume {
+        output_volume_db: clamp_output_volume_db(volume_db),
+    })
+    .map_err(std::io::Error::other)?;
+    // Write beside the file and rename over it, so a kill mid-write cannot leave half a file.
+    let partial = path.with_extension("json.tmp");
+    fs::write(&partial, bytes)?;
+    fs::rename(&partial, path)
+}
+
+pub(crate) fn save_remembered_volumes(app: &AppHandle, volumes: &[RememberedVolume]) {
     let Ok(app_data_dir) = app.path().app_data_dir() else {
         return;
     };
@@ -3492,7 +3786,9 @@ fn audio_track_source_from_source(source: &AudioSourceState) -> AudioTrackSource
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::domain::{AudioProcessorKind, AudioProcessorState};
+    use crate::audio::domain::{
+        AudioProcessorKind, AudioProcessorState, AutoLevelState, AutoLevelStatus, MeterState,
+    };
 
     #[test]
     fn a_room_disconnect_keeps_the_call_holding_capture() {
@@ -3515,6 +3811,70 @@ mod tests {
         let mut engine = AudioEngineState::default();
         engine.reset_after_disconnect(true);
         assert!(engine.mixer.session.output_muted);
+    }
+
+    #[test]
+    fn the_saved_output_volume_round_trips_and_is_clamped_on_load() {
+        let dir = std::env::temp_dir().join(format!("raven-volume-{}", uuid::Uuid::new_v4()));
+        let path = dir.join(OUTPUT_VOLUME_FILE_NAME);
+        assert_eq!(load_output_volume_from_path(&path), None, "missing file");
+
+        save_output_volume_to_path(&path, -20.0).expect("save");
+        assert_eq!(load_output_volume_from_path(&path), Some(-20.0));
+        save_output_volume_to_path(&path, 99.0).expect("save");
+        assert_eq!(load_output_volume_from_path(&path), Some(6.0));
+
+        fs::write(&path, br#"{"outputVolumeDb": -400}"#).expect("write");
+        assert_eq!(load_output_volume_from_path(&path), Some(-40.0));
+        fs::write(&path, b"not json {").expect("write");
+        assert_eq!(load_output_volume_from_path(&path), None, "corrupt file");
+        fs::write(&path, br#"{"outputVolumeDb": "loud"}"#).expect("write");
+        assert_eq!(load_output_volume_from_path(&path), None, "wrong type");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_room_disconnect_keeps_the_output_volume() {
+        let mut engine = AudioEngineState::default();
+        engine.mixer.session.output_volume_db = -20.0;
+        engine.mixer.session.output_meter.peak_db = GainDb::new(-10.0);
+        engine.reset_after_disconnect(false);
+        assert_eq!(engine.mixer.session.output_volume_db, -20.0);
+        assert_eq!(engine.mixer.session.output_meter, MeterState::default());
+    }
+
+    #[test]
+    fn the_output_volume_moves_no_fader_and_no_auto_level_status() {
+        let run = |volume_moves: bool| {
+            let mut engine = AudioEngineState::default();
+            let participant_id = ParticipantId::new();
+            let mic = engine
+                .add_or_update_remote_track(remote_metadata(
+                    participant_id,
+                    AudioSourceType::Microphone,
+                ))
+                .track
+                .track_id;
+            engine.set_auto_level(true);
+            let mut now = Instant::now();
+            let mut trail = Vec::new();
+            for second in 0..12 {
+                if volume_moves {
+                    engine.mixer.session.output_volume_db =
+                        if second % 2 == 0 { -20.0 } else { 0.0 };
+                }
+                speak(&mut engine, participant_id, mic, -31.0, 1.0, &mut now);
+                trail.push((
+                    gain_of(&engine, mic),
+                    engine.auto_leveler.status(participant_id),
+                ));
+            }
+            trail
+        };
+        assert_eq!(run(true), run(false));
+        assert!(!run(true)
+            .iter()
+            .any(|(_, status)| *status == AutoLevelStatus::Manual));
     }
 
     #[test]
@@ -4266,6 +4626,211 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].gain_db, GainDb::new(-9.0));
         assert!(!loaded[0].noise_cleanup);
+        assert_eq!(loaded[0].speech_loudness_db, None);
+    }
+
+    /// Feed `seconds` of speech at `loudness_db` to a remote track, stepping Auto-level
+    /// every 240 ms. Returns whether any step asked for volumes to be saved, and how many
+    /// steps changed something.
+    fn speak(
+        engine: &mut AudioEngineState,
+        participant_id: ParticipantId,
+        track_id: PublishedTrackId,
+        loudness_db: f32,
+        seconds: f32,
+        now: &mut Instant,
+    ) -> (bool, usize) {
+        let window = Duration::from_millis(120);
+        let (mut saved, mut changes) = (false, 0);
+        for tick in 0..(seconds / 0.12) as usize {
+            *now += window;
+            engine.observe_auto_level(participant_id, track_id, loudness_db, 0.9, window, *now);
+            if tick % 2 == 1 {
+                let step = engine.step_auto_level(*now);
+                saved |= step.volumes_to_save.is_some();
+                changes += usize::from(step.changed);
+            }
+        }
+        (saved, changes)
+    }
+
+    fn gain_of(engine: &AudioEngineState, track_id: PublishedTrackId) -> f32 {
+        engine
+            .mixer
+            .remote_tracks
+            .iter()
+            .find(|remote| remote.track.track_id == track_id)
+            .expect("track")
+            .receiver_channel_strip
+            .gain_db
+            .0
+    }
+
+    #[test]
+    fn auto_level_moves_a_quiet_microphone_and_saves_once_it_settles() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let mic = engine
+            .add_or_update_remote_track(remote_metadata(
+                participant_id,
+                AudioSourceType::Microphone,
+            ))
+            .track
+            .track_id;
+        engine.set_auto_level(true);
+        let mut now = Instant::now();
+
+        // Four seconds in, the fader is gliding but has not arrived: nothing to save yet.
+        let (saved, changes) = speak(&mut engine, participant_id, mic, -31.0, 4.0, &mut now);
+        assert!(changes > 0);
+        assert!(!saved, "a glide in progress is not written to disk");
+        let snapshot = engine.snapshot();
+        assert_eq!(snapshot.auto_level, AutoLevelState { enabled: true });
+        assert_eq!(
+            snapshot.remote_tracks[0]
+                .receiver_channel_strip
+                .auto_level
+                .status,
+            AutoLevelStatus::Adjusting
+        );
+
+        let (saved, _) = speak(&mut engine, participant_id, mic, -31.0, 10.0, &mut now);
+        assert!(saved, "a settled fader is saved");
+        assert!((gain_of(&engine, mic) - 8.0).abs() < 0.01);
+        assert_eq!(
+            engine.snapshot().remote_tracks[0]
+                .receiver_channel_strip
+                .auto_level
+                .status,
+            AutoLevelStatus::Leveled
+        );
+    }
+
+    #[test]
+    fn moving_a_fader_by_hand_takes_it_from_auto_level() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let mic = engine
+            .add_or_update_remote_track(remote_metadata(
+                participant_id,
+                AudioSourceType::Microphone,
+            ))
+            .track
+            .track_id;
+        engine.set_auto_level(true);
+        let mut now = Instant::now();
+
+        // Auto-level's own writes are not "by hand".
+        speak(&mut engine, participant_id, mic, -35.0, 5.0, &mut now);
+        assert_ne!(
+            engine.auto_leveler.status(participant_id),
+            AutoLevelStatus::Manual
+        );
+
+        engine
+            .set_remote_track_gain_by_hand(participant_id, mic, GainDb::new(-3.0))
+            .expect("set gain");
+        let (_, changes) = speak(&mut engine, participant_id, mic, -35.0, 10.0, &mut now);
+        assert_eq!(changes, 0);
+        assert_eq!(gain_of(&engine, mic), -3.0);
+        assert_eq!(
+            engine.auto_leveler.status(participant_id),
+            AutoLevelStatus::Manual
+        );
+
+        engine.resume_auto_level(participant_id);
+        let (_, changes) = speak(&mut engine, participant_id, mic, -35.0, 2.0, &mut now);
+        assert!(changes > 0);
+    }
+
+    #[test]
+    fn auto_level_never_touches_shared_audio() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let app_audio = engine
+            .add_or_update_remote_track(remote_metadata(participant_id, AudioSourceType::AppAudio))
+            .track
+            .track_id;
+        let screen = engine
+            .add_or_update_remote_track(remote_metadata(
+                participant_id,
+                AudioSourceType::ScreenAudio,
+            ))
+            .track
+            .track_id;
+        engine.set_auto_level(true);
+        let mut now = Instant::now();
+        let (_, app_changes) = speak(
+            &mut engine,
+            participant_id,
+            app_audio,
+            -40.0,
+            10.0,
+            &mut now,
+        );
+        let (_, screen_changes) = speak(&mut engine, participant_id, screen, -40.0, 10.0, &mut now);
+        assert_eq!(app_changes + screen_changes, 0);
+        assert_eq!(gain_of(&engine, app_audio), 0.0);
+        assert_eq!(gain_of(&engine, screen), 0.0);
+        // A hand-moved shared-audio fader does not put the person's microphone on hold.
+        engine
+            .set_remote_track_gain_by_hand(participant_id, app_audio, GainDb::new(-6.0))
+            .expect("set gain");
+        assert_ne!(
+            engine.auto_leveler.status(participant_id),
+            AutoLevelStatus::Manual
+        );
+        assert_eq!(
+            engine.snapshot().remote_tracks[0]
+                .receiver_channel_strip
+                .auto_level
+                .status,
+            AutoLevelStatus::Off
+        );
+    }
+
+    #[test]
+    fn a_learned_loudness_is_remembered_and_seeds_the_next_call() {
+        let mut engine = AudioEngineState::default();
+        let participant_id = ParticipantId::new();
+        let mic = engine
+            .add_or_update_remote_track(remote_metadata(
+                participant_id,
+                AudioSourceType::Microphone,
+            ))
+            .track
+            .track_id;
+        let mut now = Instant::now();
+        // Learned while Auto-level is off; the fader stays where it is.
+        let (saved, _) = speak(&mut engine, participant_id, mic, -33.0, 6.0, &mut now);
+        assert!(saved, "a learned loudness is saved even at unity");
+        assert_eq!(gain_of(&engine, mic), 0.0);
+        // Read back the whole list the tick already wrote.
+        engine.remembered_volumes_changed = true;
+        let saved = engine.take_changed_remembered_volumes().expect("volumes");
+        assert_eq!(saved[0].speech_loudness_db, Some(-33.0));
+
+        let path =
+            std::env::temp_dir().join(format!("raven-volumes-{}.json", uuid::Uuid::new_v4()));
+        save_remembered_volumes_to_path(&path, &saved).expect("save");
+        let loaded = load_remembered_volumes_from_path(&path);
+        let _ = fs::remove_file(&path);
+
+        let mut restarted = AudioEngineState::default();
+        restarted.load_remembered_volumes(loaded);
+        restarted.set_auto_level(true);
+        let mic = restarted
+            .add_or_update_remote_track(remote_metadata(
+                participant_id,
+                AudioSourceType::Microphone,
+            ))
+            .track
+            .track_id;
+        // Joining without being heard yet keeps the loudness from the last call.
+        assert_eq!(restarted.take_changed_remembered_volumes(), None);
+        // The first word is enough: no three seconds of listening.
+        let (_, changes) = speak(&mut restarted, participant_id, mic, -33.0, 0.5, &mut now);
+        assert!(changes > 0);
     }
 
     #[test]

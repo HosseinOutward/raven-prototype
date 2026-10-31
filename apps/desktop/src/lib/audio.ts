@@ -216,6 +216,8 @@ export interface RemoteChannelStripState {
   pinned: boolean;
   /** Noise suppression on this person's microphone, for this listener only. */
   noiseCleanup: boolean;
+  /** What Auto-level is doing with this fader. Microphones only; "off" otherwise. */
+  autoLevel: RemoteAutoLevelState;
   preset: AudioPreset;
   presetId: string | null;
   safetyLimiterCeilingDb: GainDb;
@@ -225,6 +227,20 @@ export interface RemoteChannelStripState {
 }
 
 export type RemoteTrackChannelStripState = RemoteChannelStripState;
+
+/** What Auto-level is doing with one person's microphone fader. */
+export type AutoLevelStatus = "off" | "listening" | "leveled" | "adjusting" | "atLimit" | "manual";
+
+export interface RemoteAutoLevelState {
+  status: AutoLevelStatus;
+  /** How loud this person's speech is (K-weighted, before the listener's fader), in dB. */
+  speechLoudnessDb: number | null;
+}
+
+/** Auto-level for the whole mixer: whether it moves the incoming microphones' faders. */
+export interface AutoLevelState {
+  enabled: boolean;
+}
 
 export interface PublishedTrackMetadata {
   trackId: PublishedTrackId;
@@ -337,6 +353,12 @@ export interface AudioSessionHealth {
   outputFallback: boolean;
   /** Master output mute (deafen). */
   outputMuted: boolean;
+  /** The one volume for everything Raven plays, -40 to +6 dB. It moves no fader. */
+  outputVolumeDb: number;
+  /** True once the engine has a saved volume on disk; the engine owns the saved value. */
+  outputVolumeSaved: boolean;
+  /** What the whole output played, after the volume. Refreshed by meter events. */
+  outputMeter: MeterState;
   /** Set when the sidecar lost the room for good, with whether rejoining can fix it. */
   connectionLost: AudioConnectionLoss | null;
 }
@@ -369,6 +391,7 @@ export interface AudioMixerState {
   remoteParticipants: RemoteParticipantAudioState[];
   trackEvents: TrackLifecycleEvent[];
   session: AudioSessionHealth;
+  autoLevel: AutoLevelState;
 }
 
 export interface AudioMeterUpdate {
@@ -388,6 +411,8 @@ export interface AudioMeterUpdate {
    * keyboards and coughs. Absent from older engines and non-microphone sources.
    */
   voiceProbability?: number | null;
+  /** True for the whole output (everything you hear): it names no strip. */
+  output?: boolean;
 }
 
 export type AudioUiSound = "knock";
@@ -487,6 +512,10 @@ export const audioCommands = {
   /** Master output mute (deafen): instant, and independent of per-track receiver mutes. */
   setOutputMuted: (muted: boolean) =>
     invoke<AudioMixerState>("audio_set_output_muted", { muted }),
+
+  /** The one volume for everything Raven plays, -40 to +6 dB. Works with no call running. */
+  setOutputVolume: (volumeDb: number, persist = true) =>
+    invoke<AudioMixerState>("audio_set_output_volume", { volumeDb, persist }),
 
   /** Play a short interface sound. `knock` is the `entryHeadsUp` sound cue. */
   playUiSound: (sound: AudioUiSound) => invoke<void>("audio_play_ui_sound", { sound }),
@@ -628,6 +657,13 @@ export const audioCommands = {
 
   setRemoteTrackGain: (remoteParticipantId: ParticipantId, remoteTrackId: PublishedTrackId, gainDb: GainDb) =>
     invoke<AudioMixerState>("audio_set_remote_track_gain", { remoteParticipantId, remoteTrackId, gainDb }),
+
+  /** Auto-level moves the incoming microphones' faders so everyone speaks at one loudness. */
+  setAutoLevel: (enabled: boolean) => invoke<AudioMixerState>("audio_set_auto_level", { enabled }),
+
+  /** Hand a person's microphone fader back to Auto-level after it was moved by hand. */
+  resumeAutoLevel: (remoteParticipantId: ParticipantId) =>
+    invoke<AudioMixerState>("audio_resume_auto_level", { remoteParticipantId }),
 
   setRemoteTrackMute: (remoteParticipantId: ParticipantId, remoteTrackId: PublishedTrackId, muted: boolean) =>
     invoke<AudioMixerState>("audio_set_remote_track_mute", { remoteParticipantId, remoteTrackId, muted }),

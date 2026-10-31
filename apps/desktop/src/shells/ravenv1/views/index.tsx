@@ -102,7 +102,7 @@ export function MainView({
       );
     }
     case "mixer":
-      return <MixerView onClose={onBack} />;
+      return <MixerView media={media} onClose={onBack} />;
     case "licences":
       return <LicencesView onBack={onBack} />;
   }
@@ -125,7 +125,7 @@ function MissingView({ what, onNavigate }: { what: string; onNavigate: (view: Ra
  * The mixer is the deep basement: every source, processor and level. It opens
  * in the main surface so the bottom bar stays in reach while you adjust it.
  */
-function MixerView({ onClose }: { onClose: () => void }) {
+function MixerView({ media, onClose }: { media: RavenMediaAdapterState; onClose: () => void }) {
   // Outside a call nothing else keeps local capture open; ask for it while the meters
   // are on screen.
   useEffect(() => {
@@ -141,7 +141,7 @@ function MixerView({ onClose }: { onClose: () => void }) {
         actions={<Button variant="secondary" size="sm" onClick={onClose}>Done</Button>}
       />
       <div className="min-h-0 flex-1 overflow-hidden p-5">
-        <AudioMixerPanel />
+        <AudioMixerPanel deafen={{ deafened: media.localDeafened, onToggle: () => void media.toggleDeafen() }} />
       </div>
     </>
   );

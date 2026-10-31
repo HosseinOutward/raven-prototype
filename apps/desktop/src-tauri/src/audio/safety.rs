@@ -9,6 +9,9 @@ const SAFETY_LIMITER_RELEASE_MS: f32 = 80.0;
 
 pub const CHANNEL_GAIN_MIN_DB: f32 = -60.0;
 pub const CHANNEL_GAIN_MAX_DB: f32 = 12.0;
+/// The one volume for everything Raven plays, applied on the output bus.
+pub const OUTPUT_VOLUME_MIN_DB: f32 = -40.0;
+pub const OUTPUT_VOLUME_MAX_DB: f32 = 6.0;
 pub const SAFETY_LIMITER_MIN_CEILING_DB: f32 = -6.0;
 pub const SAFETY_LIMITER_MAX_CEILING_DB: f32 = -0.5;
 pub const SILENCE_RMS_DB: f32 = -75.0;
@@ -134,6 +137,11 @@ pub fn clamp_channel_gain(gain_db: GainDb) -> GainDb {
         CHANNEL_GAIN_MAX_DB,
         0.0,
     ))
+}
+
+/// Clamp the output volume to its range; a non-finite value means "unchanged" (0 dB).
+pub fn clamp_output_volume_db(volume_db: f32) -> f32 {
+    clamp_finite(volume_db, OUTPUT_VOLUME_MIN_DB, OUTPUT_VOLUME_MAX_DB, 0.0)
 }
 
 pub fn clamp_safety_limiter_ceiling(ceiling_db: GainDb) -> GainDb {
@@ -282,5 +290,9 @@ mod tests {
     fn gain_values_are_clamped() {
         assert_eq!(clamp_channel_gain(GainDb::new(99.0)), GainDb::new(12.0));
         assert_eq!(clamp_channel_gain(GainDb::new(-99.0)), GainDb::new(-60.0));
+        assert_eq!(clamp_output_volume_db(99.0), 6.0);
+        assert_eq!(clamp_output_volume_db(-99.0), -40.0);
+        assert_eq!(clamp_output_volume_db(-12.0), -12.0);
+        assert_eq!(clamp_output_volume_db(f32::NAN), 0.0);
     }
 }

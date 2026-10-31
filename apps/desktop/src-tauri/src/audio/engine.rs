@@ -47,6 +47,7 @@ use crate::audio::domain::{
     NoiseSuppressionDepth, NoiseSuppressionMode, ParticipantId, ProcessorChainState,
     PublishedTrackId, PublishedTrackMetadata,
 };
+use crate::audio::leveler::SpeechLoudnessMeter;
 pub use crate::audio::playback::{OutputMixer, RenderCursor, RenderReference, UiSound};
 use crate::audio::processor::{
     linear_to_db, meter_samples, AudioBuffer, AudioProcessorPrepareConfig, ProcessorChainRuntime,
@@ -54,7 +55,8 @@ use crate::audio::processor::{
 use crate::audio::publisher::stable_webrtc_track_id;
 use crate::audio::resample::StereoResampler;
 use crate::audio::state::{
-    SharedAudioEngineState, AUDIO_METER_CHANGED_EVENT, AUDIO_STATE_CHANGED_EVENT,
+    save_remembered_volumes, SharedAudioEngineState, AUDIO_METER_CHANGED_EVENT,
+    AUDIO_STATE_CHANGED_EVENT,
 };
 use crate::audio::suppression::{new_suppressor, SuppressorStage};
 use crate::audio::voice::VoiceDetector;
@@ -164,6 +166,8 @@ const RECEIVER_MAX_BLOCK: usize = 4096;
 /// Fastest a receiver fader / mute may move, in gain units per millisecond, so muting or
 /// dragging someone's volume never clicks.
 const RECEIVER_GAIN_SLEW_PER_MS: f32 = 0.25;
+/// How often Auto-level moves faders. Its glides are slow; this only keeps them smooth.
+const AUTO_LEVEL_STEP_INTERVAL: Duration = Duration::from_millis(250);
 const RECOVERY_DELAYS: [Duration; 3] = [
     Duration::from_millis(250),
     Duration::from_secs(1),
@@ -364,9 +368,7 @@ pub struct AudioNetworkTotals {
 
 /// The round trip, in milliseconds, of the first in-use candidate pair that has a
 /// measurement. Publisher stats come first: that connection is the one carrying the mic.
-pub fn active_pair_round_trip_ms<'a>(
-    stats: impl IntoIterator<Item = &'a RtcStats>,
-) -> Option<f64> {
+pub fn active_pair_round_trip_ms<'a>(stats: impl IntoIterator<Item = &'a RtcStats>) -> Option<f64> {
     stats.into_iter().find_map(|stat| match stat {
         RtcStats::CandidatePair(pair)
             if pair.candidate_pair.nominated
@@ -606,6 +608,8 @@ struct RoomConnection {
     event_loop: JoinHandle<()>,
     readers: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     active: Arc<AtomicBool>,
+    /// Steps Auto-level while the room is up.
+    auto_level: JoinHandle<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -734,11 +738,16 @@ impl AudioEngine {
             local_identity,
         );
 
+        let auto_level = self
+            .handle()
+            .spawn(run_auto_level(app.clone(), Arc::clone(shared)));
+
         self.connection = Some(RoomConnection {
             room,
             event_loop,
             readers,
             active,
+            auto_level,
         });
         Ok(())
     }
@@ -751,6 +760,7 @@ impl AudioEngine {
         if let Some(connection) = self.connection.take() {
             connection.active.store(false, Ordering::SeqCst);
             connection.event_loop.abort();
+            connection.auto_level.abort();
             for (_, reader) in connection.readers.lock().unwrap().drain() {
                 reader.abort();
             }
@@ -1292,6 +1302,10 @@ impl AudioEngine {
                             // switching it fades, so it never clicks.
                             let mut voice =
                                 microphone.then(|| VoiceDetector::new(rate, PUBLISH_CHANNELS));
+                            // What Auto-level measures: speech loudness as sent, before
+                            // this listener's fader.
+                            let mut loudness = microphone
+                                .then(|| SpeechLoudnessMeter::new(rate, PUBLISH_CHANNELS));
                             let mut cleanup = microphone
                                 .then(|| SuppressorStage::new(None, rate, PUBLISH_CHANNELS));
                             let mut cleanup_on = false;
@@ -1311,6 +1325,8 @@ impl AudioEngine {
                                     chain = None;
                                     voice = microphone
                                         .then(|| VoiceDetector::new(rate, PUBLISH_CHANNELS));
+                                    loudness = microphone
+                                        .then(|| SpeechLoudnessMeter::new(rate, PUBLISH_CHANNELS));
                                     cleanup = microphone.then(|| {
                                         SuppressorStage::new(None, rate, PUBLISH_CHANNELS)
                                     });
@@ -1353,6 +1369,9 @@ impl AudioEngine {
                                 // gain and mute, so neither depends on them.
                                 if let Some(voice) = voice.as_mut() {
                                     voice.process(&samples);
+                                }
+                                if let Some(loudness) = loudness.as_mut() {
+                                    loudness.process(&samples);
                                 }
                                 if let Some(stage) = cleanup.as_mut() {
                                     if noise_cleanup != cleanup_on && !stage.is_switching() {
@@ -1431,6 +1450,10 @@ impl AudioEngine {
                                         meter,
                                         input_level.take(),
                                         voice.as_mut().map(VoiceDetector::take_probability),
+                                        loudness.as_mut().map(|meter| SpeechWindow {
+                                            loudness_db: meter.take(),
+                                            duration: last_meter.elapsed(),
+                                        }),
                                     );
                                     meter_accum.clear();
                                     last_meter = Instant::now();
@@ -2209,6 +2232,7 @@ fn unregister_participant(
     let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_remote_meter(
     app: &AppHandle,
     shared: &SharedAudioEngineState,
@@ -2217,15 +2241,58 @@ fn update_remote_meter(
     meter: MeterState,
     input_meter: MeterState,
     voice_probability: Option<f32>,
+    speech: Option<SpeechWindow>,
 ) {
     // The strip in the snapshot is best-effort; the event below is what drives the live
-    // meters and speaking rings, so it is sent even if the state lock is busy.
+    // meters and speaking rings, so it is sent even if the state lock is busy. Auto-level
+    // is statistics, so a window lost to a busy lock costs nothing.
     if let Ok(mut guard) = shared.try_write() {
         guard.set_remote_track_meter(participant_id, track_id, meter.clone());
+        if let (Some(speech), Some(probability)) = (speech, voice_probability) {
+            guard.observe_auto_level(
+                participant_id,
+                track_id,
+                speech.loudness_db,
+                probability,
+                speech.duration,
+                Instant::now(),
+            );
+        }
     }
     let mut update = AudioMeterUpdate::remote(participant_id, track_id, meter, input_meter);
     update.voice_probability = voice_probability;
     let _ = app.emit(AUDIO_METER_CHANGED_EVENT, update);
+}
+
+/// One meter window of a microphone's speech loudness, for Auto-level.
+struct SpeechWindow {
+    loudness_db: f32,
+    duration: Duration,
+}
+
+/// Step Auto-level for as long as the room is up: move the faders it wants moved, tell
+/// the UI, and save the volumes once a glide settles. It takes no `ops` lock and runs
+/// no reconcile: the readers pick a fader up on their own.
+async fn run_auto_level(app: AppHandle, shared: SharedAudioEngineState) {
+    let mut ticker = tokio::time::interval(AUTO_LEVEL_STEP_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        let (snapshot, volumes) = {
+            let Ok(mut guard) = shared.try_write() else {
+                continue;
+            };
+            let step = guard.step_auto_level(Instant::now());
+            (step.changed.then(|| guard.snapshot()), step.volumes_to_save)
+        };
+        if let Some(snapshot) = snapshot {
+            let _ = app.emit(AUDIO_STATE_CHANGED_EVENT, snapshot);
+        }
+        if let Some(volumes) = volumes {
+            let app = app.clone();
+            tokio::task::spawn_blocking(move || save_remembered_volumes(&app, &volumes));
+        }
+    }
 }
 
 /// Running peak / RMS of a stream, read out once per meter interval without keeping the

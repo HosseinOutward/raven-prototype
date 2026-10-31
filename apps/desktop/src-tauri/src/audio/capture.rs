@@ -2048,6 +2048,15 @@ fn spawn_capture_event_pump(
                         } = analysis;
                         source.channel_strip.meter = safety.meter.clone();
                         source.channel_strip.health = safety.health.clone();
+                        if source.source_type == AudioSourceType::Microphone {
+                            // So the listener's own voice, coming back through someone
+                            // else's speakers, is not learned by Auto-level as theirs.
+                            engine.observe_own_voice(
+                                safety.meter.rms_db.0,
+                                voice_probability.unwrap_or(0.0),
+                                Instant::now(),
+                            );
+                        }
                         let mut update =
                             AudioMeterUpdate::local(source_id, safety.meter, safety.health);
                         update.input_meter = muted_input;

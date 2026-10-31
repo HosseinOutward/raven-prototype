@@ -35,6 +35,14 @@ import {
   type ThumbnailToolbarAction,
 } from "@/lib/thumbnailToolbar";
 import { buildTraySnapshot, subscribeTrayActions, trayCommands } from "@/lib/tray";
+import {
+  formatOutputVolume,
+  OUTPUT_VOLUME_MAX_DB,
+  OUTPUT_VOLUME_MIN_DB,
+  OUTPUT_VOLUME_STEP_DB,
+  previewOutputVolume,
+  volumeAfterKey,
+} from "@/lib/outputVolume";
 import { api } from "@/lib/api";
 import { useAvatarVersions } from "@/lib/avatarVersions";
 import { focusPanelOnOpen } from "@/lib/focusHandoff";
@@ -1281,10 +1289,75 @@ function OutputMenu({ media }: { media: RavenMediaAdapterState }) {
         ))}
       </div>
       <div className="mx-2 my-1.5 h-px bg-border" />
+      <VolumeSlider volumeDb={media.outputVolumeDb} onCommit={(volumeDb) => void media.setOutputVolume(volumeDb).catch(() => undefined)} />
+      <div className="mx-2 my-1.5 h-px bg-border" />
       <div className="px-2 pb-1">
         <Button variant="secondary" size="sm" className="w-full" disabled={!supported} onClick={() => void media.testOutputDevice().catch(() => undefined)}>
           Play a test sound
         </Button>
+      </div>
+    </div>
+  );
+}
+
+/** How loud everything Raven plays is. It is heard while it moves and saved when you let go. */
+function VolumeSlider({ volumeDb, onCommit }: { volumeDb: number; onCommit: (volumeDb: number) => void }) {
+  const [draft, setDraft] = useState(volumeDb);
+  const draftRef = useRef(volumeDb);
+  const dragging = useRef(false);
+  useEffect(() => {
+    if (dragging.current) return;
+    setDraft(volumeDb);
+    draftRef.current = volumeDb;
+  }, [volumeDb]);
+  const move = (next: number) => {
+    draftRef.current = next;
+    setDraft(next);
+  };
+  const finish = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    onCommit(draftRef.current);
+  };
+  const text = formatOutputVolume(draft);
+  return (
+    <div className="pb-1">
+      <div className="flex items-baseline justify-between">
+        <MenuHeading>Volume</MenuHeading>
+        <span className="pr-2 text-caption tabular-nums text-muted-foreground">{text}</span>
+      </div>
+      <div className="px-2 pb-1">
+        <input
+          className="raven-fader"
+          type="range"
+          aria-label="Volume"
+          aria-valuetext={text}
+          min={OUTPUT_VOLUME_MIN_DB}
+          max={OUTPUT_VOLUME_MAX_DB}
+          step={OUTPUT_VOLUME_STEP_DB}
+          value={draft}
+          onPointerDown={() => {
+            dragging.current = true;
+          }}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            move(next);
+            previewOutputVolume(next);
+          }}
+          onPointerUp={finish}
+          onPointerCancel={finish}
+          onKeyDown={(event) => {
+            const next = volumeAfterKey(draftRef.current, event.key);
+            if (next === null) return;
+            event.preventDefault();
+            move(next);
+            onCommit(next);
+          }}
+          onDoubleClick={() => {
+            move(0);
+            onCommit(0);
+          }}
+        />
       </div>
     </div>
   );
