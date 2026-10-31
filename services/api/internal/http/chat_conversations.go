@@ -24,7 +24,7 @@ func chatSummarySQL(one bool) string {
 	}
 	return fmt.Sprintf(`SELECT b.id, b.kind, b.name, b.topic, b.tree_id, b.last_seq, b.last_activity_ms, b.created_at,
 		b.notify, b.member_role, b.visible_from_seq, b.read_seq, b.hide_rev, b.archived, b.listed, b.tree_role,
-		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_is_friend, b.shares_read,
+		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_read_at, b.peer_is_friend, b.shares_read,
 		b.member_count, b.preview_seq, b.unread_count,
 		COALESCE(pm.id, ''), COALESCE(pm.sender_id, ''), COALESCE(NULLIF(TRIM(pmp.display_name), ''), pmu.username, ''),
 		COALESCE(pm.kind, ''), COALESCE(pm.body, ''), pm.system_json, COALESCE(pm.created_at, ''),
@@ -41,10 +41,11 @@ func chatSummarySQL(one bool) string {
 			COALESCE(pu.username, '') AS peer_username,
 			COALESCE(NULLIF(TRIM(pp.display_name), ''), pu.username, '') AS peer_name,
 			COALESCE(peer.shared_read_seq, 0) AS peer_read_seq,
+			peer.shared_read_at AS peer_read_at,
 			CASE WHEN peer.user_id IS NOT NULL AND EXISTS (
 				SELECT 1 FROM friendships f WHERE f.user_id = cm.user_id AND f.friend_user_id = peer.user_id
 			) THEN 1 ELSE 0 END AS peer_is_friend,
-			CASE WHEN COALESCE(ms.share_read_status, TRUE) AND COALESCE(ps.share_read_status, TRUE) THEN 1 ELSE 0 END AS shares_read,
+			CASE WHEN COALESCE(ms.read_dm, TRUE) AND COALESCE(ps.read_dm, TRUE) THEN 1 ELSE 0 END AS shares_read,
 			CASE WHEN c.kind = 'nest'
 				THEN (SELECT COUNT(*) FROM tree_members x WHERE x.tree_id = c.tree_id AND x.state = 'joined')
 				ELSE (SELECT COUNT(*) FROM chat_members x WHERE x.conversation_id = c.id AND x.state = 'joined')
@@ -104,6 +105,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 		var memberRole, treeRole, peerID, peerUsername, peerName string
 		var archived, listed, peerIsFriend, sharesRead int
 		var peerReadSeq, previewSeq int64
+		var peerReadAt sql.NullString
 		var preview ChatMessagePreview
 		var previewBody string
 		var previewSystem sql.NullString
@@ -111,7 +113,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 		if err := rows.Scan(
 			&item.ID, &item.Kind, &item.Name, &item.Topic, &item.TreeID, &item.LastSeq, &item.LastActivityMs, &item.CreatedAt,
 			&item.Notify, &memberRole, &item.VisibleFromSeq, &item.ReadSeq, &item.HideRev, &archived, &listed, &treeRole,
-			&peerID, &peerUsername, &peerName, &peerReadSeq, &peerIsFriend, &sharesRead,
+			&peerID, &peerUsername, &peerName, &peerReadSeq, &peerReadAt, &peerIsFriend, &sharesRead,
 			&item.MemberCount, &previewSeq, &item.UnreadCount,
 			&preview.ID, &preview.SenderID, &preview.SenderName, &preview.Kind, &previewBody, &previewSystem, &preview.CreatedAt,
 			&previewDeleted,
@@ -132,6 +134,9 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 				if sharesRead != 0 {
 					shared := peerReadSeq
 					item.PeerReadSeq = &shared
+					if peerReadAt.Valid && shared > 0 {
+						item.PeerReadAt = &peerReadAt.String
+					}
 				}
 			}
 		case chatKindGroup:
@@ -1024,10 +1029,11 @@ func (s *Server) chatIsInvisible(q chatQuerier, userID string) (bool, error) {
 // markChatRead moves the caller's read position forward. It never moves back, and never
 // past what the conversation holds.
 //
-// Their other devices are always told. In a direct message the other person is told only
-// when both share read status, and not while the caller is invisible: reading would
-// otherwise give away that they are around. What was withheld is released the next time
-// they read while visible.
+// Their other devices are always told. The shared position, which is what others see,
+// moves only while the caller's switch for this kind of conversation is on, and not while
+// they are invisible: reading would otherwise give away that they are around. What was
+// withheld is released, with the time of the release, the next time they read while
+// visible. Whether a viewer may see it is decided when they look (chatMayShowRead).
 func (s *Server) markChatRead(c *fiber.Ctx) error {
 	user := currentUser(c)
 	conversationID := c.Params("id")
@@ -1050,8 +1056,12 @@ func (s *Server) markChatRead(c *fiber.Ctx) error {
 	}
 
 	sharedSeq := access.SharedReadSeq
-	if access.Kind == chatKindDM && access.PeerID != "" {
-		shares, err := chatSharesReadStatus(s.db, user.ID, access.PeerID)
+	category, err := chatReadCategory(s.db, access)
+	if err != nil {
+		return err
+	}
+	if readSeq > sharedSeq {
+		shares, err := chatReadSwitchOn(s.db, category, user.ID)
 		if err != nil {
 			return err
 		}
@@ -1059,19 +1069,25 @@ func (s *Server) markChatRead(c *fiber.Ctx) error {
 		if err != nil {
 			return err
 		}
-		if shares && !invisible && readSeq > sharedSeq {
+		if shares && !invisible {
 			sharedSeq = readSeq
 		}
 	}
 
+	now := database.Now()
 	if readSeq != access.ReadSeq || sharedSeq != access.SharedReadSeq {
+		var sharedAt any
+		if sharedSeq != access.SharedReadSeq {
+			sharedAt = now
+		}
 		if _, err := s.db.Exec(
 			`UPDATE chat_members
 			 SET read_seq = CASE WHEN read_seq < ? THEN ? ELSE read_seq END,
+			     shared_read_at = CASE WHEN shared_read_seq < ? THEN COALESCE(?, shared_read_at) ELSE shared_read_at END,
 			     shared_read_seq = CASE WHEN shared_read_seq < ? THEN ? ELSE shared_read_seq END,
 			     updated_at = ?
 			 WHERE conversation_id = ? AND user_id = ?`,
-			readSeq, readSeq, sharedSeq, sharedSeq, database.Now(), conversationID, user.ID,
+			readSeq, readSeq, sharedSeq, sharedAt, sharedSeq, sharedSeq, now, conversationID, user.ID,
 		); err != nil {
 			return err
 		}
@@ -1090,14 +1106,116 @@ func (s *Server) markChatRead(c *fiber.Ctx) error {
 		}, []string{user.ID})
 	}
 	if sharedSeq != access.SharedReadSeq {
+		recipients, err := s.chatReadAudience(s.db, access, category, user.ID)
+		if err != nil {
+			return err
+		}
 		s.publishChatEvent(ChatEvent{
 			Type:           "conversation.read",
 			ConversationID: conversationID,
 			UserID:         user.ID,
 			ReadSeq:        &sharedSeq,
-		}, []string{access.PeerID})
+			ReadAt:         now,
+		}, recipients)
 	}
 	return c.JSON(fiber.Map{"readSeq": readSeq, "unreadCount": unread})
+}
+
+// chatReadAudience is who may be shown the reader's position now: the other members of
+// the conversation whose own switch for the category is on.
+func (s *Server) chatReadAudience(q chatQuerier, access chatAccess, category, readerID string) ([]string, error) {
+	members, err := s.chatAudience(q, access, "")
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for _, member := range members {
+		if member.UserID == readerID {
+			continue
+		}
+		on, err := chatReadSwitchOn(q, category, member.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if on {
+			ids = append(ids, member.UserID)
+		}
+	}
+	return ids, nil
+}
+
+type chatSeenReader struct {
+	UserID      string `json:"userId"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	At          string `json:"at"`
+}
+
+// getChatSeen lists who has seen the conversation's last message, and when. It leaves out
+// the caller and the message's sender, anyone whose shared position is short of it, and
+// anyone no longer in the conversation. Both the caller's and the reader's switch for the
+// kind of conversation must be on; with the caller's off the list is empty.
+func (s *Server) getChatSeen(c *fiber.Ctx) error {
+	user := currentUser(c)
+	access, err := s.chatAccessFor(s.db, c.Params("id"), user.ID)
+	if err != nil {
+		return err
+	}
+	readers := []chatSeenReader{}
+	respond := func() error { return c.JSON(fiber.Map{"seq": access.LastSeq, "readers": readers}) }
+	if access.LastSeq == 0 {
+		return respond()
+	}
+	category, err := chatReadCategory(s.db, access)
+	if err != nil {
+		return err
+	}
+	on, err := chatReadSwitchOn(s.db, category, user.ID)
+	if err != nil {
+		return err
+	}
+	if !on {
+		return respond()
+	}
+	var senderID string
+	if err := s.db.QueryRow(
+		`SELECT sender_id FROM chat_messages WHERE conversation_id = ? AND seq = ?`, access.ConversationID, access.LastSeq,
+	).Scan(&senderID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	membership := `cm.state = 'joined'`
+	args := []any{}
+	if access.Kind == chatKindNest {
+		membership = `EXISTS (SELECT 1 FROM tree_members tm WHERE tm.tree_id = ? AND tm.user_id = cm.user_id AND tm.state = 'joined')`
+		args = append(args, access.TreeID)
+	}
+	args = append(args, access.ConversationID, access.LastSeq, user.ID, senderID)
+	rows, err := s.db.Query(
+		`SELECT cm.user_id, u.username, COALESCE(NULLIF(TRIM(p.display_name), ''), u.username), COALESCE(cm.shared_read_at, '')
+		 FROM chat_members cm
+		 JOIN users u ON u.id = cm.user_id
+		 LEFT JOIN user_preferences p ON p.user_id = u.id
+		 LEFT JOIN chat_user_settings s ON s.user_id = cm.user_id
+		 WHERE `+membership+` AND cm.conversation_id = ? AND cm.shared_read_seq >= ?
+		   AND cm.user_id <> ? AND cm.user_id <> ? AND `+chatReadSwitchSQL(category, "s")+`
+		 ORDER BY cm.shared_read_at, cm.user_id`,
+		args...,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reader chatSeenReader
+		if err := rows.Scan(&reader.UserID, &reader.Username, &reader.DisplayName, &reader.At); err != nil {
+			return err
+		}
+		readers = append(readers, reader)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return respond()
 }
 
 // chatTyping tells the other people in a conversation that the caller is typing. Nothing
@@ -1139,16 +1257,21 @@ func (s *Server) chatTyping(c *fiber.Ctx) error {
 }
 
 func (s *Server) chatSettingsFor(q chatQuerier, userID string) (ChatSettings, error) {
-	settings := ChatSettings{ShareReadStatus: true}
-	var share int
-	err := q.QueryRow(`SELECT CASE WHEN share_read_status THEN 1 ELSE 0 END FROM chat_user_settings WHERE user_id = ?`, userID).Scan(&share)
+	settings := ChatSettings{ShareReadStatus: true, ReadDM: true, ReadGroup: true, ReadPrivateSpace: true}
+	var dm, group, private, public int
+	err := q.QueryRow(
+		`SELECT CASE WHEN read_dm THEN 1 ELSE 0 END, CASE WHEN read_group THEN 1 ELSE 0 END,
+		        CASE WHEN read_private_space THEN 1 ELSE 0 END, CASE WHEN read_public_space THEN 1 ELSE 0 END
+		 FROM chat_user_settings WHERE user_id = ?`, userID,
+	).Scan(&dm, &group, &private, &public)
 	if errors.Is(err, sql.ErrNoRows) {
 		return settings, nil
 	}
 	if err != nil {
 		return settings, err
 	}
-	settings.ShareReadStatus = share != 0
+	settings.ShareReadStatus, settings.ReadDM = dm != 0, dm != 0
+	settings.ReadGroup, settings.ReadPrivateSpace, settings.ReadPublicSpace = group != 0, private != 0, public != 0
 	return settings, nil
 }
 
@@ -1160,52 +1283,122 @@ func (s *Server) getChatSettings(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"settings": settings})
 }
 
-// updateChatSettings stores whether the caller shares read status. It works both ways:
-// with it off they neither show nor see how far the other person has read, so the people
-// they have direct messages with are told to look again.
+// updateChatSettings stores the read-receipt switches; any it leaves out stay as they
+// are. Each works both ways: with one off the caller neither shows nor sees how far others
+// have read in that kind of conversation. shareReadStatus is the old name of readDm. The
+// people in the affected conversations are told to look again with conversation.seen.
 func (s *Server) updateChatSettings(c *fiber.Ctx) error {
 	user := currentUser(c)
 	var input struct {
-		ShareReadStatus *bool `json:"shareReadStatus"`
+		ShareReadStatus  *bool `json:"shareReadStatus"`
+		ReadDM           *bool `json:"readDm"`
+		ReadGroup        *bool `json:"readGroup"`
+		ReadPrivateSpace *bool `json:"readPrivateSpace"`
+		ReadPublicSpace  *bool `json:"readPublicSpace"`
 	}
-	if err := c.BodyParser(&input); err != nil || input.ShareReadStatus == nil {
+	if err := c.BodyParser(&input); err != nil {
 		return errChatInvalidBody
 	}
-	now := database.Now()
-	if _, err := s.db.Exec(
-		`INSERT INTO chat_user_settings (user_id, share_read_status, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT (user_id) DO UPDATE SET share_read_status = excluded.share_read_status, updated_at = excluded.updated_at`,
-		user.ID, *input.ShareReadStatus, now,
-	); err != nil {
-		return err
+	if input.ReadDM == nil {
+		input.ReadDM = input.ShareReadStatus
 	}
-	rows, err := s.db.Query(
-		`SELECT peer.conversation_id, peer.user_id
-		 FROM chat_members me
-		 JOIN chat_conversations c ON c.id = me.conversation_id AND c.kind = 'dm' AND c.status = 'active'
-		 JOIN chat_members peer ON peer.conversation_id = c.id AND peer.user_id <> me.user_id
-		 WHERE me.user_id = ?`,
-		user.ID,
-	)
+	if input.ReadDM == nil && input.ReadGroup == nil && input.ReadPrivateSpace == nil && input.ReadPublicSpace == nil {
+		return errChatInvalidBody
+	}
+	before, err := s.chatSettingsFor(s.db, user.ID)
 	if err != nil {
 		return err
 	}
-	type pair struct{ conversationID, peerID string }
-	pairs := []pair{}
+	after := before
+	apply := func(target *bool, value *bool) {
+		if value != nil {
+			*target = *value
+		}
+	}
+	apply(&after.ReadDM, input.ReadDM)
+	apply(&after.ReadGroup, input.ReadGroup)
+	apply(&after.ReadPrivateSpace, input.ReadPrivateSpace)
+	apply(&after.ReadPublicSpace, input.ReadPublicSpace)
+	after.ShareReadStatus = after.ReadDM
+	if _, err := s.db.Exec(
+		`INSERT INTO chat_user_settings (user_id, share_read_status, read_dm, read_group, read_private_space, read_public_space, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (user_id) DO UPDATE SET share_read_status = excluded.share_read_status, read_dm = excluded.read_dm,
+		   read_group = excluded.read_group, read_private_space = excluded.read_private_space,
+		   read_public_space = excluded.read_public_space, updated_at = excluded.updated_at`,
+		user.ID, after.ReadDM, after.ReadDM, after.ReadGroup, after.ReadPrivateSpace, after.ReadPublicSpace, database.Now(),
+	); err != nil {
+		return err
+	}
+	changed := map[string]bool{
+		chatReadDM:           before.ReadDM != after.ReadDM,
+		chatReadGroup:        before.ReadGroup != after.ReadGroup,
+		chatReadPrivateSpace: before.ReadPrivateSpace != after.ReadPrivateSpace,
+		chatReadPublicSpace:  before.ReadPublicSpace != after.ReadPublicSpace,
+	}
+	for category, did := range changed {
+		if !did {
+			continue
+		}
+		if err := s.notifyReadSwitch(user.ID, category); err != nil {
+			return err
+		}
+	}
+	s.publishChatEvent(ChatEvent{Type: "settings.changed"}, []string{user.ID})
+	return c.JSON(fiber.Map{"settings": after})
+}
+
+// notifyReadSwitch tells everyone in the caller's conversations of one category that
+// what they may see there has changed. Direct messages also get conversation.changed,
+// since their summary carries the peer's read position.
+func (s *Server) notifyReadSwitch(userID, category string) error {
+	var rows *sql.Rows
+	var err error
+	switch category {
+	case chatReadDM, chatReadGroup:
+		kind := chatKindDM
+		if category == chatReadGroup {
+			kind = chatKindGroup
+		}
+		rows, err = s.db.Query(
+			`SELECT c.id, o.user_id
+			 FROM chat_members me
+			 JOIN chat_conversations c ON c.id = me.conversation_id AND c.kind = ? AND c.status = 'active'
+			 JOIN chat_members o ON o.conversation_id = c.id AND o.state = 'joined'
+			 WHERE me.user_id = ? AND me.state = 'joined'`, kind, userID)
+	default:
+		visibility := "private"
+		if category == chatReadPublicSpace {
+			visibility = "public"
+		}
+		rows, err = s.db.Query(
+			`SELECT c.id, o.user_id
+			 FROM tree_members me
+			 JOIN trees t ON t.id = me.tree_id AND t.visibility = ?
+			 JOIN chat_conversations c ON c.tree_id = t.id AND c.kind = 'nest' AND c.status = 'active'
+			 JOIN tree_members o ON o.tree_id = t.id AND o.state = 'joined'
+			 WHERE me.user_id = ? AND me.state = 'joined'`, visibility, userID)
+	}
+	if err != nil {
+		return err
+	}
+	byConversation := map[string][]string{}
 	for rows.Next() {
-		var item pair
-		if err := rows.Scan(&item.conversationID, &item.peerID); err != nil {
+		var conversationID, memberID string
+		if err := rows.Scan(&conversationID, &memberID); err != nil {
 			rows.Close()
 			return err
 		}
-		pairs = append(pairs, item)
+		byConversation[conversationID] = append(byConversation[conversationID], memberID)
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	for _, item := range pairs {
-		s.publishChatEvent(ChatEvent{Type: "conversation.changed", ConversationID: item.conversationID}, []string{item.peerID, user.ID})
+	for conversationID, members := range byConversation {
+		if category == chatReadDM {
+			s.publishChatEvent(ChatEvent{Type: "conversation.changed", ConversationID: conversationID}, members)
+		}
+		s.publishChatEvent(ChatEvent{Type: "conversation.seen", ConversationID: conversationID}, members)
 	}
-	s.publishChatEvent(ChatEvent{Type: "settings.changed"}, []string{user.ID})
-	return c.JSON(fiber.Map{"settings": ChatSettings{ShareReadStatus: *input.ShareReadStatus}})
+	return nil
 }

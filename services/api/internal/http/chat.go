@@ -166,6 +166,8 @@ type ChatConversation struct {
 	// PeerReadSeq is how far the other person in a direct message has read. It is present
 	// only when both people share read status.
 	PeerReadSeq    *int64 `json:"peerReadSeq,omitempty"`
+	// PeerReadAt is when that position last moved.
+	PeerReadAt     *string `json:"peerReadAt,omitempty"`
 	HideRev        int64  `json:"hideRev"`
 	VisibleFromSeq int64  `json:"visibleFromSeq"`
 	Archived       bool   `json:"archived"`
@@ -183,8 +185,14 @@ type ChatViewerState struct {
 	VisibleFromSeq int64 `json:"visibleFromSeq"`
 }
 
+// ChatSettings holds the four read-receipt switches. ShareReadStatus is the old name of
+// ReadDM, kept for older clients.
 type ChatSettings struct {
-	ShareReadStatus bool `json:"shareReadStatus"`
+	ShareReadStatus  bool `json:"shareReadStatus"`
+	ReadDM           bool `json:"readDm"`
+	ReadGroup        bool `json:"readGroup"`
+	ReadPrivateSpace bool `json:"readPrivateSpace"`
+	ReadPublicSpace  bool `json:"readPublicSpace"`
 }
 
 func (s *Server) registerChatRoutes(service fiber.Router) {
@@ -215,6 +223,7 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	conversation.Post("/messages/:messageId/edit", s.chatLimiter("edit", 30, time.Minute), s.chatRoute("edit", s.editChatMessage))
 	conversation.Delete("/messages/:messageId", s.chatLimiter("delete", 60, time.Minute), s.chatRoute("delete message", s.deleteChatMessage))
 	conversation.Post("/read", s.chatRoute("read", s.markChatRead))
+	conversation.Get("/seen", s.chatRoute("seen", s.getChatSeen))
 	conversation.Post("/typing", s.chatLimiter("typing", 20, 10*time.Second), s.chatRoute("typing", s.chatTyping))
 
 	s.registerTreeLayoutRoutes(service)

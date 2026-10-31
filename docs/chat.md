@@ -22,13 +22,14 @@ These were decided with Soroush on 2026-10-11.
 |---|---|
 | Layout | The sidebar stays the live map. One **Friends and groups** section (changed on 2026-10-16, replacing a separate Messages section) has a row per friend, which opens your conversation with them, and a row per recent group; a round avatar with presence is a person, a square one a group. "All conversations" opens the full list. An expanded tree lists its live voice nests, its text nests with unread messages and the open one; the rest are in the tree lobby, where categories and order for voice and text nests are managed. |
 | Who can write to whom | Friends only, for direct messages and for adding to a group. If a friendship ends, the history stays readable and new messages and edits are refused. Deleting your own messages still works. |
-| Read status | Shown to the other person in direct messages only. It is mutual: one setting (Settings › Messages) turns it off in both directions. Groups and text nests never show who has read. Your own read position always syncs across your devices. |
+| Read status | Four mutual switches (Settings › Messages), changed 2026-10-31: **Direct messages, Groups, Private spaces, Public spaces**. A text nest counts as private or public by its tree's visibility at the moment it is asked. With a switch off you are neither shown nor shown others in that kind of conversation. Defaults: direct messages keep each person's old setting, groups on, private spaces on, public spaces off. Direct messages show read ticks; every kind shows, under your own last message, who has seen it and when (`GET /conversations/:id/seen`). Only the last message shows this. Your own read position always syncs across your devices. |
 | Unread | A neutral count on the conversation's own row; a plain dot on tree rows, the collapsed rail and the Windows taskbar icon. A soft sound for new live messages in conversations that notify; optional Windows notifications while Raven is in the background. |
 
 Defaults chosen during the build. Each is one constant or one check to change:
 
-- Read status defaults to on. While your presence is Invisible, nobody is shown that you
-  have read or that you are typing.
+- Read status defaults to on, except in public spaces. While your presence is Invisible, nobody
+  is shown that you have read or that you are typing; what was withheld is released, with the
+  time of the release, the next time you read while visible.
 - A message is pending, then sent, then (in a direct message) read. There is no separate
   "delivered".
 - You can edit your own text messages for 48 hours. An edited message is marked "edited";
@@ -227,7 +228,7 @@ The SQL runs on PostgreSQL (production) and SQLite (local use and the default te
 | `chat_object_purges` | Durable object keys queued inside the deletion transaction, with retry attempts. |
 | `chat_reactions` | Emoji, message, conversation, person and creation time; unique on `(message_id, user_id, emoji)`. Migration `2026103102_chat_reactions` runs on SQLite and PostgreSQL. Delete for everyone and group/tree deletion remove the rows; hiding and clearing retain them. |
 | `chat_message_hides` | "Remove for me": person, message. |
-| `chat_user_settings` | `share_read_status`. |
+| `chat_user_settings` | `read_dm`, `read_group`, `read_private_space`, `read_public_space` (the four read-status switches; `share_read_status` is kept in step with `read_dm` for older clients). `chat_members.shared_read_at` is when `shared_read_seq` last moved. |
 | `tree_categories`, `tree_layout_items` | Categories of a tree and the category and position of each voice and text nest. An overlay: the `nests` table is unchanged. |
 
 Ids are 32 hexadecimal characters and timestamps are RFC 3339 text, like the rest of
@@ -314,11 +315,12 @@ Chat events arrive on `GET /v1/nest-events` as SSE event `chat` with a JSON body
 | `message.updated` | An edit, reaction or delete for everyone. | Everyone who may see it. |
 | `conversation.bump` | The conversation changed at `seq`, without the content. | People who may not see that message. |
 | `message.hidden` | You removed a message for yourself. | Your own devices. |
-| `conversation.read` | A read position moved. | Your own devices (with the new unread count), and a direct-message peer when read status is shared. |
+| `conversation.read` | A read position moved. | Your own devices (with the new unread count). Others get it only for the shared position, with `readAt`: the direct-message peer, or the other group or tree members, whose own switch for that kind of conversation is on. |
+| `conversation.seen` | Someone changed a read-status switch. | Everyone in their conversations of that kind; fetch `/seen` again. A direct-message switch also sends `conversation.changed`. |
 | `conversation.changed` | Name, members or your role changed; refetch the summary. | Members. |
 | `conversation.removed` | You no longer have this conversation. | The people affected. |
 | `typing` | Someone is typing. Never stored, not sent while Invisible. | The other members. |
-| `settings.changed` | Your read-status setting changed. | Your own devices. |
+| `settings.changed` | Your read-status settings changed. | Your own devices. |
 
 The stream is closed by the server when its session signs out or is revoked, re-checks its
 session every five minutes, and ends cleanly on shutdown. The client reconnects with jitter
@@ -432,7 +434,7 @@ results are in [chat-testing.md](chat-testing.md).
 | Offline delivery; reconnect without gaps | Go: catch-up through list and changes. Client sync tests. Bench reconnect and restart. |
 | History with paging | Go: before, after, around; floors and hides respected. App: 20,000 messages. |
 | Optimistic sending: pending, sent, failed, retry | Client outbox tests. App: API stopped and restarted mid-conversation. |
-| Delivery and read status; unread counts; mark read across devices | Go: clamping, mutual setting, Invisible. Client arithmetic. App. |
+| Delivery and read status; unread counts; mark read across devices | Go: clamping, the four mutual switches, Invisible and its release time, a nest following its tree's visibility, left members, `/seen` (`chat_seen_test.go`). Client arithmetic. App. |
 | Typing and presence | Go: audience, Invisible, rate limit. App. |
 | Group membership with immediate effect | Go: add, remove, leave, owner handover, history floor. App: a removed member gets 404 at once. |
 | Authorization against manipulated requests | Go: every route as an outsider, as a removed member and with ids from another conversation. |

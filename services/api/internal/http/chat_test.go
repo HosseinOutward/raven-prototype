@@ -759,6 +759,9 @@ func TestChatReadStatusIsMutualAndCanBeTurnedOff(t *testing.T) {
 	if event := nextChatEvent(t, bobStream); event.Type != "conversation.changed" || event.ConversationID != dm.ID {
 		t.Fatalf("the other person should be told to look again: %+v", event)
 	}
+	if event := nextChatEvent(t, bobStream); event.Type != "conversation.seen" || event.ConversationID != dm.ID {
+		t.Fatalf("and told the receipts changed: %+v", event)
+	}
 
 	// Off for Alice means off both ways: neither sees the other's position.
 	if entry := chatFind(chatList(t, server, bob.token), dm.ID); entry.PeerReadSeq != nil {

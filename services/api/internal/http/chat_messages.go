@@ -203,15 +203,77 @@ func chatMessageHiddenBy(q chatQuerier, messageID, userID string) (bool, error) 
 	return count > 0, err
 }
 
-// chatSharesReadStatus reports whether two people both allow the other to see how far
-// they have read. A person with no stored setting shares.
-func chatSharesReadStatus(q chatQuerier, userID, otherID string) (bool, error) {
-	var optedOut int
+// Read receipts are shown per kind of conversation. A text nest counts as a private or
+// public space by its tree's visibility at the moment it is asked.
+const (
+	chatReadDM           = "dm"
+	chatReadGroup        = "group"
+	chatReadPrivateSpace = "private_space"
+	chatReadPublicSpace  = "public_space"
+)
+
+// chatReadColumns maps a category to its switch's column and its default for people who
+// have never stored settings. The columns are fixed names, never user input.
+var chatReadColumns = map[string]struct {
+	column  string
+	enabled bool
+}{
+	chatReadDM:           {"read_dm", true},
+	chatReadGroup:        {"read_group", true},
+	chatReadPrivateSpace: {"read_private_space", true},
+	chatReadPublicSpace:  {"read_public_space", false},
+}
+
+// chatReadCategory says which switch governs read status in a conversation.
+func chatReadCategory(q chatQuerier, access chatAccess) (string, error) {
+	switch access.Kind {
+	case chatKindDM:
+		return chatReadDM, nil
+	case chatKindGroup:
+		return chatReadGroup, nil
+	}
+	var visibility string
+	if err := q.QueryRow(`SELECT visibility FROM trees WHERE id = ?`, access.TreeID).Scan(&visibility); err != nil {
+		return "", err
+	}
+	if visibility == "public" {
+		return chatReadPublicSpace, nil
+	}
+	return chatReadPrivateSpace, nil
+}
+
+// chatReadSwitchSQL is a SQL expression for a person's switch in a category, given the
+// alias of their chat_user_settings row (which may be missing).
+func chatReadSwitchSQL(category, alias string) string {
+	spec := chatReadColumns[category]
+	def := "FALSE"
+	if spec.enabled {
+		def = "TRUE"
+	}
+	return "COALESCE(" + alias + "." + spec.column + ", " + def + ")"
+}
+
+// chatReadSwitchOn reports whether one person has the category's switch on.
+func chatReadSwitchOn(q chatQuerier, category, userID string) (bool, error) {
+	var on int
 	err := q.QueryRow(
-		`SELECT COUNT(*) FROM chat_user_settings WHERE user_id IN (?, ?) AND share_read_status = FALSE`,
-		userID, otherID,
-	).Scan(&optedOut)
-	return optedOut == 0, err
+		`SELECT CASE WHEN `+chatReadSwitchSQL(category, "s")+` THEN 1 ELSE 0 END
+		 FROM (SELECT 1) one LEFT JOIN chat_user_settings s ON s.user_id = ?`,
+		userID,
+	).Scan(&on)
+	return on != 0, err
+}
+
+// chatMayShowRead reports whether a viewer may see how far a reader has read in a
+// category: both must have the switch on.
+func chatMayShowRead(q chatQuerier, category, viewerID, readerID string) (bool, error) {
+	for _, id := range []string{viewerID, readerID} {
+		on, err := chatReadSwitchOn(q, category, id)
+		if err != nil || !on {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func (s *Server) sendChatMessage(c *fiber.Ctx) error {
@@ -374,21 +436,22 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 		return chatStored{}, err
 	}
 
-	// Sending means you have seen what came before. In a direct message the other person
-	// may see that too, when both share read status.
-	sharedSeq := access.SharedReadSeq
-	if access.Kind == chatKindDM && access.PeerID != "" {
-		shares, err := chatSharesReadStatus(tx, sender.ID, access.PeerID)
-		if err != nil {
-			return chatStored{}, err
-		}
-		if shares {
-			sharedSeq = seq
-		}
+	// Sending means you have seen what came before. Others may see that too, when the
+	// sender's switch for this kind of conversation is on.
+	sharedSeq, sharedAt := access.SharedReadSeq, any(nil)
+	category, err := chatReadCategory(tx, access)
+	if err != nil {
+		return chatStored{}, err
+	}
+	if shares, err := chatReadSwitchOn(tx, category, sender.ID); err != nil {
+		return chatStored{}, err
+	} else if shares {
+		sharedSeq, sharedAt = seq, now
 	}
 	if _, err := tx.Exec(
-		`UPDATE chat_members SET read_seq = ?, shared_read_seq = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`,
-		seq, sharedSeq, now, conversationID, sender.ID,
+		`UPDATE chat_members SET read_seq = ?, shared_read_seq = ?, shared_read_at = COALESCE(?, shared_read_at), updated_at = ?
+		 WHERE conversation_id = ? AND user_id = ?`,
+		seq, sharedSeq, sharedAt, now, conversationID, sender.ID,
 	); err != nil {
 		return chatStored{}, err
 	}

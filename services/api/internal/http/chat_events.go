@@ -17,7 +17,8 @@ type ChatEvent struct {
 	//   message.updated     an edit, reaction, or a message deleted for everyone (Seq, Message)
 	//   conversation.bump   something changed that this person may not see (Seq only)
 	//   message.hidden      you removed a message for yourself on another device
-	//   conversation.read   someone's read position moved (UserID, ReadSeq)
+	//   conversation.read   someone's read position moved (UserID, ReadSeq, ReadAt)
+	//   conversation.seen   someone changed a read-receipt switch; fetch /seen again
 	//   conversation.changed the conversation's details changed; fetch it again
 	//   conversation.removed you no longer have this conversation
 	//   typing              someone is typing (UserID, UserName)
@@ -29,6 +30,7 @@ type ChatEvent struct {
 	UserID         string       `json:"userId,omitempty"`
 	UserName       string       `json:"userName,omitempty"`
 	ReadSeq        *int64       `json:"readSeq,omitempty"`
+	ReadAt         string       `json:"readAt,omitempty"`
 	UnreadCount    *int64       `json:"unreadCount,omitempty"`
 	HideRev        *int64       `json:"hideRev,omitempty"`
 	At             string       `json:"at"`
