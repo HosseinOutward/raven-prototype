@@ -6,6 +6,7 @@ import type {
   ChatConversation,
   ChatMember,
   ChatMessage,
+  ChatSeen,
   ChatPage,
   ChatSettings,
   TreeCategory,
@@ -62,7 +63,8 @@ export interface ChatApi {
   deleteForMe(id: string, messageId: string): Promise<{ hideRev: number; unreadCount: number }>;
   markRead(id: string, seq: number): Promise<{ readSeq: number; unreadCount: number }>;
   typing(id: string): Promise<void>;
-  updateSettings(settings: ChatSettings): Promise<{ settings: ChatSettings }>;
+  updateSettings(settings: Partial<ChatSettings>): Promise<{ settings: ChatSettings }>;
+  seen(id: string): Promise<ChatSeen>;
   treeLayout(treeId: string): Promise<{ layout: TreeLayout }>;
   saveTreeLayout(treeId: string, layout: { categories: string[]; items: Array<{ kind: "voice" | "text"; id: string; categoryId?: string }> }): Promise<{ layout: TreeLayout }>;
   createCategory(treeId: string, name: string): Promise<{ category: TreeCategory }>;
@@ -110,6 +112,7 @@ export const chatApi: ChatApi = {
   deleteForMe: (id, messageId) => api.call(`${conversationPath(id)}/messages/${encodeURIComponent(messageId)}?for=me`, { method: "DELETE" }),
   markRead: (id, seq) => api.call(`${conversationPath(id)}/read`, json({ seq })),
   typing: (id) => api.call(`${conversationPath(id)}/typing`, { method: "POST" }),
+  seen: (id) => api.call(`${conversationPath(id)}/seen`),
   updateSettings: (settings) => api.call("/v1/chat/settings", json(settings)),
   treeLayout: (treeId) => api.call(`${treePath(treeId)}/layout`),
   saveTreeLayout: (treeId, layout) => api.call(`${treePath(treeId)}/layout`, json(layout)),

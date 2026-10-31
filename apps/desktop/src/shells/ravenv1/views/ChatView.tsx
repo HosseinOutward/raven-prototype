@@ -109,7 +109,7 @@ function OpenConversation({
   const me = data.user?.id ?? "";
   const windowActive = useWindowActive();
   const connection = useChatSelector(chat, (state) => state.connection, "connecting");
-  const sharesReadStatus = useChatSelector(chat, (state) => state.settings.shareReadStatus, true);
+  const sharesReadStatus = useChatSelector(chat, (state) => state.settings.readDm, true);
   const list = useRef<MessageListHandle>(null);
 
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);

@@ -27,6 +27,7 @@ import {
   type ChatMessagePreview,
   type ChatPage,
   type ChatReaction,
+  type ChatSeen,
   type ChatSettings,
   type ChatState,
   type ConversationState,
@@ -41,8 +42,10 @@ export const WINDOW_TRIM_TO = 400;
 /** How long "is typing" stays up after the last signal. The sender repeats it every 4 s. */
 export const TYPING_TTL_MS = 6000;
 
+export const DEFAULT_SETTINGS: ChatSettings = { shareReadStatus: true, readDm: true, readGroup: true, readPrivateSpace: true, readPublicSpace: false };
+
 export function emptyChatState(me: string): ChatState {
-  return { me, connection: "connecting", listLoaded: false, conversations: {}, settings: { shareReadStatus: true }, layouts: {} };
+  return { me, connection: "connecting", listLoaded: false, conversations: {}, settings: DEFAULT_SETTINGS, layouts: {} };
 }
 
 export function newConversation(summary: ChatConversation, members: ChatMember[] = []): ConversationState {
@@ -315,6 +318,9 @@ export function applyEvent(state: ChatState, event: ChatEvent, now: number, atBo
           }
         }
       }
+      if (created && seq > (conversation.seen?.seq ?? 0)) {
+        conversation = { ...conversation, seen: { seq, readers: [] } };
+      }
       if (created) {
         const pending = message.senderId === state.me ? withoutPending(conversation.pending, [message.clientMessageId]) : conversation.pending;
         if (pending !== conversation.pending) conversation = { ...conversation, pending };
@@ -359,9 +365,30 @@ export function applyEvent(state: ChatState, event: ChatEvent, now: number, atBo
         const summary = { ...existing.summary, readSeq, unreadCount: event.unreadCount ?? existing.summary.unreadCount };
         return unchanged(put(state, { ...existing, summary }));
       }
-      if (existing.summary.kind !== "dm" || readSeq <= (existing.summary.peerReadSeq ?? 0)) return unchanged(state);
-      return unchanged(put(state, { ...existing, summary: { ...existing.summary, peerReadSeq: readSeq } }));
+      let conversation = existing;
+      const effects: ChatEffect[] = [];
+      if (existing.summary.kind === "dm" && readSeq > (existing.summary.peerReadSeq ?? 0)) {
+        conversation = { ...conversation, summary: { ...existing.summary, peerReadSeq: readSeq, peerReadAt: event.readAt ?? existing.summary.peerReadAt } };
+      }
+      const seen = existing.seen;
+      if (seen && event.userId && readSeq >= seen.seq) {
+        const known = seen.readers.find((reader) => reader.userId === event.userId);
+        const member = existing.members.find((candidate) => candidate.id === event.userId);
+        const at = event.readAt ?? new Date(now).toISOString();
+        if (known) {
+          if (known.at !== at) conversation = { ...conversation, seen: { ...seen, readers: seen.readers.map((reader) => (reader === known ? { ...reader, at } : reader)) } };
+        } else if (member) {
+          conversation = { ...conversation, seen: { ...seen, readers: [...seen.readers, { userId: member.id, username: member.username, displayName: member.displayName, at }] } };
+        } else {
+          effects.push({ type: "fetchSeen", conversationId: id });
+        }
+      }
+      return { state: put(state, conversation), effects };
     }
+
+    case "conversation.seen":
+      // A read-receipt switch changed for someone here: who is shown must be asked for again.
+      return { state, effects: [{ type: "fetchSeen", conversationId: id }] };
 
     case "conversation.changed":
       return { state, effects: [{ type: "fetchSummary", conversationId: id }] };
@@ -564,6 +591,14 @@ export function removeMessageLocally(state: ChatState, conversationId: string, m
 
 export function setLayout(state: ChatState, layout: TreeLayout): ChatState {
   return { ...state, layouts: { ...state.layouts, [layout.treeId]: layout } };
+}
+
+/** Takes the answer to "who has seen the last message", unless a newer message has arrived since. */
+export function applySeen(state: ChatState, conversationId: string, seen: ChatSeen): ChatState {
+  const existing = state.conversations[conversationId];
+  if (!existing) return state;
+  if (seen.seq < existing.summary.lastSeq || seen.seq < (existing.seen?.seq ?? 0)) return state;
+  return put(state, { ...existing, seen });
 }
 
 export function setSettings(state: ChatState, settings: ChatSettings): ChatState {

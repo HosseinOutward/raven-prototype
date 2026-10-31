@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyChanges,
+  applySeen,
+  DEFAULT_SETTINGS,
   setReactionsLocally,
   applyEvent,
   applyList,
@@ -81,7 +83,7 @@ function page(messages: ChatMessage[], patch: Partial<ChatPage> = {}): ChatPage 
 
 /** A state with the conversation listed and, when messages are given, its window loaded. */
 function chat(patch: Partial<ChatConversation> = {}, loaded?: ChatMessage[], pagePatch: Partial<ChatPage> = {}): ChatState {
-  const listed = applyList(emptyChatState(ME), [summary(patch)], { shareReadStatus: true }).state;
+  const listed = applyList(emptyChatState(ME), [summary(patch)], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).state;
   if (!loaded) return listed;
   return applyPage(listed, C, page(loaded, pagePatch), "replace").state;
 }
@@ -302,7 +304,7 @@ describe("my own sends", () => {
 describe("the conversation list", () => {
   test("conversations that are gone from the list are dropped", () => {
     const start = chat({ lastSeq: 2 });
-    const { state } = applyList(start, [], { shareReadStatus: false });
+    const { state } = applyList(start, [], { ...DEFAULT_SETTINGS, shareReadStatus: false, readDm: false });
     expect(state.conversations).toEqual({});
     expect(state.settings.shareReadStatus).toBe(false);
     expect(state.listLoaded).toBe(true);
@@ -310,33 +312,33 @@ describe("the conversation list", () => {
 
   test("after a reconnect, an open conversation that moved on asks for its changes", () => {
     const start = chat({ lastSeq: 2 }, [message(1), message(2)]);
-    const { effects } = applyList(start, [summary({ lastSeq: 9, unreadCount: 7 })], { shareReadStatus: true });
+    const { effects } = applyList(start, [summary({ lastSeq: 9, unreadCount: 7 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true });
     expect(effects).toEqual([{ type: "fetchChanges", conversationId: C, after: 2 }]);
   });
 
   test("a conversation that did not move asks for nothing", () => {
     const start = chat({ lastSeq: 2 }, [message(1), message(2)]);
-    expect(applyList(start, [summary({ lastSeq: 2 })], { shareReadStatus: true }).effects).toEqual([]);
+    expect(applyList(start, [summary({ lastSeq: 2 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).effects).toEqual([]);
   });
 
   test("a sequence that went backwards means the server was rewound: start the window over", () => {
     const start = chat({ lastSeq: 40 }, [message(39), message(40)]);
-    const { effects, state } = applyList(start, [summary({ lastSeq: 12 })], { shareReadStatus: true });
+    const { effects, state } = applyList(start, [summary({ lastSeq: 12 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true });
     expect(effects).toEqual([{ type: "reload", conversationId: C }]);
     expect(state.conversations[C].summary.lastSeq).toBe(12);
   });
 
   test("removing or clearing messages on another device reloads the window", () => {
     const start = chat({ lastSeq: 2 }, [message(1), message(2)]);
-    expect(applyList(start, [summary({ lastSeq: 2, hideRev: 1 })], { shareReadStatus: true }).effects).toEqual([{ type: "reload", conversationId: C }]);
-    expect(applyList(start, [summary({ lastSeq: 2, visibleFromSeq: 3 })], { shareReadStatus: true }).effects).toEqual([{ type: "reload", conversationId: C }]);
+    expect(applyList(start, [summary({ lastSeq: 2, hideRev: 1 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).effects).toEqual([{ type: "reload", conversationId: C }]);
+    expect(applyList(start, [summary({ lastSeq: 2, visibleFromSeq: 3 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).effects).toEqual([{ type: "reload", conversationId: C }]);
   });
 
   test("a list that is older than an event which arrived meanwhile does not undo the event", () => {
     const start = chat({ lastSeq: 2, unreadCount: 0 });
     const afterEvent = applyEvent(start, created(3), NOW).state;
     // The list request was already on its way and still says 2.
-    const { state, effects } = applyList(afterEvent, [summary({ lastSeq: 2, unreadCount: 0 })], { shareReadStatus: true }, new Set([C]));
+    const { state, effects } = applyList(afterEvent, [summary({ lastSeq: 2, unreadCount: 0 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }, new Set([C]));
     expect(state.conversations[C].summary.lastSeq).toBe(3);
     expect(state.conversations[C].summary.unreadCount).toBe(1);
     expect(effects).toEqual([{ type: "fetchSummary", conversationId: C }]);
@@ -368,25 +370,78 @@ describe("the conversation list", () => {
       summary({ id: "new", lastActivityMs: 30, lastSeq: 2, unreadCount: 2 }),
       summary({ id: "archived", lastActivityMs: 50, lastSeq: 4, archived: true, unreadCount: 4 }),
       summary({ id: "nest", kind: "nest", treeId: "tree-1", lastActivityMs: 40, unreadCount: 1 }),
-    ], { shareReadStatus: true }).state;
+    ], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).state;
 
     expect(listedConversations(listed).map((item) => item.summary.id)).toEqual(["new", "old"]);
     expect(listedConversations(listed, true).map((item) => item.summary.id)).toEqual(["archived"]);
     expect(treeHasUnread(listed, "tree-1")).toBe(true);
     expect(treeHasUnread(listed, "tree-2")).toBe(false);
     expect(hasUnread(listed)).toBe(true);
-    expect(hasUnread(applyList(emptyChatState(ME), [summary({ archived: true, unreadCount: 3 })], { shareReadStatus: true }).state)).toBe(false);
+    expect(hasUnread(applyList(emptyChatState(ME), [summary({ archived: true, unreadCount: 3 })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).state)).toBe(false);
   });
 
   test("a direct message nobody has written in is not listed until it has a message", () => {
     const empty = applyList(emptyChatState(ME), [
       summary({ id: "empty", lastActivityMs: 90 }),
       summary({ id: "group", kind: "group", peer: undefined, name: "Crew", lastActivityMs: 20 }),
-    ], { shareReadStatus: true }).state;
+    ], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).state;
     expect(listedConversations(empty).map((item) => item.summary.id)).toEqual(["group"]);
 
-    const written = applyEvent(applyList(emptyChatState(ME), [summary({ id: C })], { shareReadStatus: true }).state, created(1), NOW).state;
+    const written = applyEvent(applyList(emptyChatState(ME), [summary({ id: C })], { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true }).state, created(1), NOW).state;
     expect(listedConversations(written).map((item) => item.summary.id)).toEqual([C]);
+  });
+});
+
+describe("who has seen the last message", () => {
+  const BEA = "bea";
+  const group = (patch: Partial<ChatState["conversations"][string]> = {}): ChatState => {
+    const start = chat({ kind: "group", peer: undefined, lastSeq: 3, memberCount: 3 }, [message(1), message(2), message(3, { senderId: ME })]);
+    const members = [AVA, BEA].map((id) => ({ id, username: id, displayName: id.toUpperCase(), role: "member" as const, joinedAt: "2026-10-11T10:00:00Z" }));
+    return { ...start, conversations: { ...start.conversations, [C]: { ...start.conversations[C], members, seen: { seq: 3, readers: [] }, ...patch } } };
+  };
+  const read = (userId: string, readSeq: number, readAt?: string) => ({ type: "conversation.read", conversationId: C, userId, readSeq, readAt });
+
+  test("a group read adds a reader, and a second read of the same person only moves their time", () => {
+    const first = applyEvent(group(), read(AVA, 3, "2026-10-11T10:05:00Z"), NOW);
+    expect(first.effects).toEqual([]);
+    expect(first.state.conversations[C].seen?.readers).toEqual([{ userId: AVA, username: AVA, displayName: "AVA", at: "2026-10-11T10:05:00Z" }]);
+    const again = applyEvent(first.state, read(AVA, 3, "2026-10-11T10:06:00Z"), NOW).state;
+    expect(again.conversations[C].seen?.readers.map((reader) => reader.at)).toEqual(["2026-10-11T10:06:00Z"]);
+  });
+
+  test("a read short of the last message adds nobody, and my own read is not a reader", () => {
+    const state = applyEvent(group(), read(AVA, 2), NOW).state;
+    expect(state.conversations[C].seen?.readers).toEqual([]);
+    expect(applyEvent(group(), read(ME, 3), NOW).state.conversations[C].seen?.readers).toEqual([]);
+  });
+
+  test("a reader who is not a known member is fetched instead of guessed", () => {
+    const { effects } = applyEvent(group(), read("zed", 3), NOW);
+    expect(effects).toEqual([{ type: "fetchSeen", conversationId: C }]);
+  });
+
+  test("a new message clears the readers", () => {
+    const seen = applyEvent(group(), read(AVA, 3, "2026-10-11T10:05:00Z"), NOW).state;
+    const next = applyEvent(seen, created(4, { senderId: ME }), NOW).state;
+    expect(next.conversations[C].seen).toEqual({ seq: 4, readers: [] });
+  });
+
+  test("conversation.seen asks for the list again", () => {
+    expect(applyEvent(group(), { type: "conversation.seen", conversationId: C }, NOW).effects).toEqual([{ type: "fetchSeen", conversationId: C }]);
+  });
+
+  test("an answer older than the last message is dropped", () => {
+    const state = group();
+    expect(applySeen(state, C, { seq: 2, readers: [] })).toBe(state);
+    const fresh = applySeen(state, C, { seq: 3, readers: [{ userId: BEA, username: BEA, displayName: "BEA", at: "x" }] });
+    expect(fresh.conversations[C].seen?.readers).toHaveLength(1);
+  });
+
+  test("peerReadAt follows the other person's read in a direct message", () => {
+    const start = chat({ lastSeq: 5, peerReadSeq: 1, peerReadAt: "2026-10-11T10:00:00Z" });
+    const state = applyEvent(start, read(AVA, 4, "2026-10-11T10:09:00Z"), NOW).state;
+    expect(state.conversations[C].summary.peerReadSeq).toBe(4);
+    expect(state.conversations[C].summary.peerReadAt).toBe("2026-10-11T10:09:00Z");
   });
 });
 

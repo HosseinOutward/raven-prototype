@@ -8,6 +8,7 @@ import { unreadLabel } from "@/lib/chat/reducer";
 import { buildRows, type ChatRow as Row } from "@/lib/chat/rows";
 import type { ChatAttachment, ChatMessage, ConversationState, PendingMessage } from "@/lib/chat/types";
 import { MessageRow, PendingRow, type DeliveryStatus } from "./MessageRow";
+import { SeenBy } from "./SeenBy";
 
 /** Virtuoso counts rows from here, leaving room to add older ones in front. */
 const FIRST_INDEX = 1_000_000;
@@ -296,6 +297,13 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onOpenReply={openReply}
                 onOpenImage={onOpenImage}
               />
+              {mine && message.seq === summary.lastSeq && !message.deletedAt ? (
+                <SeenBy
+                  direct={summary.kind === "dm"}
+                  readers={conversation.seen?.seq === message.seq ? conversation.seen.readers : []}
+                  fallbackAt={summary.peerReadSeq !== undefined && summary.peerReadSeq >= message.seq ? summary.peerReadAt : undefined}
+                />
+              ) : null}
             </div>
           );
         }}

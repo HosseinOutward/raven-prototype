@@ -126,6 +126,8 @@ export interface ChatConversation {
   readSeq: number;
   /** How far the other person in a direct message has read. Absent unless both share it. */
   peerReadSeq?: number;
+  /** When that position last moved (ISO). Absent with `peerReadSeq`. */
+  peerReadAt?: string;
   hideRev: number;
   visibleFromSeq: number;
   archived: boolean;
@@ -139,8 +141,28 @@ export interface ChatViewerState {
   visibleFromSeq: number;
 }
 
+/** Where you take part in read receipts. Each switch works both ways. */
 export interface ChatSettings {
+  /** The old name of `readDm`, kept in step by the server for older clients. */
   shareReadStatus: boolean;
+  readDm: boolean;
+  readGroup: boolean;
+  readPrivateSpace: boolean;
+  readPublicSpace: boolean;
+}
+
+export interface ChatSeenReader {
+  userId: string;
+  username: string;
+  displayName: string;
+  /** When their read position reached the last message (ISO). */
+  at: string;
+}
+
+/** Who has seen the conversation's last message (`seq`), not counting you or its sender. */
+export interface ChatSeen {
+  seq: number;
+  readers: ChatSeenReader[];
 }
 
 export interface ChatPage {
@@ -166,6 +188,7 @@ export type ChatEventType =
   | "conversation.bump"
   | "message.hidden"
   | "conversation.read"
+  | "conversation.seen"
   | "conversation.changed"
   | "conversation.removed"
   | "typing"
@@ -180,6 +203,7 @@ export interface ChatEvent {
   userId?: string;
   userName?: string;
   readSeq?: number;
+  readAt?: string;
   unreadCount?: number;
   hideRev?: number;
   at?: string;
@@ -295,6 +319,8 @@ export interface ConversationState {
   loading: WindowLoad;
   pending: PendingMessage[];
   typing: Record<string, TypingPerson>;
+  /** Who has seen the last message. Absent until fetched. */
+  seen?: ChatSeen;
 }
 
 export type ChatConnection = "connecting" | "live" | "offline";
@@ -314,7 +340,8 @@ export type ChatEffect =
   | { type: "fetchChanges"; conversationId: string; after: number }
   | { type: "fetchSummary"; conversationId: string }
   | { type: "reload"; conversationId: string }
-  | { type: "fetchList" };
+  | { type: "fetchList" }
+  | { type: "fetchSeen"; conversationId: string };
 
 export interface Reduced {
   state: ChatState;

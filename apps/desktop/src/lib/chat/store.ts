@@ -37,6 +37,7 @@ import {
   emptyChatState,
   expireTyping,
   markReadLocally,
+  applySeen,
   nextTypingExpiry,
   removeConversation,
   removeMessageLocally,
@@ -288,6 +289,9 @@ export class ChatStore {
         case "reload":
           void this.reload(effect.conversationId);
           break;
+        case "fetchSeen":
+          if (this.open.has(effect.conversationId)) void this.fetchSeen(effect.conversationId);
+          break;
       }
     }
   }
@@ -423,6 +427,16 @@ export class ChatStore {
     if (!this.state.conversations[conversationId]) await this.fetchSummary(conversationId);
     const conversation = this.state.conversations[conversationId];
     if (conversation && !conversation.loaded && conversation.loading === "idle") await this.loadInitial(conversationId);
+    void this.fetchSeen(conversationId);
+  }
+
+  private async fetchSeen(conversationId: string) {
+    if (this.disposed) return;
+    try {
+      this.set(applySeen(this.state, conversationId, await this.api.seen(conversationId)));
+    } catch {
+      // Not knowing who has seen it only means showing nothing.
+    }
   }
 
   /** A conversation left the screen. Its messages stay loaded for a while in case it is reopened. */
@@ -874,8 +888,8 @@ export class ChatStore {
     }
   }
 
-  async setShareReadStatus(shareReadStatus: boolean) {
-    const { settings } = await this.api.updateSettings({ shareReadStatus });
+  async setReadSwitch(key: "readDm" | "readGroup" | "readPrivateSpace" | "readPublicSpace", value: boolean) {
+    const { settings } = await this.api.updateSettings({ [key]: value });
     this.set(setSettings(this.state, settings));
     this.refreshList();
   }

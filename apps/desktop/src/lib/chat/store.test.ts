@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatApi } from "./chatApi";
+import { DEFAULT_SETTINGS } from "./reducer";
 import { ChatStore, type AttachmentBackend } from "./store";
 import type { ChatAttachment, ChatConversation, ChatMessage, ChatPage, PreparedAttachment } from "./types";
 
@@ -91,7 +92,7 @@ function fakeServer() {
   const page = (items: ChatMessage[], patch: Partial<ChatPage> = {}): ChatPage => ({ messages: items, hasMoreBefore: false, hasMoreAfter: false, asOfSeq: lastSeq, me: { readSeq, hideRev: 0, visibleFromSeq: 0 }, ...patch });
 
   const api = {
-    listConversations: () => step("list", () => ({ conversations: lastSeq >= 0 ? [summary()] : [], settings: { shareReadStatus: true } })),
+    listConversations: () => step("list", () => ({ conversations: lastSeq >= 0 ? [summary()] : [], settings: { ...DEFAULT_SETTINGS, shareReadStatus: true, readDm: true } })),
     getConversation: (id: string) => step(`summary ${id}`, () => ({ conversation: summary(), members: [] })),
     messages: (_id: string, cursor: { before?: number; after?: number } = {}) => step(`messages ${JSON.stringify(cursor)}`, () => page([...messages], pageSays)),
     changes: (_id: string, after: number) => step(`changes ${after}`, () => ({ messages: messages.filter((item) => item.changedSeq > after), reset: false, asOfSeq: lastSeq, me: { readSeq, hideRev: 0, visibleFromSeq: 0 } })),
@@ -127,6 +128,7 @@ function fakeServer() {
         return { readSeq, unreadCount: summary().unreadCount };
       }),
     typing: () => step("typing", () => undefined),
+    seen: (id: string) => step(`seen ${id}`, () => ({ seq: lastSeq, readers: [{ userId: "ava", username: "ava", displayName: "Ava", at: "2026-10-11T10:30:00Z" }] })),
   } as unknown as ChatApi;
 
   return {
@@ -299,6 +301,26 @@ describe("sending", () => {
     await until(() => signedOut === 1, "the sign-out to be reported");
     expect(conversation(store).pending[0].state).toBe("failed");
     store.dispose();
+  });
+});
+
+describe("who has seen the last message", () => {
+  test("opening a conversation fetches it, and conversation.seen fetches it again", async () => {
+    const { store, server } = await openStore();
+    await until(() => conversation(store).seen !== undefined, "the first answer");
+    expect(conversation(store).seen?.readers.map((reader) => reader.userId)).toEqual(["ava"]);
+    const before = server.calls.filter((call) => call.startsWith("seen ")).length;
+    store.handleEvent({ type: "conversation.seen", conversationId: C });
+    await until(() => server.calls.filter((call) => call.startsWith("seen ")).length === before + 1, "a second fetch");
+  });
+
+  test("a closed conversation is not fetched on conversation.seen", async () => {
+    const { store, server } = await openStore();
+    await until(() => conversation(store).seen !== undefined, "the first answer");
+    store.closeConversation(C);
+    const before = server.calls.filter((call) => call.startsWith("seen ")).length;
+    store.handleEvent({ type: "conversation.seen", conversationId: C });
+    expect(server.calls.filter((call) => call.startsWith("seen ")).length).toBe(before);
   });
 });
 
