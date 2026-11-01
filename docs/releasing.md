@@ -53,6 +53,22 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
 A fresh install signs in to `https://mimir.rvn.bluehour.cloud` by default; `-ApiUrl` on
 `build` changes that.
 
+## Server images
+
+People who host their own Raven server run it from Docker Hub images
+(`soroushtaheri/raven-api`, `soroushtaheri/raven-admin`; guide: `docs/self-hosting.md`).
+Publish them when the API or admin dashboard changed in a release:
+
+```powershell
+.\release.ps1 images -Version X.Y.Z            # :X.Y.Z and :latest, linux/amd64 + linux/arm64
+.\release.ps1 images -Version X.Y.Z -DryRun     # builds both platforms, pushes nothing
+```
+
+It builds the last commit with buildx in WSL (clean tree required; `-NoLatest` skips
+`:latest`). Run `docker login` inside WSL once; the password stays in WSL's Docker config.
+It prints each pushed image's digest. Paste `infra/self-host/DOCKERHUB.md` into the
+Docker Hub repository pages when it changes.
+
 ## What a friend sees
 
 Raven checks about ten seconds after it starts and every six hours. When a newer version

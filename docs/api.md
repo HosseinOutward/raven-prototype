@@ -71,7 +71,7 @@ The desktop app lets logged-out users choose the Raven API server URL. The realt
 
 ## Profile images
 
-JPEG, PNG, GIF, and WebP profile images up to 512 KB are stored in Raven's configured S3 media namespace. The desktop app square-crops and optimizes pictures before upload. User uploads apply to the signed-in account, Tree uploads require the Tree's owner, and server uploads require an admin account.
+JPEG, PNG, GIF, and WebP profile images up to 512 KB are stored in Raven's configured S3 media namespace, or in the directory `RAVEN_MEDIA_DIR` names (self-hosting; it takes precedence over S3). The desktop app square-crops and optimizes pictures before upload. User uploads apply to the signed-in account, Tree uploads require the Tree's owner, and server uploads require an admin account.
 
 ```http
 POST /v1/profile/avatar

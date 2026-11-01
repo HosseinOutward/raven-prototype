@@ -7,6 +7,7 @@
   .\release.ps1 publish -Version 0.1.0
   .\release.ps1 repoint -Version 0.1.0
   .\release.ps1 status
+  .\release.ps1 images -Version 0.1.0   # server images to Docker Hub
 #>
 param(
   [Parameter(Position = 0)]
