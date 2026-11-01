@@ -25,6 +25,7 @@ import type {
   UserPreferences,
   UserPresenceState,
   UserReachability,
+  KnockReply,
 } from "@/lib/api";
 
 export type Presence = "open" | "around" | "focused" | "dnd" | "invisible" | "offline";
@@ -89,7 +90,9 @@ export type PendingItem =
   | { id: string; kind: "knock"; from: string; fromId: string; context: string; knock: Knock }
   | { id: string; kind: "invite"; from: string; nestId: string; context: string }
   | { id: string; kind: "request"; from: string; fromId: string; nestId: string; context: string; request: JoinRequest }
-  | { id: string; kind: "friend"; from: string; fromId: string; context: string; request: FriendRequest };
+  | { id: string; kind: "friend"; from: string; fromId: string; context: string; request: FriendRequest }
+  /** Someone answered a knock you sent. `key` changes when the answer becomes a reminder. */
+  | { id: string; kind: "answer"; from: string; fromId: string; context: string; key: string; reminder: boolean };
 
 /** Someone announced they are about to enter a Nest this client is inside. */
 export interface NestEntryNotice {
@@ -175,6 +178,10 @@ export interface RavenShellData {
   joinNest: (nestId: string) => Promise<"joined" | "waiting">;
   knockUser: (userId: string) => Promise<void>;
   dismissKnock: (knockId: string) => Promise<void>;
+  /** Answer a knock on you. `until` is the time picked for Ask me later. */
+  replyToKnock: (knockId: string, reply: KnockReply, until?: Date) => Promise<void>;
+  /** Hide an answer to your knock on this device. */
+  clearKnockAnswer: (key: string) => void;
 }
 
 export function defaultPreferences(username = "You"): UserPreferences {

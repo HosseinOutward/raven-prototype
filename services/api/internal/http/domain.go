@@ -66,6 +66,8 @@ type Knock struct {
 	ExpiresAt        string  `json:"expiresAt"`
 	ResolvedAt       *string `json:"resolvedAt,omitempty"`
 	ResolvedByUserID *string `json:"resolvedByUserId,omitempty"`
+	Reply            *string `json:"reply,omitempty"`
+	ReplyUntil       *string `json:"replyUntil,omitempty"`
 }
 
 type PublicUser struct {
@@ -1131,26 +1133,75 @@ func (s *Server) listKnocks(c *fiber.Ctx) error {
 	if err := s.expireStaleKnocks(); err != nil {
 		return err
 	}
-	knocks, err := s.knocksForUser(currentUser(c).ID, false)
+	viewerID := currentUser(c).ID
+	knocks, err := s.knocksForUser(viewerID, false)
 	if err != nil {
 		return err
+	}
+	now := time.Now().UTC()
+	for i := range knocks {
+		knocks[i] = knockSeenBy(knocks[i], viewerID, now)
 	}
 	return c.JSON(fiber.Map{"knocks": knocks})
 }
 
 func (s *Server) acceptKnock(c *fiber.Ctx) error {
-	return s.resolveKnock(c, "accepted")
+	return s.resolveKnock(c, "accepted", "", time.Time{})
 }
 
 func (s *Server) declineKnock(c *fiber.Ctx) error {
-	return s.resolveKnock(c, "declined")
+	return s.resolveKnock(c, "declined", "", time.Time{})
 }
 
 func (s *Server) dismissKnock(c *fiber.Ctx) error {
-	return s.resolveKnock(c, "dismissed")
+	return s.resolveKnock(c, "dismissed", "", time.Time{})
 }
 
-func (s *Server) resolveKnock(c *fiber.Ctx, status string) error {
+// replyKnock answers a knock on the actor with Coming now, Coming in 10 min, Ask me
+// later or Not today. The knocker is told the answer and when they may knock again.
+func (s *Server) replyKnock(c *fiber.Ctx) error {
+	var body struct {
+		Reply string `json:"reply"`
+		Until string `json:"until"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid knock answer")
+	}
+	now := time.Now().UTC()
+	until, status, err := knockReplyWindow(body.Reply, body.Until, now)
+	if err != nil {
+		return err
+	}
+	return s.resolveKnock(c, status, body.Reply, until)
+}
+
+// knockReplyWindow checks an answer and returns the status it stores and the time it
+// holds until. Coming answers set their own time; the others carry the answerer's pick.
+func knockReplyWindow(reply, rawUntil string, now time.Time) (time.Time, string, error) {
+	switch reply {
+	case "coming":
+		return now.Add(5 * time.Minute), "accepted", nil
+	case "soon":
+		return now.Add(10 * time.Minute), "accepted", nil
+	case "later", "not_today":
+	default:
+		return time.Time{}, "", fiber.NewError(fiber.StatusBadRequest, "unknown knock answer")
+	}
+	until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(rawUntil))
+	if err != nil {
+		return time.Time{}, "", fiber.NewError(fiber.StatusBadRequest, "this answer needs a time")
+	}
+	earliest, latest := now.Add(15*time.Minute), now.Add(24*time.Hour)
+	if reply == "not_today" {
+		earliest, latest = now.Add(6*time.Hour), now.Add(36*time.Hour)
+	}
+	if until.Before(earliest) || until.After(latest) {
+		return time.Time{}, "", fiber.NewError(fiber.StatusBadRequest, "that time is out of range for this answer")
+	}
+	return until.UTC(), "declined", nil
+}
+
+func (s *Server) resolveKnock(c *fiber.Ctx, status, reply string, replyUntil time.Time) error {
 	actor := currentUser(c)
 	knock, err := s.findKnock(c.Params("id"))
 	if err != nil {
@@ -1165,6 +1216,13 @@ func (s *Server) resolveKnock(c *fiber.Ctx, status string) error {
 		}
 		return fiber.NewError(fiber.StatusForbidden, "not allowed to resolve this knock")
 	}
+	if reply != "" && (knock.NestID != nil || knock.ToUserID == nil) {
+		return fiber.NewError(fiber.StatusBadRequest, "only a knock on you can be answered this way")
+	}
+	var storedReply, storedUntil any
+	if reply != "" {
+		storedReply, storedUntil = reply, replyUntil.Format(time.RFC3339Nano)
+	}
 	now := database.Now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1172,8 +1230,8 @@ func (s *Server) resolveKnock(c *fiber.Ctx, status string) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`UPDATE knocks SET status = ?, resolved_at = ?, resolved_by_user_id = ? WHERE id = ? AND status = 'pending'`,
-		status, now, actor.ID, knock.ID,
+		`UPDATE knocks SET status = ?, resolved_at = ?, resolved_by_user_id = ?, reply = ?, reply_until = ? WHERE id = ? AND status = 'pending'`,
+		status, now, actor.ID, storedReply, storedUntil, knock.ID,
 	); err != nil {
 		return err
 	}
@@ -1194,8 +1252,28 @@ func (s *Server) resolveKnock(c *fiber.Ctx, status string) error {
 	if err != nil {
 		return err
 	}
-	s.events.publish(LiveUpdate{Type: "knock." + status, At: database.Now()})
+	s.publishKnockUpdate(updated, status, reply != "")
 	return c.JSON(fiber.Map{"knock": updated})
+}
+
+// publishKnockUpdate tells the people a knock concerns. A knock on a person reaches only
+// the two of them, and a quiet dismiss reaches only the person who dismissed it, so the
+// knocker's client gets no signal it could read as "ignored". Nest knocks go to everyone
+// as before, since moderators are not listed here.
+func (s *Server) publishKnockUpdate(knock Knock, status string, replied bool) {
+	update := LiveUpdate{Type: "knock." + status, At: database.Now()}
+	if replied {
+		update.Type = "knock.replied"
+	}
+	if knock.NestID != nil || knock.ToUserID == nil {
+		s.events.publish(update)
+		return
+	}
+	if status == "dismissed" {
+		s.events.publishTo(update, []string{*knock.ToUserID})
+		return
+	}
+	s.events.publishTo(update, []string{knock.FromUserID, *knock.ToUserID})
 }
 
 type treeSettingsPayload struct {
@@ -1866,7 +1944,7 @@ func nullableStringPtr(value *string) any {
 func knockSelectSQL() string {
 	return `SELECT k.id, k.from_user_id, fu.username, COALESCE(NULLIF(TRIM(fup.display_name), ''), fu.username),
 		k.to_user_id, tu.username, COALESCE(NULLIF(TRIM(tup.display_name), ''), tu.username), k.nest_id, n.name,
-		k.status, k.message, k.created_at, k.expires_at, k.resolved_at, k.resolved_by_user_id
+		k.status, k.message, k.created_at, k.expires_at, k.resolved_at, k.resolved_by_user_id, k.reply, k.reply_until
 		FROM knocks k
 		JOIN users fu ON fu.id = k.from_user_id
 		LEFT JOIN user_preferences fup ON fup.user_id = fu.id
@@ -1880,7 +1958,7 @@ func scanKnocks(rows *sql.Rows) ([]Knock, error) {
 	knocks := []Knock{}
 	for rows.Next() {
 		var knock Knock
-		var toUserID, toUsername, toDisplayName, nestID, nestName, message, resolvedAt, resolvedBy sql.NullString
+		var toUserID, toUsername, toDisplayName, nestID, nestName, message, resolvedAt, resolvedBy, reply, replyUntil sql.NullString
 		if err := rows.Scan(
 			&knock.ID,
 			&knock.FromUserID,
@@ -1897,6 +1975,8 @@ func scanKnocks(rows *sql.Rows) ([]Knock, error) {
 			&knock.ExpiresAt,
 			&resolvedAt,
 			&resolvedBy,
+			&reply,
+			&replyUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -1908,6 +1988,8 @@ func scanKnocks(rows *sql.Rows) ([]Knock, error) {
 		knock.Message = nullStringPtr(message)
 		knock.ResolvedAt = nullStringPtr(resolvedAt)
 		knock.ResolvedByUserID = nullStringPtr(resolvedBy)
+		knock.Reply = nullStringPtr(reply)
+		knock.ReplyUntil = nullStringPtr(replyUntil)
 		knocks = append(knocks, knock)
 	}
 	return knocks, rows.Err()

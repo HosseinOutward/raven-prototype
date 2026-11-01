@@ -46,6 +46,17 @@ func TestProfileKnockLimits(t *testing.T) {
 	// The limit is per pair, not a blanket ban on reaching anyone.
 	postJSON(t, server, aliceToken, "/v1/knocks", map[string]string{"toUserId": carol.ID}, http.StatusCreated)
 	postJSON(t, server, bobToken, "/v1/knocks/"+created.Knock.ID+"/dismiss", nil, http.StatusOK)
+	// A quiet dismiss reads to Alice exactly as no answer yet.
+	if err := json.Unmarshal(postJSON(t, server, aliceToken, "/v1/knocks", map[string]string{"username": "bob"}, http.StatusConflict), &blocked); err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Reason != "knock_pending" || blocked.State.State != "pending" || blocked.State.Outcome != "pending" {
+		t.Fatalf("dismiss leaked to the knocker: %+v", blocked)
+	}
+	recent := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339Nano)
+	if _, err := server.db.Exec(`UPDATE knocks SET expires_at = ? WHERE id = ?`, recent, created.Knock.ID); err != nil {
+		t.Fatal(err)
+	}
 	request := httptest.NewRequest(http.MethodPost, "/v1/knocks", bytes.NewBufferString(`{"username":"bob"}`))
 	setTestCompatibilityHeaders(request)
 	request.Header.Set("Content-Type", "application/json")
@@ -62,7 +73,7 @@ func TestProfileKnockLimits(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&blocked); err != nil {
 		t.Fatal(err)
 	}
-	if blocked.Reason != "knock_cooldown" || blocked.State.Outcome != "dismissed" {
+	if blocked.Reason != "knock_cooldown" || blocked.State.Outcome != "expired" {
 		t.Fatalf("wrong cooldown state: %+v", blocked)
 	}
 	if err := json.Unmarshal(getJSON(t, server, aliceToken, "/v1/home", http.StatusOK), &home); err != nil {
@@ -73,7 +84,8 @@ func TestProfileKnockLimits(t *testing.T) {
 			t.Fatalf("cooldown missing from bootstrap: %+v", state)
 		}
 	}
-	if _, err := server.db.Exec(`UPDATE knocks SET resolved_at = ? WHERE id = ?`, time.Now().UTC().Add(-61*time.Second).Format(time.RFC3339Nano), created.Knock.ID); err != nil {
+	past := time.Now().UTC().Add(-61 * time.Second).Format(time.RFC3339Nano)
+	if _, err := server.db.Exec(`UPDATE knocks SET expires_at = ? WHERE id = ?`, past, created.Knock.ID); err != nil {
 		t.Fatal(err)
 	}
 	postJSON(t, server, aliceToken, "/v1/knocks", map[string]string{"toUserId": bob.ID}, http.StatusCreated)

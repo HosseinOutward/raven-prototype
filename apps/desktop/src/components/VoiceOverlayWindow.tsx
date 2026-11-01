@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Headphones, HeadphoneOff, Mic, MicOff, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
+import type { KnockReply } from "@/lib/api";
+import { overlayAnswers } from "@/shells/ravenv1/knockReplies";
 import { cn } from "@/lib/utils";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
 import { mediaHotkeyCommands } from "@/lib/mediaHotkeys";
@@ -445,6 +447,12 @@ export function VoiceOverlayWindow() {
     setLines((current) => closeHeadsUp(current, id, Date.now()));
     void voiceOverlayCommands.action({ kind: "knock", knockId, open }).catch(() => undefined);
   };
+  const replyToLine = (id: string, reply: KnockReply, until?: Date) => {
+    const knockId = knockIdOfLine(id);
+    if (!knockId) return;
+    setLines((current) => closeHeadsUp(current, id, Date.now()));
+    void voiceOverlayCommands.action({ kind: "knockReply", knockId, reply, until: until?.toISOString() }).catch(() => undefined);
+  };
 
   const now = Date.now();
   const participants = snapshot.participants;
@@ -719,6 +727,7 @@ export function VoiceOverlayWindow() {
             onEnter={() => enterLine(line.id)}
             onLeave={() => leaveLine(line.id)}
             onAnswer={(open) => answerLine(line.id, open)}
+            onReply={(reply, until) => replyToLine(line.id, reply, until)}
           />
         ))}
       </div>
@@ -802,7 +811,10 @@ export function VoiceOverlayWindow() {
   );
 }
 
-/** A knock or a message above or beside the people. Knocks get Open and Dismiss while interactive. */
+/**
+ * A knock or a message above or beside the people. Knocks get Open and Dismiss while
+ * interactive; a knock on you also gets its four answers, each naming its own time.
+ */
 function HeadsUpLine({
   line,
   shape,
@@ -812,6 +824,7 @@ function HeadsUpLine({
   onEnter,
   onLeave,
   onAnswer,
+  onReply,
 }: {
   line: VoiceOverlayHeadsUp;
   shape: VoiceOverlayResolvedShape;
@@ -821,8 +834,18 @@ function HeadsUpLine({
   onEnter: () => void;
   onLeave: () => void;
   onAnswer: (open: boolean) => void;
+  onReply: (reply: KnockReply, until?: Date) => void;
 }) {
   const answerable = line.kind === "knock" && interactive && !leaving;
+  const replies = answerable && line.answerable;
+  // The answers name clock times, so they follow the minute while they show.
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    if (!replies) return;
+    setNow(new Date());
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [replies]);
   return (
     <div
       data-heads-up={line.kind}
@@ -846,6 +869,21 @@ function HeadsUpLine({
       </span>
       {answerable ? (
         <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+          {replies
+            ? overlayAnswers(line.actorName, now).map((answer) => (
+                <button
+                  key={answer.reply}
+                  type="button"
+                  data-heads-up-action={answer.reply}
+                  title={answer.hint}
+                  aria-label={`${answer.label}. ${answer.hint}`}
+                  onClick={() => onReply(answer.reply, answer.until)}
+                  className="inline-flex h-6 items-center whitespace-nowrap rounded-control bg-white/15 px-2 text-caption text-foreground transition-colors hover:bg-white/25 focus-visible:-outline-offset-2"
+                >
+                  {answer.label}
+                </button>
+              ))
+            : null}
           <button
             type="button"
             data-heads-up-action="open"

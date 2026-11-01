@@ -10,7 +10,9 @@ import { subscribeNestUpdates } from "@/lib/eventStream";
 import { loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
 import type { NestEntryNotice, PendingItem, RavenShellData, SelectablePresence, ShellPerson, UILabelCopy } from "./state";
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
-import { ApiError, type ProfileKnockState } from "@/lib/api";
+import { ApiError, type KnockReply, type ProfileKnockState } from "@/lib/api";
+import { toast } from "@/components/ui/toast";
+import { answerToast, answerUntil, knockAnswers, newKnockAnswers } from "./knockReplies";
 
 /**
  * How long an entry notice is kept if it is neither cancelled nor replaced. The toast
@@ -74,6 +76,9 @@ export function useRavenShellData(): RavenShellData {
   const authenticated = home !== null && Boolean(api.getSessionId());
   // Profile knocks already accounted for on this device; signing out forgets them.
   const seenKnocksRef = useRef<SeenKnocks | null>(null);
+  // Answers to knocks this user sent, already accounted for here, and the ones cleared.
+  const seenAnswersRef = useRef<SeenKnocks | null>(null);
+  const [clearedAnswers, setClearedAnswers] = useState<ReadonlySet<string>>(() => new Set());
 
   // A new profile knock becomes a notification when the user asked for one and is not
   // in Do not disturb. Whether Raven is in front is decided natively, beside the window.
@@ -88,6 +93,16 @@ export function useRavenShellData(): RavenShellData {
     for (const knock of fresh) {
       void notificationCommands.notifyKnock(knock.fromDisplayName || knock.fromUsername, "wants to reach you").catch(() => undefined);
     }
+  }, [home]);
+
+  // An answer to a knock you sent reaches you as a notification only under the same
+  // Knocks switch, and never in Do not disturb.
+  useEffect(() => {
+    if (!home) return;
+    const { seen, fresh } = newKnockAnswers(seenAnswersRef.current, home.user.id, home.profileKnocks ?? [], Date.now());
+    seenAnswersRef.current = seen;
+    if (fresh.length === 0 || home.presence?.state === "dnd" || !loadNotificationSettings().knocks) return;
+    for (const answer of fresh) void notificationCommands.notifyKnock(answer.name, answer.line).catch(() => undefined);
   }, [home]);
 
   const hydrateTrees = useCallback(async (nextHome: HomeState) => {
@@ -603,6 +618,33 @@ export function useRavenShellData(): RavenShellData {
     [refresh],
   );
 
+  const replyToKnock = useCallback(
+    async (knockId: string, reply: KnockReply, until?: Date) => {
+      const knock = home?.pendingKnocks.find((item) => item.id === knockId);
+      const name = knock ? knock.fromDisplayName || knock.fromUsername : "They";
+      const now = new Date();
+      const holds = reply === "later" ? until : answerUntil(reply, now);
+      if (!holds) throw new Error("Ask me later needs a time.");
+      setBusy(true);
+      setError("");
+      try {
+        await api.replyToKnock(knockId, reply, reply === "later" || reply === "not_today" ? holds.toISOString() : undefined);
+        toast({ title: answerToast(reply, name, holds, now), tone: "success" });
+        await refresh();
+      } catch (err) {
+        setError(messageFromError(err));
+        throw err;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [home, refresh],
+  );
+
+  const clearKnockAnswer = useCallback((key: string) => {
+    setClearedAnswers((current) => new Set(current).add(key));
+  }, []);
+
   const dismissKnock = useCallback(
     async (knockId: string) => {
       setBusy(true);
@@ -630,7 +672,10 @@ export function useRavenShellData(): RavenShellData {
   const labels = useMemo(() => labelsForPreference(preferences.uiLabels), [preferences.uiLabels]);
 
   const people = useMemo(() => derivePeople(home, treeDetails), [home, treeDetails]);
-  const pending = useMemo(() => derivePending(home, nestDetails, labels), [home, labels, nestDetails]);
+  const pending = useMemo(
+    () => [...derivePending(home, nestDetails, labels), ...knockAnswers(home?.profileKnocks ?? [], Date.now()).filter((item) => !clearedAnswers.has(item.key))],
+    [clearedAnswers, home, labels, nestDetails],
+  );
 
   const getTree = useCallback((id: string) => trees.find((tree) => tree.id === id) ?? treeDetails[id]?.tree, [treeDetails, trees]);
   const getTreeDetails = useCallback((id: string) => treeDetails[id], [treeDetails]);
@@ -766,6 +811,19 @@ export function useRavenShellData(): RavenShellData {
     [runMutation],
   );
 
+  useEffect(() => {
+    const now = Date.now();
+    const times = (home?.profileKnocks ?? []).flatMap((state) => [
+      Date.parse(state.retryAt),
+      state.state === "reminder" && state.replyUntil ? Date.parse(state.replyUntil) + 60 * 60_000 : NaN,
+    ]).filter((time) => Number.isFinite(time) && time > now);
+    if (times.length === 0) return;
+    const delay = Math.min(...times) - now + 1000;
+    if (delay > 24 * 60 * 60_000) return;
+    const timer = window.setTimeout(() => void refresh().catch(() => undefined), delay);
+    return () => window.clearTimeout(timer);
+  }, [home, refresh]);
+
   return {
     user: home?.user ?? null,
     preferences,
@@ -835,6 +893,8 @@ export function useRavenShellData(): RavenShellData {
     joinNest,
     knockUser,
     dismissKnock,
+    replyToKnock,
+    clearKnockAnswer,
   };
 }
 

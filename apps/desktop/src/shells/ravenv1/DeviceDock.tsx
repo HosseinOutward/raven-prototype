@@ -220,6 +220,13 @@ export function DeviceDock({
         runCallAction(action.kind);
         return;
       }
+      if (action.kind === "knockReply") {
+        // A failure is shown by the shell data; the line goes when the knock does.
+        void dataRef.current
+          .replyToKnock(action.knockId, action.reply, action.until ? new Date(action.until) : undefined)
+          .catch(() => undefined);
+        return;
+      }
       if (action.kind === "knock") {
         if (!action.open) {
           // A failure is shown by the shell data; the line goes when the knock does.

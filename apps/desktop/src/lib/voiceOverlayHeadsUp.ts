@@ -111,6 +111,32 @@ export function knockCandidates({
       actorName: knock.fromDisplayName || knock.fromUsername,
       avatarUrl: avatarUrl(knock.fromUserId),
       text: "knocked",
+      answerable: !knock.nestId,
+    },
+  }));
+}
+
+/**
+ * Answers to knocks you sent, as lines: "Sara" + "will come at 15:32. You can knock again
+ * then." Shown under the same switch as knocks. They only show; nothing is sent on dismiss.
+ */
+export function answerCandidates({
+  answers,
+  enabled,
+  avatarUrl,
+}: {
+  answers: ReadonlyArray<{ key: string; from: string; fromId: string; context: string }>;
+  enabled: boolean;
+  avatarUrl: (userId: string) => string | null;
+}): HeadsUpCandidate[] {
+  return answers.map((answer) => ({
+    eligible: enabled,
+    line: {
+      id: `answer:${answer.key}`,
+      kind: "message",
+      actorName: answer.from,
+      avatarUrl: avatarUrl(answer.fromId),
+      text: answer.context.startsWith(`${answer.from} `) ? answer.context.slice(answer.from.length + 1) : answer.context,
     },
   }));
 }

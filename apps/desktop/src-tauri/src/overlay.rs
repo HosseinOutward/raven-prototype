@@ -402,6 +402,8 @@ pub struct VoiceOverlayHeadsUp {
     pub text: String,
     /// When it happened (ISO 8601).
     pub at: String,
+    /// A knock on this person rather than on a nest: it takes an answer.
+    pub answerable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,6 +459,13 @@ pub enum VoiceOverlayAction {
     Knock {
         knock_id: String,
         open: bool,
+    },
+    /// Answer a knock on this person from its line.
+    #[serde(rename_all = "camelCase")]
+    KnockReply {
+        knock_id: String,
+        reply: String,
+        until: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     Volume {
@@ -2087,6 +2096,28 @@ mod tests {
             VoiceOverlayAction::Knock {
                 knock_id: "k_1".to_string(),
                 open: true,
+            }
+        );
+        let reply: VoiceOverlayAction = serde_json::from_str(
+            r#"{"kind":"knockReply","knockId":"k_1","reply":"later","until":"2026-11-02T16:00:00.000Z"}"#,
+        )
+        .expect("knock reply");
+        assert_eq!(
+            reply,
+            VoiceOverlayAction::KnockReply {
+                knock_id: "k_1".to_string(),
+                reply: "later".to_string(),
+                until: Some("2026-11-02T16:00:00.000Z".to_string()),
+            }
+        );
+        let coming: VoiceOverlayAction =
+            serde_json::from_str(r#"{"kind":"knockReply","knockId":"k_1","reply":"coming"}"#).expect("coming");
+        assert_eq!(
+            coming,
+            VoiceOverlayAction::KnockReply {
+                knock_id: "k_1".to_string(),
+                reply: "coming".to_string(),
+                until: None,
             }
         );
     }

@@ -63,6 +63,8 @@ export type TreeVisibility = "public" | "private";
 export type UserPresenceState = "offline" | "available" | "dnd" | "in_nest" | "invisible";
 export type UserReachability = "open" | "around" | "focused" | "unavailable";
 export type KnockStatus = "pending" | "accepted" | "declined" | "dismissed" | "expired";
+/** An answer to a knock on a person: Coming now, Coming in 10 min, Ask me later, Not today. */
+export type KnockReply = "coming" | "soon" | "later" | "not_today";
 export type UserRelationship = "self" | "none" | "friends" | "incoming_pending" | "outgoing_pending";
 export type UILabelPreference = "tree_nest" | "space_room";
 
@@ -322,6 +324,8 @@ export interface Knock {
   expiresAt: string;
   resolvedAt?: string | null;
   resolvedByUserId?: string | null;
+  reply?: KnockReply | null;
+  replyUntil?: string | null;
 }
 
 export interface Friend {
@@ -377,9 +381,15 @@ export interface LoginResponse {
 }
 
 export interface ProfileKnockState {
+  knockId?: string;
   userId: string;
-  state: "pending" | "cooldown";
+  /** The display name of the person knocked on. */
+  name?: string;
+  /** `replied`: an answer holds until `retryAt`. `reminder`: an Ask me later is due, knocking is allowed. */
+  state: "pending" | "cooldown" | "replied" | "reminder";
   outcome: KnockStatus;
+  reply?: KnockReply;
+  replyUntil?: string;
   expiresAt: string;
   retryAt: string;
 }
@@ -1113,6 +1123,13 @@ export class ApiClient {
 
   dismissKnock(id: string) {
     return this.request<{ knock: Knock }>(`/v1/knocks/${id}/dismiss`, { method: "POST" });
+  }
+
+  replyToKnock(id: string, reply: KnockReply, until?: string) {
+    return this.request<{ knock: Knock }>(`/v1/knocks/${id}/reply`, {
+      method: "POST",
+      body: JSON.stringify(until ? { reply, until } : { reply }),
+    });
   }
 
   /** Replaces the caller's password. Their other devices are signed out. */

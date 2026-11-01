@@ -1,15 +1,18 @@
-import type { ReactNode } from "react";
-import { Check, Hand, Mail, UserPlus, Users, X } from "lucide-react";
+import { forwardRef, type ButtonHTMLAttributes } from "react";
+import { Check, Hand, Mail, MessageCircleReply, Reply, UserPlus, Users, X } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { KnockAnswerMenu } from "./KnockAnswerMenu";
+import { answerHint } from "./knockReplies";
 import type { PendingItem, RavenShellData, RavenView } from "./state";
 import { usePendingActions } from "./usePendingActions";
 
 /** What a pending item is, said the way a person would say it. */
 export function pendingSummary(item: PendingItem) {
   if (item.kind === "knock") return item.knock.nestName ? `Knocked on ${item.knock.nestName}` : "Knocked";
+  if (item.kind === "answer") return item.context;
   if (item.kind === "friend") return "Wants to be friends";
   if (item.kind === "invite") return capitalize(item.context);
   return `Asked to join ${item.request.nestName}`;
@@ -20,7 +23,7 @@ function capitalize(value: string) {
 }
 
 export function pendingTarget(item: PendingItem): RavenView {
-  if (item.kind === "knock" || item.kind === "friend") return { kind: "user", id: item.fromId };
+  if (item.kind === "knock" || item.kind === "friend" || item.kind === "answer") return { kind: "user", id: item.fromId };
   return { kind: "waiting", id: item.nestId };
 }
 
@@ -73,7 +76,7 @@ export function PendingList({
               <span className="relative shrink-0">
                 <Avatar name={item.from} src={fromId ? api.userAvatarUrl(fromId) : undefined} className={compact ? "h-6 w-6" : "h-8 w-8"} />
                 <span className={cn("absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground", badgeSurface)}>
-                  {item.kind === "knock" ? <Hand className="h-2.5 w-2.5" /> : item.kind === "friend" ? <UserPlus className="h-2.5 w-2.5" /> : item.kind === "invite" ? <Mail className="h-2.5 w-2.5" /> : <Users className="h-2.5 w-2.5" />}
+                  {item.kind === "knock" ? <Hand className="h-2.5 w-2.5" /> : item.kind === "answer" ? <MessageCircleReply className="h-2.5 w-2.5" /> : item.kind === "friend" ? <UserPlus className="h-2.5 w-2.5" /> : item.kind === "invite" ? <Mail className="h-2.5 w-2.5" /> : <Users className="h-2.5 w-2.5" />}
                 </span>
               </span>
               <span className="min-w-0 flex-1">
@@ -94,6 +97,28 @@ export function PendingList({
                     <Button size="xs" variant="ghost" disabled={busy} onClick={() => actions.run(key, () => data.declineFriendRequest(item.request.id))}>Decline</Button>
                   </>
                 )
+              ) : item.kind === "knock" && !item.knock.nestId ? (
+                // A knock on you takes an answer. Each one says what the knocker will see.
+                <>
+                  {compact ? null : (
+                    <Button size="xs" disabled={busy} title={answerHint("coming", item.from, new Date())} onClick={() => actions.run(key, () => data.replyToKnock(item.knock.id, "coming"))}>
+                      Coming now
+                    </Button>
+                  )}
+                  <KnockAnswerMenu
+                    knock={item.knock}
+                    name={item.from}
+                    disabled={busy}
+                    onAnswer={(reply, until) => actions.run(key, () => data.replyToKnock(item.knock.id, reply, until))}
+                    onDismiss={() => actions.run(key, () => data.dismissKnock(item.knock.id))}
+                  >
+                    {compact ? (
+                      <IconAnswer label={`Answer ${item.from}`} disabled={busy}><Reply /></IconAnswer>
+                    ) : (
+                      <Button size="xs" variant="secondary" disabled={busy}>Answer…</Button>
+                    )}
+                  </KnockAnswerMenu>
+                </>
               ) : item.kind === "knock" ? (
                 compact ? (
                   <IconAnswer label={`Dismiss knock from ${item.from}`} disabled={busy} onClick={() => actions.run(key, () => data.dismissKnock(item.knock.id))}><X /></IconAnswer>
@@ -101,6 +126,22 @@ export function PendingList({
                   <>
                     <Button size="xs" variant="secondary" onClick={() => open(pendingTarget(item))}>Open</Button>
                     <Button size="xs" variant="ghost" disabled={busy} onClick={() => actions.run(key, () => data.dismissKnock(item.knock.id))}>Dismiss</Button>
+                  </>
+                )
+              ) : item.kind === "answer" ? (
+                compact ? (
+                  <>
+                    {item.reminder ? (
+                      <IconAnswer label={`Knock on ${item.from}`} disabled={busy} onClick={() => actions.run(key, () => data.knockUser(item.fromId))}><Hand /></IconAnswer>
+                    ) : null}
+                    <IconAnswer label="Clear" onClick={() => data.clearKnockAnswer(item.key)}><X /></IconAnswer>
+                  </>
+                ) : (
+                  <>
+                    {item.reminder ? (
+                      <Button size="xs" disabled={busy} onClick={() => actions.run(key, () => data.knockUser(item.fromId))}>Knock</Button>
+                    ) : null}
+                    <Button size="xs" variant="ghost" onClick={() => data.clearKnockAnswer(item.key)}>Clear</Button>
                   </>
                 )
               ) : compact ? null : (
@@ -116,17 +157,24 @@ export function PendingList({
   );
 }
 
-function IconAnswer({ label, disabled, onClick, children }: { label: string; disabled?: boolean; onClick: () => void; children: ReactNode }) {
+// Forwards its ref so it can open a menu as well as act on its own.
+const IconAnswer = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { label: string }>(function IconAnswer(
+  { label, className, children, ...props },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type="button"
       aria-label={label}
       title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className="flex h-6 w-6 items-center justify-center rounded-chip text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45 [&>svg]:h-3.5 [&>svg]:w-3.5"
+      className={cn(
+        "flex h-6 w-6 items-center justify-center rounded-chip text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45 [&>svg]:h-3.5 [&>svg]:w-3.5",
+        className,
+      )}
+      {...props}
     >
       {children}
     </button>
   );
-}
+});

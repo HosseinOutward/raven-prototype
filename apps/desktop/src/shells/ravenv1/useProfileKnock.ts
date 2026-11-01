@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { profileKnockPresentation } from "./profileKnock";
+import { knockerView } from "./knockReplies";
 import type { RavenShellData } from "./state";
 
 export function useProfileKnock(data: RavenShellData, userId: string) {
@@ -7,20 +7,26 @@ export function useProfileKnock(data: RavenShellData, userId: string) {
   const sendingRef = useRef(false);
   const [now, setNow] = useState(Date.now);
   const state = data.home?.profileKnocks?.find((knock) => knock.userId === userId);
+  const name = data.getPerson(userId)?.name ?? "They";
   useEffect(() => {
     setNow(Date.now());
     if (!state) return;
-    if (Date.now() >= Date.parse(state.retryAt)) return;
-    const timer = window.setInterval(() => {
-      const next = Date.now();
-      setNow(next);
-      if (next >= Date.parse(state.retryAt)) window.clearInterval(timer);
-    }, 1000);
-    return () => window.clearInterval(timer);
+    let timer: number | undefined;
+    // Count seconds near the end; an answer that holds for hours only needs the odd look.
+    const schedule = () => {
+      const left = Date.parse(state.retryAt) - Date.now();
+      if (left <= 0) return;
+      timer = window.setTimeout(() => {
+        setNow(Date.now());
+        schedule();
+      }, left > 120_000 ? Math.min(left, 30_000) : 1000);
+    };
+    schedule();
+    return () => window.clearTimeout(timer);
   }, [state]);
-  const presentation = profileKnockPresentation(state, now);
+  const view = knockerView(state, name, now);
   const knock = () => {
-    if (sendingRef.current || profileKnockPresentation(state, Date.now()).disabled) return;
+    if (sendingRef.current || knockerView(state, name, Date.now()).disabled) return;
     sendingRef.current = true;
     setSending(true);
     void data.knockUser(userId).catch(() => undefined).finally(() => {
@@ -28,5 +34,5 @@ export function useProfileKnock(data: RavenShellData, userId: string) {
       setSending(false);
     });
   };
-  return { ...presentation, disabled: sending || presentation.disabled, label: sending ? "Sending…" : presentation.label, knock };
+  return { ...view, disabled: sending || view.disabled, label: sending ? "Sending…" : view.label, knock };
 }

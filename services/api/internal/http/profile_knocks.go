@@ -8,49 +8,88 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"raven/services/api/internal/auth"
-	"raven/services/api/internal/database"
 )
 
 const profileKnockCooldown = 60 * time.Second
 
+// How long an "Ask me later" stays on the knocker's side once its time has come.
+const knockReminderWindow = time.Hour
+
 // Only the sender receives this state; it is separate from the incoming inbox.
+// State is pending, cooldown, replied (an answer holds) or reminder (Ask me later is due).
 type ProfileKnockState struct {
-	UserID    string `json:"userId"`
-	State     string `json:"state"`
-	Outcome   string `json:"outcome"`
-	ExpiresAt string `json:"expiresAt"`
-	RetryAt   string `json:"retryAt"`
+	KnockID    string `json:"knockId"`
+	UserID     string `json:"userId"`
+	Name       string `json:"name,omitempty"`
+	State      string `json:"state"`
+	Outcome    string `json:"outcome"`
+	Reply      string `json:"reply,omitempty"`
+	ReplyUntil string `json:"replyUntil,omitempty"`
+	ExpiresAt  string `json:"expiresAt"`
+	RetryAt    string `json:"retryAt"`
 }
 
+// profileKnockState is what the knocker is told. It never depends on whether the person
+// dismissed the knock: a dismissed knock reads as unanswered until it would have expired,
+// and its cooldown runs from the expiry, so the timing of a dismiss cannot leak.
 func profileKnockState(knock Knock, now time.Time) *ProfileKnockState {
-	if knock.ToUserID == nil || knock.Status == "accepted" {
+	if knock.ToUserID == nil {
 		return nil
 	}
 	expires, err := time.Parse(time.RFC3339Nano, knock.ExpiresAt)
 	if err != nil {
 		return nil
 	}
-	state := ProfileKnockState{UserID: *knock.ToUserID, State: "cooldown", Outcome: knock.Status, ExpiresAt: knock.ExpiresAt}
-	resolved := expires
-	if knock.Status == "pending" && now.Before(expires) {
-		state.State = "pending"
-	} else if knock.Status == "pending" || knock.Status == "expired" {
-		state.Outcome = "expired"
-	} else if knock.ResolvedAt != nil {
-		resolved, err = time.Parse(time.RFC3339Nano, *knock.ResolvedAt)
+	state := ProfileKnockState{KnockID: knock.ID, UserID: *knock.ToUserID, Outcome: knock.Status, ExpiresAt: knock.ExpiresAt}
+	if knock.ToDisplayName != nil {
+		state.Name = *knock.ToDisplayName
+	}
+	if knock.Reply != nil && knock.ReplyUntil != nil {
+		until, err := time.Parse(time.RFC3339Nano, *knock.ReplyUntil)
 		if err != nil {
 			return nil
 		}
-	} else {
+		state.Reply, state.ReplyUntil, state.RetryAt = *knock.Reply, *knock.ReplyUntil, *knock.ReplyUntil
+		switch {
+		case now.Before(until):
+			state.State = "replied"
+		case *knock.Reply == "later" && now.Before(until.Add(knockReminderWindow)):
+			state.State = "reminder"
+		default:
+			return nil
+		}
+		return &state
+	}
+	retry := expires.Add(profileKnockCooldown)
+	switch knock.Status {
+	case "pending", "dismissed", "expired":
+		if knock.Status != "expired" && now.Before(expires) {
+			state.State, state.Outcome = "pending", "pending"
+		} else {
+			state.State, state.Outcome = "cooldown", "expired"
+		}
+	case "declined":
+		// Answered by a client older than knock answers.
+		if knock.ResolvedAt == nil {
+			return nil
+		}
+		resolved, err := time.Parse(time.RFC3339Nano, *knock.ResolvedAt)
+		if err != nil {
+			return nil
+		}
+		retry = resolved.Add(profileKnockCooldown)
+		state.State = "cooldown"
+	default:
 		return nil
 	}
-	retry := resolved.Add(profileKnockCooldown)
 	if state.State == "cooldown" && !now.Before(retry) {
 		return nil
 	}
 	state.RetryAt = retry.Format(time.RFC3339Nano)
 	return &state
 }
+
+var profileKnockRank = map[string]int{"pending": 3, "replied": 2, "reminder": 1, "cooldown": 0}
 
 func profileKnockStates(knocks []Knock, now time.Time) []ProfileKnockState {
 	states := []ProfileKnockState{}
@@ -61,8 +100,9 @@ func profileKnockStates(knocks []Knock, now time.Time) []ProfileKnockState {
 			continue
 		}
 		if i, exists := indexes[state.UserID]; exists {
-			// Older servers allowed duplicates. Keep waiting while any one is pending.
-			if (states[i].State != "pending" && state.State == "pending") || (states[i].State == state.State && state.RetryAt > states[i].RetryAt) {
+			// Older servers allowed duplicates. Keep the state that holds the knocker back most.
+			current, next := profileKnockRank[states[i].State], profileKnockRank[state.State]
+			if next > current || (next == current && state.RetryAt > states[i].RetryAt) {
 				states[i] = *state
 			}
 			continue
@@ -73,10 +113,30 @@ func profileKnockStates(knocks []Knock, now time.Time) []ProfileKnockState {
 	return states
 }
 
+// profileKnockWindow selects the sender's knocks that can still shape their state.
+func profileKnockWindow(now time.Time) (string, []any) {
+	cutoff := now.Add(-profileKnockCooldown).Format(time.RFC3339Nano)
+	return ` AND (k.status = 'pending' OR k.resolved_at > ? OR k.expires_at > ? OR k.reply_until > ?) ORDER BY k.created_at DESC`,
+		[]any{cutoff, cutoff, now.Add(-knockReminderWindow).Format(time.RFC3339Nano)}
+}
+
+// knockSeenBy hides a quiet dismiss from the person who knocked.
+func knockSeenBy(knock Knock, viewerID string, now time.Time) Knock {
+	if knock.FromUserID != viewerID || knock.Status != "dismissed" {
+		return knock
+	}
+	knock.Status = "expired"
+	if expires, err := time.Parse(time.RFC3339Nano, knock.ExpiresAt); err == nil && now.Before(expires) {
+		knock.Status = "pending"
+	}
+	knock.ResolvedAt, knock.ResolvedByUserID = nil, nil
+	return knock
+}
+
 func (s *Server) outgoingProfileKnocks(userID string) ([]ProfileKnockState, error) {
 	now := time.Now().UTC()
-	rows, err := s.db.Query(knockSelectSQL()+` WHERE k.from_user_id = ? AND k.to_user_id IS NOT NULL
-		AND (k.status = 'pending' OR k.resolved_at > ?) ORDER BY k.created_at DESC`, userID, now.Add(-profileKnockCooldown).Format(time.RFC3339Nano))
+	window, args := profileKnockWindow(now)
+	rows, err := s.db.Query(knockSelectSQL()+` WHERE k.from_user_id = ? AND k.to_user_id IS NOT NULL`+window, append([]any{userID}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -101,8 +161,8 @@ func (s *Server) createProfileKnock(c *fiber.Ctx, fromUserID, toUserID, message 
 		}
 	}
 	now := time.Now().UTC()
-	rows, err := tx.Query(knockSelectSQL()+` WHERE k.from_user_id = ? AND k.to_user_id = ?
-		AND (k.status = 'pending' OR k.resolved_at > ?) ORDER BY k.created_at DESC`, fromUserID, toUserID, now.Add(-profileKnockCooldown).Format(time.RFC3339Nano))
+	window, args := profileKnockWindow(now)
+	rows, err := tx.Query(knockSelectSQL()+` WHERE k.from_user_id = ? AND k.to_user_id = ?`+window, append([]any{fromUserID, toUserID}, args...)...)
 	if err != nil {
 		return err
 	}
@@ -110,7 +170,8 @@ func (s *Server) createProfileKnock(c *fiber.Ctx, fromUserID, toUserID, message 
 	if err != nil {
 		return err
 	}
-	if states := profileKnockStates(knocks, now); len(states) > 0 {
+	// A due "Ask me later" is the moment to knock again, so it does not hold the knocker back.
+	if states := profileKnockStates(knocks, now); len(states) > 0 && states[0].State != "reminder" {
 		state := states[0]
 		if state.State == "pending" {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Your knock is still waiting for an answer.", "reasonCode": "knock_pending", "profileKnock": state})
@@ -132,6 +193,6 @@ func (s *Server) createProfileKnock(c *fiber.Ctx, fromUserID, toUserID, message 
 	if err != nil {
 		return err
 	}
-	s.events.publish(LiveUpdate{Type: "knock.created", At: database.Now()})
+	s.publishKnockUpdate(knock, "created", false)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"knock": knock, "profileKnock": profileKnockState(knock, now)})
 }

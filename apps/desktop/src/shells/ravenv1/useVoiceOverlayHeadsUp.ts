@@ -11,6 +11,7 @@ import {
   KNOCK_LISTED_MS,
   MESSAGE_LISTED_MS,
   NEW_TRACKER,
+  answerCandidates,
   knockCandidates,
   mergeHeadsUp,
   messageCandidates,
@@ -62,12 +63,16 @@ export function useVoiceOverlayHeadsUp({
   const openConversationId = view.kind === "chat" && windowActive ? view.id : "";
   const userId = data.user?.id ?? "";
   const knocks: Knock[] = [];
-  for (const item of data.pending) if (item.kind === "knock") knocks.push(item.knock);
-  const knockKey = knocks.map((knock) => knock.id).join("|");
+  const answers: Extract<RavenShellData["pending"][number], { kind: "answer" }>[] = [];
+  for (const item of data.pending) {
+    if (item.kind === "knock") knocks.push(item.knock);
+    else if (item.kind === "answer") answers.push(item);
+  }
+  const knockKey = [...knocks.map((knock) => knock.id), ...answers.map((answer) => answer.key)].join("|");
   const knocksReady = Boolean(userId) && !data.loading;
 
-  const inputs = useRef({ settings, knocks, knocksReady, treeId, openConversationId, userId, chat });
-  inputs.current = { settings, knocks, knocksReady, treeId, openConversationId, userId, chat };
+  const inputs = useRef({ settings, knocks, answers, knocksReady, treeId, openConversationId, userId, chat });
+  inputs.current = { settings, knocks, answers, knocksReady, treeId, openConversationId, userId, chat };
   const trackers = useRef<{ knock: HeadsUpTracker; message: HeadsUpTracker }>({ knock: NEW_TRACKER, message: NEW_TRACKER });
   const timer = useRef<number | null>(null);
 
@@ -77,7 +82,10 @@ export function useVoiceOverlayHeadsUp({
     const state = current.chat?.getState() ?? null;
     trackers.current = {
       knock: trackHeadsUp(trackers.current.knock, {
-        candidates: knockCandidates({ knocks: current.knocks, enabled: current.settings.showKnocks, avatarUrl }),
+        candidates: [
+          ...knockCandidates({ knocks: current.knocks, enabled: current.settings.showKnocks, avatarUrl }),
+          ...answerCandidates({ answers: current.answers, enabled: current.settings.showKnocks, avatarUrl }),
+        ],
         ready: current.knocksReady,
         now,
         listedMs: KNOCK_LISTED_MS,

@@ -320,6 +320,7 @@ func (s *Server) routes() {
 	service.Post("/knocks/:id/accept", s.acceptKnock)
 	service.Post("/knocks/:id/decline", s.declineKnock)
 	service.Post("/knocks/:id/dismiss", s.dismissKnock)
+	service.Post("/knocks/:id/reply", s.replyKnock)
 	service.Post("/nests", s.createNest)
 	service.Get("/nests", s.listNests)
 	service.Get("/nests/launcher", s.listLauncherNests)

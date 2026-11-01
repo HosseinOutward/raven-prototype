@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { api, type NestDetails, type SessionSummary, type User } from "@/lib/api";
+import { api, type NestDetails, type SessionSummary, type User, type KnockReply } from "@/lib/api";
 import { callStatesByUser, callStateSupported } from "@/lib/callState";
 import type { AudioMixerState, RemoteAudioTrackState } from "@/lib/audio";
 import { gainDbToVolumePercent } from "@/components/media/audioSatellites";
@@ -61,7 +61,9 @@ export type VoiceOverlayAction =
   | { kind: "away"; away: boolean }
   | { kind: "volume"; userId: string; percent: number }
   /** Open the knock in Raven (`open`) or dismiss it. */
-  | { kind: "knock"; knockId: string; open: boolean };
+  | { kind: "knock"; knockId: string; open: boolean }
+  /** Answer a knock on you from its line. `until` (ISO 8601) is for Ask me later and Not today. */
+  | { kind: "knockReply"; knockId: string; reply: KnockReply; until?: string };
 
 /** Which text-room messages show as a line on the card: none, or those of the call's tree. */
 export type VoiceOverlayMessages = "off" | "tree";
@@ -77,6 +79,8 @@ export interface VoiceOverlayHeadsUp {
   text: string;
   /** When Raven first saw it (ISO 8601). */
   at: string;
+  /** A knock on you rather than on a nest: it takes an answer. */
+  answerable?: boolean;
 }
 
 /** A row along the top or bottom edge and a column elsewhere, or always one of them. */
