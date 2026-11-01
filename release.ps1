@@ -393,7 +393,7 @@ function Invoke-Images {
   $sourceTar = Join-Path $Stage "source.tar"
   # 'git archive' gives the committed line endings (LF), which the Dockerfiles and scripts need.
   Invoke-Native "git" @("archive", "--format=tar", "--output=$sourceTar", $commit)
-  $stageInWsl = (& wsl.exe -d $WslDistro -- wslpath -a ($stage -replace '\', '/')).Trim()
+  $stageInWsl = (& wsl.exe -d $WslDistro -- wslpath -a ($stage -replace '\\', '/')).Trim()
   if ($LASTEXITCODE -ne 0 -or -not $stageInWsl) { throw "Could not reach the WSL distro '$WslDistro'." }
   $tags = if ($NoLatest) { "" } else { " -t $ImageNamespace/raven-`$name:latest" }
   $output = if ($DryRun) { "--output type=image,push=false" } else { "--push" }
