@@ -18,7 +18,7 @@ param(
   [string]$NotesFile,
   # The server a fresh install signs in to (people can change it on the sign-in screen).
   [string]$ApiUrl = "https://mimir.rvn.bluehour.cloud",
-  [string]$SshTarget = "saye",
+  [string]$SshTarget = "vala",
   [string]$WslDistro = "Ubuntu",
   # Build from a tree with uncommitted changes. For rehearsals, not for real releases.
   [switch]$AllowDirty,
@@ -39,7 +39,7 @@ Set-StrictMode -Version Latest
 $Root = $PSScriptRoot
 $Desktop = Join-Path $Root "apps\desktop"
 $PublicBase = "https://updates.rvn.bluehour.cloud"
-$RemoteRoot = "/home/soroush/services/raven/releases"
+$RemoteRoot = "/home/ubuntu/services/raven/releases"
 $PublicKey = Join-Path $Desktop "src-tauri\updater\raven-updater.key.pub"
 $KeepVersions = 5
 
@@ -62,7 +62,7 @@ function Invoke-Native {
   finally { Pop-Location }
 }
 
-# Bash scripts go to Saye and WSL as files: piped from Windows PowerShell they would
+# Bash scripts go to Vala and WSL as files: piped from Windows PowerShell they would
 # arrive with a byte-order mark and CRLF line endings, and bash rejects both.
 function New-BashScript {
   param([string]$Script)

@@ -1,5 +1,14 @@
 # Running Raven Text Chat
 
+> **Deployment moved on 2026-10-31.** Raven now runs on `vala`; the Saye paths,
+> Compose commands, and backup schedule later in this historical guide are obsolete.
+> Use `/srv/vala/deploy/raven/compose.yaml` with both root-only environment files in
+> `/etc/vala/raven`, as documented in [releasing.md](releasing.md). A daily database
+> dump runs at 04:41 UTC and is kept for 14 days under
+> `/srv/vala/data/seaweedfs/services/raven/backups`. These local dumps do not cover
+> media or protect against loss of the host. Chat attachments use Raven's separate
+> object store, so attachment operations also depend on that store.
+
 How chat is deployed, watched, limited, backed up and recovered. The design is in
 [chat.md](chat.md); measured capacity is in [chat-testing.md](chat-testing.md).
 

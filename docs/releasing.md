@@ -1,11 +1,11 @@
 # Releasing Raven
 
 Raven's desktop app updates itself with Tauri's signed updater. There is no update
-server and no dashboard: one file on Saye, `latest.json`, says which version is current,
+server and no dashboard: one file on Vala, `latest.json`, says which version is current,
 and one script, `release.ps1`, builds, signs and publishes.
 
 ```
-release.ps1 (this PC)                    Saye: ~/services/raven/releases/     a friend's Raven
+release.ps1 (this PC)                    Vala: ~/services/raven/releases/     a friend's Raven
   build Windows (here)                     0.1.0/Raven_0.1.0_x64-setup.exe     reads latest.json,
   build Linux (Docker in WSL)   scp ──►    0.1.0/Raven_0.1.0_amd64.AppImage    says "update available",
   sign and verify both (here)              0.1.0/latest.json                   downloads and restarts
@@ -43,7 +43,7 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
    .\release.ps1 publish -Version 0.1.1
    ```
 
-   This uploads the installers, checks their hashes on Saye, switches `latest.json`, then
+   This uploads the installers, checks their hashes on Vala, switches `latest.json`, then
    downloads everything back through the public address and compares it with what was
    built. Every Raven that is open notices within six hours, or at once with **Settings →
    Updates → Check now**.
@@ -88,14 +88,14 @@ To stop a bad version spreading in the meantime, point `latest.json` back at an 
 
 Raven only installs versions newer than the one it is running, so this downgrades nobody.
 Someone already on the bad version reinstalls the older installer by hand; `repoint`
-prints its links. The newest five versions are kept on Saye for this.
+prints its links. The newest five versions are kept on Vala for this.
 
 A published version never changes. If a build was wrong, bump the version.
 
 ## Making old versions update
 
 When a server change breaks older clients, raise `RAVEN_MINIMUM_CLIENT_VERSION` in
-`~/services/raven/.env` on Saye and recreate the `api` container. Older clients then get
+`/etc/vala/raven/.env` on Vala and recreate the `api` container. Older clients then get
 a "Raven needs an update" screen with the update controls, instead of failing in odd ways.
 That is the only server-side update setting.
 
@@ -109,13 +109,13 @@ That is the only server-side update setting.
 - Installers are uploaded and hash-checked before `latest.json` moves, and `latest.json`
   is swapped by a rename, so a client never reads a half-published release.
 - The signing key (`%USERPROFILE%\.raven\updater\raven-updater.key`, password in the
-  DPAPI file beside it) never leaves this PC. Saye only stores files. If the key is lost,
+  DPAPI file beside it) never leaves this PC. Vala only stores files. If the key is lost,
   existing installs can no longer be updated and everyone reinstalls by hand, so keep a
   backup of that folder somewhere safe.
 
 ## One-time setup on the release PC
 
-- The usual desktop build tools (see `development.md`), and `ssh saye` working.
+- The usual desktop build tools (see `development.md`), and `ssh vala` working.
 - Docker inside the WSL distro (`Ubuntu` by default; `-WslDistro` picks another), with
   your user in the `docker` group:
 
@@ -145,34 +145,29 @@ bun run tauri dev
 ```
 
 Only debug builds read `RAVEN_UPDATE_ENDPOINT`. Delete
-`~/services/raven/releases/test` on Saye afterwards.
+`~/services/raven/releases/test` on Vala afterwards.
 
-## On Saye
+## On Vala
 
-- Compose service `releases` (`infra/homelab/compose.yaml`): a stock nginx that serves
-  `~/services/raven/releases` read-only, using `infra/homelab/releases-nginx.conf`.
-- Edge vhost `infra/homelab/nginx/raven.conf` → `/opt/nginx/conf.d/raven/raven.conf`:
-  `updates.rvn.bluehour.cloud` proxies to that container.
+- Compose service `releases` in `/srv/vala/deploy/raven/compose.yaml` serves
+  `/home/ubuntu/services/raven/releases` read-only.
+- The Vala edge configuration in `/srv/vala/deploy/edge/nginx.conf` proxies
+  `updates.rvn.bluehour.cloud` to that container.
 - `latest.json` is served with `Cache-Control: no-cache`; versioned files are cacheable.
 
 ### Deploying the API and these services
 
-Run from `~/services/raven` on Saye. The Compose project needs its name and env file:
+The deployed configuration and root-only environment files are on Vala:
 
 ```bash
-docker compose -p raven --env-file .env -f current/infra/homelab/compose.yaml <command>
+sudo docker compose -p raven --env-file /etc/vala/raven/.env \
+  --env-file /etc/vala/raven/storage.env -f /srv/vala/deploy/raven/compose.yaml <command>
 ```
 
-1. Back up the database first (`infra/homelab/backup-raven-db.sh`). The API applies its
-   migrations when it starts.
-2. Copy the committed source to `deployments/<commit>/source` and point `current` at it.
-3. `up -d --build api releases`.
-4. Copy changed files from `infra/homelab/nginx/` to `/opt/nginx/conf.d/raven/`, then
-   `docker exec edge-nginx nginx -t && docker exec edge-nginx nginx -s reload`.
-5. From the release PC, check `https://mimir.rvn.bluehour.cloud/healthz` and
-   `https://updates.rvn.bluehour.cloud/healthz`. Public names cannot be tested from Saye
-   itself.
-
-`.env` needs `POSTGRES_PASSWORD`, `RAVEN_VERSION`, `RAVEN_MINIMUM_CLIENT_VERSION`, the
-`LIVEKIT_*` values and the `S3_*` values (profile pictures); see
-`infra/homelab/env.example`. LiveKit, its ports and `rtc.conf` are unchanged by releases.
+Back up the database before deploying an API image: the API applies its migrations when
+it starts, and migrations may not be reversible. The migrated deployment uses the exact
+running images, not a source checkout or a build on Vala. Build and transfer a new image
+deliberately, update the deployment definition, and verify the API and update endpoints.
+For edge changes, preserve the existing configuration and use `vala-rollout edge` after
+validating the new configuration. Raven's separate object store is configured in
+`/srv/vala/deploy/raven/storage-compose.yaml`; its credentials are under `/etc/vala/raven`.
