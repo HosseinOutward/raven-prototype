@@ -66,7 +66,7 @@ Publish them when the API or admin dashboard changed in a release:
 
 It builds the last commit with buildx in WSL (clean tree required; `-NoLatest` skips
 `:latest`). Run `docker login` inside WSL once; the password stays in WSL's Docker config.
-It prints each pushed image's digest. Paste `infra/self-host/DOCKERHUB.md` into the
+It prints each pushed image's digest. Paste `infra/self-host/DOCKERHUB-api.md` and `DOCKERHUB-admin.md` into their
 Docker Hub repository pages when it changes.
 
 ## What a friend sees
