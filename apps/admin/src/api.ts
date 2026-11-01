@@ -185,6 +185,14 @@ export class AdminApi {
     return this.request("POST", `/v1/admin/users/${id(userId)}`, change);
   }
 
+  async uploadUserImage(userId: string, image: Blob): Promise<void> {
+    await this.request<unknown>("POST", `/v1/admin/users/${id(userId)}/avatar`, undefined, image);
+  }
+
+  removeUserImage(userId: string): Promise<void> {
+    return this.request("DELETE", `/v1/admin/users/${id(userId)}/avatar`);
+  }
+
   suspendUser(userId: string, reason: string): Promise<UserDetail> {
     return this.request("POST", `/v1/admin/users/${id(userId)}/suspend`, { reason });
   }

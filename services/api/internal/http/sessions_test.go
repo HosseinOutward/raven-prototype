@@ -862,6 +862,18 @@ func TestProfileImagesUseStoredMediaAndEnforceOwnership(t *testing.T) {
 	if !strings.HasPrefix(properties.Avatar, "/v1/media/server/avatar?v=") {
 		t.Fatalf("server image route was not advertised: %+v", properties)
 	}
+
+	bob := currentTestUser(t, server, "bob")
+	postImage(t, server, bobToken, "/v1/admin/users/"+bob.ID+"/avatar", "image/png", png, http.StatusForbidden)
+	postImage(t, server, adminToken, "/v1/admin/users/missing/avatar", "image/png", png, http.StatusNotFound)
+	postImage(t, server, adminToken, "/v1/admin/users/"+bob.ID+"/avatar", "image/png", png, http.StatusOK)
+	if got := getJSON(t, server, "", "/v1/media/users/"+bob.ID+"/avatar", http.StatusOK); !bytes.Equal(got, png) {
+		t.Fatalf("admin-set user image differs: %x", got)
+	}
+	deleteJSON(t, server, bobToken, "/v1/admin/users/"+bob.ID+"/avatar", http.StatusForbidden)
+	deleteJSON(t, server, adminToken, "/v1/admin/users/"+bob.ID+"/avatar", http.StatusNoContent)
+	getJSON(t, server, "", "/v1/media/users/"+bob.ID+"/avatar", http.StatusNotFound)
+	deleteJSON(t, server, adminToken, "/v1/admin/users/"+bob.ID+"/avatar", http.StatusNoContent)
 }
 
 func newTestServer(t *testing.T) (*Server, string) {

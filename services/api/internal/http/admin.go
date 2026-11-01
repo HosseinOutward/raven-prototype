@@ -31,6 +31,8 @@ func (s *Server) registerAdminRoutes(authenticated fiber.Router) {
 	admin.Post("/users", s.adminCreateUser)
 	admin.Get("/users/:id", s.adminGetUser)
 	admin.Post("/users/:id", s.adminUpdateUser)
+	admin.Post("/users/:id/avatar", s.adminUploadUserAvatar)
+	admin.Delete("/users/:id/avatar", s.adminRemoveUserAvatar)
 	admin.Post("/users/:id/suspend", s.adminSuspendUser)
 	admin.Post("/users/:id/reactivate", s.adminReactivateUser)
 	admin.Post("/users/:id/password-reset", s.adminResetPassword)
@@ -244,6 +246,48 @@ func (s *Server) adminUploadServerAvatar(c *fiber.Ctx) error {
 	}
 	s.audit(auditActorFor(currentUser(c)), "settings.server_image_changed", "server", "avatar", "Server image", nil)
 	return nil
+}
+
+// adminUploadUserAvatar replaces another account's profile picture, the same way the
+// account's own upload does, and tells the people who can see them.
+func (s *Server) adminUploadUserAvatar(c *fiber.Ctx) error {
+	target, err := s.adminUser(c.Params("id"))
+	if err != nil {
+		return err
+	}
+	key, err := s.storeUploadedAvatar(c, "users", target.ID)
+	if err != nil {
+		return err
+	}
+	if err := s.replaceAvatarKey(c, key, `SELECT avatar_object_key FROM users WHERE id = ?`, `UPDATE users SET avatar_object_key = ?, updated_at = ? WHERE id = ?`, target.ID); err != nil {
+		return err
+	}
+	s.publishAvatarChange(target.ID)
+	s.audit(auditActorFor(currentUser(c)), "user.image_changed", "user", target.ID, target.Username, nil)
+	return nil
+}
+
+// adminRemoveUserAvatar clears another account's profile picture, so the apps show
+// their initial again.
+func (s *Server) adminRemoveUserAvatar(c *fiber.Ctx) error {
+	target, err := s.adminUser(c.Params("id"))
+	if err != nil {
+		return err
+	}
+	var previous string
+	if err := s.db.QueryRow(`SELECT avatar_object_key FROM users WHERE id = ?`, target.ID).Scan(&previous); err != nil {
+		return err
+	}
+	if previous == "" {
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+	if _, err := s.db.Exec(`UPDATE users SET avatar_object_key = '', updated_at = ? WHERE id = ?`, database.Now(), target.ID); err != nil {
+		return err
+	}
+	_ = s.profileMedia.Delete(c.UserContext(), previous)
+	s.publishAvatarChange(target.ID)
+	s.audit(auditActorFor(currentUser(c)), "user.image_removed", "user", target.ID, target.Username, nil)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func equalIntPtr(a, b *int) bool {

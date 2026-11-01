@@ -65,6 +65,8 @@ export function describeEffective(capability: UserCapability, isAdmin: boolean):
 const ACTION_TEXT: Record<string, string> = {
   "user.created": "Created account",
   "user.updated": "Changed account",
+  "user.image_changed": "Changed profile picture",
+  "user.image_removed": "Removed profile picture",
   "user.suspended": "Suspended account",
   "user.reactivated": "Reactivated account",
   "user.password_reset": "Reset password",

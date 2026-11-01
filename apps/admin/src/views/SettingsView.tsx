@@ -3,6 +3,7 @@ import type { AdminApi } from "../api";
 import type { CapabilityDefault } from "../types";
 import { Button, Input, List, Loading, Notice, PageHeader, Row, Section, Select } from "../components/ui";
 import { CAPABILITY_TEXT } from "../lib/format";
+import { IMAGE_TYPES, imageProblem } from "../lib/image";
 import { errorMessage, useLoad } from "../lib/useLoad";
 
 export function SettingsView({ api }: { api: AdminApi }) {
@@ -100,9 +101,6 @@ function currentLimit(defaults: CapabilityDefault[]): string {
   return spaces?.limit == null ? "" : String(spaces.limit);
 }
 
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const IMAGE_MAX_BYTES = 512 * 1024;
-
 function ServerImage({ api }: { api: AdminApi }) {
   // The address changes after an upload so the browser fetches the new picture.
   const [version, setVersion] = useState(0);
@@ -111,12 +109,9 @@ function ServerImage({ api }: { api: AdminApi }) {
   const [error, setError] = useState("");
   const upload = async (file: File | undefined) => {
     if (!file) return;
-    if (!IMAGE_TYPES.includes(file.type)) {
-      setError("Choose a PNG, JPEG or WebP image.");
-      return;
-    }
-    if (file.size > IMAGE_MAX_BYTES) {
-      setError("That image is larger than 512 KB. Choose a smaller one.");
+    const problem = imageProblem(file);
+    if (problem) {
+      setError(problem);
       return;
     }
     setBusy(true);
