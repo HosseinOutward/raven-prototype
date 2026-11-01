@@ -40,6 +40,8 @@ type Server struct {
 	events            *eventBroker
 	metrics           *serverMetrics
 	chatLocks         *keyedMutex
+	// inviteLocks keeps one account's invite count and insert together.
+	inviteLocks *keyedMutex
 	// What the compatibility gate compares clients against (see compat.go).
 	serverVersion    string
 	minClientVersion string
@@ -201,6 +203,7 @@ func New(db *database.DB) *Server {
 		events:            newEventBroker(),
 		metrics:           newServerMetrics(),
 		chatLocks:         newKeyedMutex(),
+		inviteLocks:       newKeyedMutex(),
 		serverVersion:     fallbackString(os.Getenv("RAVEN_VERSION"), "0.1.0"),
 		minClientVersion:  fallbackString(os.Getenv("RAVEN_MINIMUM_CLIENT_VERSION"), "0.1.0"),
 	}
@@ -273,6 +276,7 @@ func (s *Server) routes() {
 	v1.Get("/media/server/avatar", s.getStoredServerAvatar)
 	v1.Get("/server/compatibility", s.getServerCompatibility)
 	v1.Post("/auth/login", s.login)
+	v1.Post("/auth/sign-up", s.signUp)
 
 	authenticated := v1.Use(s.requireAuth)
 	authenticated.Get("/auth/me", s.me)
@@ -286,6 +290,9 @@ func (s *Server) routes() {
 	s.registerAdminRoutes(authenticated)
 	service := authenticated.Use(s.requireCompatibleClient)
 	s.registerChatRoutes(service)
+	service.Get("/invites", s.listInvites)
+	service.Post("/invites", s.createInvite)
+	service.Delete("/invites/:id", s.revokeInvite)
 	service.Get("/users/search", s.searchUsers)
 	service.Get("/friends", s.listFriends)
 	service.Post("/friend-requests", s.createFriendRequest)
@@ -364,6 +371,10 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 	if attachments := s.chatAttachmentCapabilities(); attachments != nil {
 		chat["attachments"] = attachments
 	}
+	accounts, err := s.accountSettings(s.db)
+	if err != nil {
+		return err
+	}
 	return c.JSON(ServerProperties{
 		Name:         fallbackString(s.serverName, "Raven"),
 		Description:  fallbackString(s.serverDescription, "Desktop RTC for private Nests"),
@@ -373,6 +384,8 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 		// shows anything that depends on it.
 		Properties: map[string]any{
 			"chat": chat,
+			// Which ways in the sign-in screen may offer before anyone is signed in.
+			"accounts": map[string]any{"signUp": accounts.SignUpOpen, "invitations": accounts.InvitationsOpen},
 		},
 	})
 }
@@ -524,6 +537,12 @@ func (s *Server) login(c *fiber.Ctx) error {
 			"reasonCode": "account_suspended",
 		})
 	}
+	return s.startSession(c, user)
+}
+
+// startSession signs the request's client in as user, replacing any session it had, and
+// answers with the account.
+func (s *Server) startSession(c *fiber.Ctx, user User) error {
 	capabilities, err := s.capabilitiesFor(s.db, user.ID, user.Role)
 	if err != nil {
 		return err
@@ -681,6 +700,24 @@ func (s *Server) CreateUserWithDisplayName(username, displayName, password, role
 	if taken > 0 {
 		return User{}, ErrUsernameTaken
 	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	user, err := s.insertUser(tx, username, normalizedDisplayName, password, normalizedRole)
+	if err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
+	return user, nil
+}
+
+// insertUser adds an account inside tx. The name, display name and role must already be
+// checked; a name taken in the meantime still comes back as ErrUsernameTaken.
+func (s *Server) insertUser(tx *database.Tx, username, normalizedDisplayName, password, normalizedRole string) (User, error) {
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		return User{}, err
@@ -689,11 +726,6 @@ func (s *Server) CreateUserWithDisplayName(username, displayName, password, role
 	user := User{ID: auth.NewID(), Username: username, DisplayName: normalizedDisplayName, Role: normalizedRole, Status: userStatusActive, CreatedAt: now, UpdatedAt: now}
 	user.Preferences = defaultUserPreferences(user.Username, now)
 	user.Preferences.DisplayName = normalizedDisplayName
-	tx, err := s.db.Begin()
-	if err != nil {
-		return User{}, err
-	}
-	defer tx.Rollback()
 	if _, err = tx.Exec(
 		`INSERT INTO users (id, username, password_hash, role, password_changed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		user.ID, user.Username, hash, user.Role, now, user.CreatedAt, user.UpdatedAt,
@@ -707,9 +739,6 @@ func (s *Server) CreateUserWithDisplayName(username, displayName, password, role
 		`INSERT INTO user_preferences (user_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
 		user.ID, user.DisplayName, now, now,
 	); err != nil {
-		return User{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return User{}, err
 	}
 	return user, nil

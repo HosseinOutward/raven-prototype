@@ -35,7 +35,8 @@ export type CapabilityName =
   | "rooms.start_adhoc"
   | "messages.read"
   | "messages.send"
-  | "groups.create";
+  | "groups.create"
+  | "invites.create";
 
 export type CapabilityMode = "inherit" | "allow" | "deny";
 
@@ -78,6 +79,14 @@ export interface UserDetail {
   capabilities: UserCapability[];
   sessions: UserSession[];
   spaces: UserSpace[];
+  /** Whose invite code they joined with, if any. */
+  invitedBy: { id: string; username: string; displayName: string } | null;
+}
+
+/** The server's two switches for new accounts. */
+export interface AccountSettings {
+  signUpOpen: boolean;
+  invitationsOpen: boolean;
 }
 
 export interface AdminSpace {

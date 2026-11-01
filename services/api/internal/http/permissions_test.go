@@ -449,7 +449,9 @@ func TestCapabilitiesGateEachPartOfRaven(t *testing.T) {
 		}
 		return *payload.User.Capabilities
 	}
-	if caps := me(); caps != allCapabilities() {
+	want := allCapabilities()
+	want.CreateInvites = false
+	if caps := me(); caps != want {
 		t.Fatalf("a new account should start with everything allowed, got %+v", caps)
 	}
 

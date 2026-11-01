@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
+import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, SignUpRequest, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
 import type { SavedAccount } from "@/lib/accounts";
 import { audioCommands } from "@/lib/audio";
 import { clearAvatarVersions, noteAvatarVersion } from "@/lib/avatarVersions";
@@ -494,6 +494,23 @@ export function useRavenShellData(): RavenShellData {
     [refresh],
   );
 
+  const signUp = useCallback(
+    async (request: SignUpRequest) => {
+      setBusy(true);
+      setError("");
+      try {
+        await api.signUp(request);
+        await refresh();
+      } catch (err) {
+        setError(messageFromError(err, "The account could not be made"));
+      } finally {
+        setBusy(false);
+        setLoading(false);
+      }
+    },
+    [refresh],
+  );
+
   const logout = useCallback(() => {
     // The request captures the session before it is cleared; the server marks the
     // account offline as part of signing out.
@@ -619,16 +636,18 @@ export function useRavenShellData(): RavenShellData {
   );
 
   const replyToKnock = useCallback(
-    async (knockId: string, reply: KnockReply, until?: Date) => {
+    async (knockId: string, reply: KnockReply, until?: Date, message?: string) => {
       const knock = home?.pendingKnocks.find((item) => item.id === knockId);
       const name = knock ? knock.fromDisplayName || knock.fromUsername : "They";
       const now = new Date();
-      const holds = reply === "later" ? until : answerUntil(reply, now);
+      // A message holds only when a time was picked; without one the knocker is free now.
+      const holds = reply === "later" ? until : reply === "message" ? (until ?? now) : answerUntil(reply, now);
       if (!holds) throw new Error("Ask me later needs a time.");
       setBusy(true);
       setError("");
       try {
-        await api.replyToKnock(knockId, reply, reply === "later" || reply === "not_today" ? holds.toISOString() : undefined);
+        const sendsUntil = reply === "later" || reply === "not_today" || (reply === "message" && until);
+        await api.replyToKnock(knockId, reply, sendsUntil ? holds.toISOString() : undefined, reply === "message" ? message : undefined);
         toast({ title: answerToast(reply, name, holds, now), tone: "success" });
         await refresh();
       } catch (err) {
@@ -851,6 +870,7 @@ export function useRavenShellData(): RavenShellData {
     error,
     serverUnreachable,
     login,
+    signUp,
     logout,
     switchAccount,
     addAccount,

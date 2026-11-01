@@ -1,3 +1,4 @@
+import { capabilitiesOf } from "@/lib/permissions";
 import { useEffect, useRef } from "react";
 import { AudioMixerPanel } from "@/components/AudioMixerPanel";
 import { Button } from "@/components/ui/button";
@@ -82,7 +83,7 @@ export function MainView({
       );
     }
     case "settings":
-      return <UserSettingsView section={resolveUserSettingsSection(view.section)} data={data} media={media} updater={updater} chat={chat} onNavigate={onNavigate} />;
+      return <UserSettingsView section={resolveUserSettingsSection(view.section, Boolean(capabilitiesOf(data.user).createInvites))} data={data} media={media} updater={updater} chat={chat} onNavigate={onNavigate} />;
     case "user": {
       const lastName = knownNames.current.get(view.id);
       const person = data.getPerson(view.id) ?? view.person ?? (lastName ? strangerNamed(view.id, lastName) : undefined);

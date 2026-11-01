@@ -217,6 +217,7 @@ func (s *Server) adminUserCapabilities(userID, role string) ([]AdminCapability, 
 		database.CapabilityMessagesRead:    effective.ReadMessages,
 		database.CapabilityMessagesSend:    effective.SendMessages,
 		database.CapabilityGroupsCreate:    effective.CreateGroups,
+		database.CapabilityInvitesCreate:   effective.CreateInvites,
 	}
 	capabilities := make([]AdminCapability, 0, len(database.Capabilities))
 	for _, name := range database.Capabilities {
@@ -234,8 +235,11 @@ func (s *Server) adminUserCapabilities(userID, role string) ([]AdminCapability, 
 			}
 			item.Limit = own.limit
 		}
-		if name == database.CapabilitySpacesCreate {
+		switch name {
+		case database.CapabilitySpacesCreate:
 			item.EffectiveLimit = effective.MaxOwnedSpaces
+		case database.CapabilityInvitesCreate:
+			item.EffectiveLimit = effective.MaxOpenInvites
 		}
 		capabilities = append(capabilities, item)
 	}
@@ -300,7 +304,23 @@ func (s *Server) adminUserDetail(userID string) (fiber.Map, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return fiber.Map{"user": user, "capabilities": capabilities, "sessions": sessions, "spaces": spaces}, nil
+	// Who invited them, if they joined with someone's code.
+	var invitedBy *PublicUser
+	var inviter PublicUser
+	err = s.db.QueryRow(
+		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username)
+		 FROM account_invites i
+		 JOIN users u ON u.id = i.created_by_user_id
+		 LEFT JOIN user_preferences up ON up.user_id = u.id
+		 WHERE i.used_by_user_id = ?`,
+		user.ID,
+	).Scan(&inviter.ID, &inviter.Username, &inviter.DisplayName)
+	if err == nil {
+		invitedBy = &inviter
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return fiber.Map{"user": user, "capabilities": capabilities, "sessions": sessions, "spaces": spaces, "invitedBy": invitedBy}, nil
 }
 
 func (s *Server) adminGetUser(c *fiber.Ctx) error {

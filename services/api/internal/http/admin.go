@@ -25,6 +25,8 @@ func (s *Server) registerAdminRoutes(authenticated fiber.Router) {
 
 	admin.Get("/settings/capabilities", s.adminGetCapabilityDefaults)
 	admin.Post("/settings/capabilities", s.adminSetCapabilityDefaults)
+	admin.Get("/settings/accounts", s.adminGetAccountSettings)
+	admin.Post("/settings/accounts", s.adminSetAccountSettings)
 	admin.Post("/server/avatar", s.adminUploadServerAvatar)
 
 	admin.Get("/users", s.adminListUsers)
@@ -145,13 +147,23 @@ func knownCapability(capability string) bool {
 	return false
 }
 
-// normalizeCapabilityLimit keeps a limit only where one means something.
+// normalizeCapabilityLimit keeps a limit only where one means something: on owned Trees
+// and on open invites.
 func normalizeCapabilityLimit(capability string, allowed bool, limit *int) (*int, error) {
-	if capability != database.CapabilitySpacesCreate || !allowed || limit == nil {
+	if !allowed || limit == nil {
 		return nil, nil
 	}
-	if *limit < 1 || *limit > 1000 {
-		return nil, fiber.NewError(fiber.StatusBadRequest, "A limit on owned Trees must be between 1 and 1000, or left empty for none.")
+	switch capability {
+	case database.CapabilitySpacesCreate:
+		if *limit < 1 || *limit > 1000 {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "A limit on owned Trees must be between 1 and 1000, or left empty for none.")
+		}
+	case database.CapabilityInvitesCreate:
+		if *limit < 1 || *limit > 100 {
+			return nil, fiber.NewError(fiber.StatusBadRequest, "A limit on open invites must be between 1 and 100, or left empty for none.")
+		}
+	default:
+		return nil, nil
 	}
 	return limit, nil
 }

@@ -47,17 +47,27 @@ export const CAPABILITY_TEXT: Record<CapabilityName, { title: string; descriptio
   "messages.read": { title: "Read messages", description: "See direct messages, groups and text rooms. Off hides chat entirely." },
   "messages.send": { title: "Send messages", description: "Write in conversations they can read. Needs Read messages." },
   "groups.create": { title: "Create group chats", description: "Start a group conversation with friends. Needs Read messages." },
+  "invites.create": { title: "Invite people", description: "Make single-use invite codes for friends. Needs Invitations turned on. A limit caps open invites." },
+};
+
+/** The capabilities that take a limit, and what the limit counts. */
+export const CAPABILITY_LIMITS: Partial<Record<CapabilityName, { one: string; many: string; label: string }>> = {
+  "spaces.create": { one: "space", many: "spaces", label: "Most spaces one account may own" },
+  "invites.create": { one: "open invite", many: "open invites", label: "Most open invites one account may have" },
 };
 
 /** What a capability comes to for one account, in words. */
 export function describeEffective(capability: UserCapability, isAdmin: boolean): string {
-  if (isAdmin) return "Allowed (administrator)";
+  // Inviting needs the server's Invitations switch, which holds for administrators too.
+  const switchedOff = capability.capability === "invites.create" ? "Not allowed (Invitations are off)" : "Not allowed (needs another permission)";
+  if (isAdmin) return capability.capability === "invites.create" && !capability.effective ? switchedOff : "Allowed (administrator)";
   if (!capability.effective) {
     const wouldBeAllowed = capability.mode === "allow" || (capability.mode === "inherit" && capability.defaultAllowed);
-    return wouldBeAllowed ? "Not allowed (needs another permission)" : "Not allowed";
+    return wouldBeAllowed ? switchedOff : "Not allowed";
   }
-  if (capability.capability === "spaces.create" && capability.effectiveLimit !== null) {
-    return `Allowed, up to ${plural(capability.effectiveLimit, "space")}`;
+  const limit = CAPABILITY_LIMITS[capability.capability];
+  if (limit && capability.effectiveLimit !== null) {
+    return `Allowed, up to ${plural(capability.effectiveLimit, limit.one, limit.many)}`;
   }
   return "Allowed";
 }
@@ -85,6 +95,10 @@ const ACTION_TEXT: Record<string, string> = {
   "room.removed": "Removed room",
   "settings.capability_defaults_changed": "Changed default permissions",
   "settings.server_image_changed": "Changed server image",
+  "settings.accounts_changed": "Changed who can join",
+  "user.signed_up": "Signed up",
+  "invite.created": "Made an invite",
+  "invite.revoked": "Withdrew an invite",
 };
 
 export function describeAction(action: string): string {

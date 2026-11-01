@@ -1,5 +1,6 @@
 import type { SavedAccount } from "@/lib/accounts";
 import type {
+  SignUpRequest,
   HomeState,
   JoinRequest,
   Knock,
@@ -130,6 +131,7 @@ export interface RavenShellData {
   error: string;
   serverUnreachable: boolean;
   login: (username: string, password: string) => Promise<void>;
+  signUp: (request: SignUpRequest) => Promise<void>;
   logout: () => void;
   /** Make a saved account the active one and reload the page. */
   switchAccount: (account: SavedAccount) => void;

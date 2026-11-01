@@ -1,3 +1,4 @@
+import { capabilitiesOf } from "@/lib/permissions";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AlertTriangle, Hand, Loader2, LogOut, Settings, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
@@ -31,7 +32,8 @@ import type { RavenShellData } from "./ravenv1/state";
 import type { RavenMediaAdapterState } from "./ravenv1/useRavenMediaAdapter";
 import { resolveUserSettingsSection, UserSettingsNav, UserSettingsView, type UserSettingsSection } from "./ravenv1/UserSettings";
 import { hostOf, type SavedAccount } from "@/lib/accounts";
-import { api } from "@/lib/api";
+import { api, type SignUpRequest } from "@/lib/api";
+import { accountsOffered, type AccountsOffered } from "@/lib/invites";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { takeNestToRejoin } from "@/lib/crashRecovery";
 import { RegionFallback } from "./ravenv1/RegionFallback";
@@ -308,9 +310,11 @@ export function RavenShellV1() {
         apiServerUrl={data.apiServerUrl}
         apiServerHistory={data.apiServerHistory}
         onServerSelect={data.selectApiServer}
+        accounts={accountsOffered(data.serverProperties)}
         onLogin={data.login}
         savedAccounts={data.savedAccounts}
         onSwitchAccount={data.switchAccount}
+        onSignUp={data.signUp}
       />
     );
   }
@@ -342,7 +346,8 @@ export function RavenShellV1() {
         <ErrorBoundary name="sidebar" resetKey={viewKey(view)} fallback={(retry) => <RegionFallback compact onRetry={retry} />}>
         {view.kind === "settings" ? (
           <UserSettingsNav
-            section={resolveUserSettingsSection(view.section)}
+            section={resolveUserSettingsSection(view.section, Boolean(capabilitiesOf(data.user).createInvites))}
+            canInvite={Boolean(capabilitiesOf(data.user).createInvites)}
             onSelect={(section) => navigation.navigate({ kind: "settings", section })}
             onBack={navigation.leaveView}
           />
@@ -448,7 +453,7 @@ function UpdateRecoveryShell({
           className="grid min-h-0 flex-1 grid-cols-[var(--sidebar-w)_minmax(0,1fr)] pb-2 pr-2"
           style={{ "--sidebar-w": `${Math.min(sidebarWidth, sidebarMaxWidth)}px` } as CSSProperties}
         >
-          <UserSettingsNav section={section} onSelect={setSection} onBack={() => onShowSettings(false)} />
+          <UserSettingsNav section={section} canInvite={false} onSelect={setSection} onBack={() => onShowSettings(false)} />
           <Island className="flex min-h-0 min-w-0 flex-col overflow-hidden">
             <UserSettingsView section={section} data={data} media={media} updater={updater} />
           </Island>
@@ -598,9 +603,11 @@ function ShellLogin({
   apiServerUrl,
   apiServerHistory,
   onServerSelect,
+  accounts,
   onLogin,
   savedAccounts,
   onSwitchAccount,
+  onSignUp,
 }: {
   busy: boolean;
   error: string;
@@ -610,12 +617,21 @@ function ShellLogin({
   apiServerUrl: string;
   apiServerHistory: string[];
   onServerSelect: (url: string) => Promise<void>;
+  accounts: AccountsOffered;
   onLogin: (username: string, password: string) => Promise<void>;
   savedAccounts: SavedAccount[];
   onSwitchAccount: (account: SavedAccount) => void;
+  onSignUp: (request: SignUpRequest) => Promise<void>;
 }) {
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const canSignUp = accounts.signUp || accounts.invitations;
+  const creating = mode === "sign-up" && canSignUp;
+  // A code is needed unless the server takes anyone.
+  const needsCode = creating && !accounts.signUp;
   const [serverUrl, setServerUrl] = useState(apiServerUrl);
   const [editingServer, setEditingServer] = useState(!apiServerUrl);
   const [serverError, setServerError] = useState("");
@@ -629,7 +645,11 @@ function ShellLogin({
     setServerError("");
     try {
       await onServerSelect(serverUrl);
-      await onLogin(username, password);
+      if (creating) {
+        await onSignUp({ username, displayName, password, inviteCode: accounts.invitations ? inviteCode : "" });
+      } else {
+        await onLogin(username, password);
+      }
     } catch (err) {
       setServerError(err instanceof Error ? err.message : "That does not look like a Raven server address.");
       setEditingServer(true);
@@ -646,7 +666,7 @@ function ShellLogin({
         <div className="w-full max-w-[360px]">
           <div className="mb-8 text-center">
             <Avatar name={name} src={serverAvatar ? api.assetUrl(serverAvatar) : undefined} className="mx-auto h-12 w-12 rounded-card bg-foreground text-title text-background" />
-            <h1 className="mt-4 text-display font-semibold">Sign in to {name}</h1>
+            <h1 className="mt-4 text-display font-semibold">{creating ? `Join ${name}` : `Sign in to ${name}`}</h1>
             {serverDescription ? <p className="mt-1 text-small text-muted-foreground">{serverDescription}</p> : null}
           </div>
           {savedAccounts.length > 0 ? (
@@ -666,18 +686,42 @@ function ShellLogin({
             </div>
           ) : null}
           <form className="space-y-4" onSubmit={submit}>
+            {creating && accounts.invitations ? (
+              <label className="block space-y-1.5 text-small text-muted-foreground" htmlFor="ravenv1-invite">
+                {accounts.signUp ? "Invite code (optional)" : "Invite code"}
+                <Input id="ravenv1-invite" className="rv-mono" value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} placeholder="XXXXX-XXXXX" spellCheck={false} autoComplete="off" autoFocus />
+              </label>
+            ) : null}
+            {creating ? (
+              <label className="block space-y-1.5 text-small text-muted-foreground" htmlFor="ravenv1-display-name">
+                Display name
+                <Input id="ravenv1-display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" autoFocus={!accounts.invitations} />
+              </label>
+            ) : null}
             <label className="block space-y-1.5 text-small text-muted-foreground" htmlFor="ravenv1-username">
               Username
-              <Input id="ravenv1-username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus />
+              <Input id="ravenv1-username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus={!creating} />
             </label>
             <label className="block space-y-1.5 text-small text-muted-foreground" htmlFor="ravenv1-password">
               Password
-              <Input id="ravenv1-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
+              <Input id="ravenv1-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={creating ? "new-password" : "current-password"} />
             </label>
             {serverError || error ? <p role="alert" className="text-small text-destructive">{serverError || error}</p> : null}
-            <Button type="submit" size="lg" className="w-full" disabled={busy || !serverUrl || !username || !password}>
-              {busy ? "Signing in…" : "Sign in"}
+            <Button type="submit" size="lg" className="w-full" disabled={busy || !serverUrl || !username || !password || (needsCode && !inviteCode.trim())}>
+              {creating ? (busy ? "Creating your account…" : "Create account") : busy ? "Signing in…" : "Sign in"}
             </Button>
+            {canSignUp ? (
+              <p className="text-center text-small text-muted-foreground">
+                {creating ? "Already have an account? " : "New here? "}
+                <button
+                  type="button"
+                  className="rounded-chip text-foreground underline-offset-4 hover:underline"
+                  onClick={() => setMode(creating ? "sign-in" : "sign-up")}
+                >
+                  {creating ? "Sign in" : "Create an account"}
+                </button>
+              </p>
+            ) : null}
 
             <div className="border-t border-border pt-4">
               {editingServer ? (

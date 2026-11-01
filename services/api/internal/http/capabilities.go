@@ -23,6 +23,12 @@ type UserCapabilities struct {
 	ReadMessages   bool `json:"readMessages"`
 	SendMessages   bool `json:"sendMessages"`
 	CreateGroups   bool `json:"createGroups"`
+	// CreateInvites is off for everyone, administrators too, while the server's
+	// Invitations switch is off.
+	CreateInvites bool `json:"createInvites"`
+	// MaxOpenInvites is how many unused invites the account may have at once. Nil means
+	// no limit.
+	MaxOpenInvites *int `json:"maxOpenInvites"`
 }
 
 var (
@@ -33,16 +39,19 @@ var (
 	errCapabilityReadMessages = fiber.NewError(fiber.StatusForbidden, "Messages are turned off for your account.")
 	errCapabilitySendMessages = fiber.NewError(fiber.StatusForbidden, "Your account can read messages but not send them.")
 	errCapabilityCreateGroups = fiber.NewError(fiber.StatusForbidden, "Your account can’t create groups.")
+	errCapabilityInvites      = fiber.NewError(fiber.StatusForbidden, "Your account can’t invite people.")
+	errCapabilityInviteLimit  = fiber.NewError(fiber.StatusForbidden, "You already have as many open invites as you are allowed.")
 )
 
 func allCapabilities() UserCapabilities {
 	return UserCapabilities{
-		CreateSpaces: true,
-		JoinRooms:    true,
-		StartRooms:   true,
-		ReadMessages: true,
-		SendMessages: true,
-		CreateGroups: true,
+		CreateSpaces:  true,
+		JoinRooms:     true,
+		StartRooms:    true,
+		ReadMessages:  true,
+		SendMessages:  true,
+		CreateGroups:  true,
+		CreateInvites: true,
 	}
 }
 
@@ -61,6 +70,9 @@ func (caps *UserCapabilities) set(capability string, allowed bool, limit *int) {
 		caps.SendMessages = allowed
 	case database.CapabilityGroupsCreate:
 		caps.CreateGroups = allowed
+	case database.CapabilityInvitesCreate:
+		caps.CreateInvites = allowed
+		caps.MaxOpenInvites = limit
 	}
 }
 
@@ -77,14 +89,34 @@ func (caps *UserCapabilities) normalize() {
 	if !caps.CreateSpaces {
 		caps.MaxOwnedSpaces = nil
 	}
+	if !caps.CreateInvites {
+		caps.MaxOpenInvites = nil
+	}
 }
 
 // capabilitiesFor works out what an account may do: its override where it has one, the
 // server default otherwise.
 func (s *Server) capabilitiesFor(q chatQuerier, userID, role string) (UserCapabilities, error) {
-	if role == "admin" {
-		return allCapabilities(), nil
+	caps := allCapabilities()
+	if role != "admin" {
+		var err error
+		if caps, err = s.storedCapabilitiesFor(q, userID); err != nil {
+			return UserCapabilities{}, err
+		}
 	}
+	settings, err := s.accountSettings(q)
+	if err != nil {
+		return UserCapabilities{}, err
+	}
+	if !settings.InvitationsOpen {
+		caps.CreateInvites = false
+		caps.MaxOpenInvites = nil
+	}
+	return caps, nil
+}
+
+// storedCapabilitiesFor is what the defaults and the account's overrides allow.
+func (s *Server) storedCapabilitiesFor(q chatQuerier, userID string) (UserCapabilities, error) {
 	rows, err := q.Query(
 		`SELECT d.capability,
 		        CASE WHEN (CASE WHEN o.user_id IS NULL THEN d.allowed ELSE o.allowed END) THEN 1 ELSE 0 END,

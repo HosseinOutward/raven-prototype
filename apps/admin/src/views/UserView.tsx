@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import type { AdminApi } from "../api";
 import type { AdminUser, CapabilityMode, SessionUser, UserCapability, UserDetail } from "../types";
 import { Badge, Button, ConfirmDialog, Dialog, Field, Input, List, Loading, Notice, PageHeader, Row, Section, Select, TemporaryPasswordDialog } from "../components/ui";
-import { CAPABILITY_TEXT, describeEffective, formatAgo, formatDate, formatDateTime } from "../lib/format";
+import { CAPABILITY_LIMITS, CAPABILITY_TEXT, describeEffective, formatAgo, formatDate, formatDateTime } from "../lib/format";
 import { IMAGE_TYPES, imageProblem } from "../lib/image";
 import { routeHref } from "../lib/route";
 import { errorMessage, useLoad } from "../lib/useLoad";
@@ -66,6 +66,7 @@ export function UserView({ api, userId, me }: { api: AdminApi; userId: string; m
         <Fact label="Last seen" value={formatAgo(user.lastSeenAt)} />
         <Fact label="Password changed" value={formatDate(user.passwordChangedAt)} />
         <Fact label="Signed-in devices" value={String(sessions.length)} />
+        {detail.data.invitedBy ? <Fact label="Invited by" value={`${detail.data.invitedBy.displayName} (@${detail.data.invitedBy.username})`} /> : null}
       </dl>
 
       <Section
@@ -333,7 +334,8 @@ function CapabilityRow({ api, userId, capability, isAdmin, onChanged, onError }:
       ? `Default (allowed, up to ${capability.defaultLimit})`
       : "Default (allowed)"
     : "Default (not allowed)";
-  const showLimit = capability.capability === "spaces.create" && capability.mode === "allow";
+  const limitText = CAPABILITY_LIMITS[capability.capability];
+  const showLimit = limitText !== undefined && capability.mode === "allow";
   return (
     <Row>
       <div className="min-w-0 flex-1 py-1">
@@ -345,7 +347,7 @@ function CapabilityRow({ api, userId, capability, isAdmin, onChanged, onError }:
         <Input
           className="w-24"
           inputMode="numeric"
-          aria-label="Most spaces they may own"
+          aria-label={limitText?.label}
           placeholder="No limit"
           value={limit}
           disabled={busy}

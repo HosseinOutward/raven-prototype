@@ -113,6 +113,29 @@ export interface UserCapabilities {
   readMessages: boolean;
   sendMessages: boolean;
   createGroups: boolean;
+  /** Making invite codes; false whenever the server has Invitations turned off. */
+  createInvites?: boolean;
+  /** How many open invites the account may have; null is no limit. */
+  maxOpenInvites?: number | null;
+}
+
+/** One invite code as the person who made it sees it. The code itself is shown only once. */
+export interface Invite {
+  id: string;
+  /** The code's last four characters, to tell codes apart. */
+  hint: string;
+  createdAt: string;
+  expiresAt: string;
+  state: "open" | "used" | "expired" | "revoked";
+  usedAt?: string;
+  usedBy?: PublicUser;
+}
+
+export interface SignUpRequest {
+  username: string;
+  displayName: string;
+  password: string;
+  inviteCode: string;
 }
 
 export interface User {
@@ -647,6 +670,28 @@ export class ApiClient {
     });
     rememberApiServerUrl(this.baseUrl);
     return response;
+  }
+
+  async signUp(request: SignUpRequest) {
+    const response = await this.request<LoginResponse>("/v1/auth/sign-up", {
+      method: "POST",
+      body: JSON.stringify(request),
+      auth: false,
+    });
+    rememberApiServerUrl(this.baseUrl);
+    return response;
+  }
+
+  listInvites() {
+    return this.request<{ invites: Invite[] }>("/v1/invites");
+  }
+
+  createInvite() {
+    return this.request<{ invite: Invite; code: string }>("/v1/invites", { method: "POST" });
+  }
+
+  revokeInvite(id: string) {
+    return this.request<void>(`/v1/invites/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
   logout() {

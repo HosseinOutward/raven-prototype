@@ -2,6 +2,7 @@ import type {
   AdminSpace,
   AdminUser,
   AuditEvent,
+  AccountSettings,
   CapabilityDefault,
   CapabilityMode,
   CapabilityName,
@@ -148,6 +149,14 @@ export class AdminApi {
 
   async setCapabilityDefaults(capabilities: CapabilityDefault[]): Promise<CapabilityDefault[]> {
     return (await this.request<{ capabilities: CapabilityDefault[] }>("POST", "/v1/admin/settings/capabilities", { capabilities })).capabilities;
+  }
+
+  accountSettings(): Promise<AccountSettings> {
+    return this.request("GET", "/v1/admin/settings/accounts");
+  }
+
+  setAccountSettings(settings: AccountSettings): Promise<AccountSettings> {
+    return this.request("POST", "/v1/admin/settings/accounts", settings);
   }
 
   async uploadServerImage(image: Blob): Promise<void> {

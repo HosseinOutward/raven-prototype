@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { PasswordChangeForm } from "./PasswordChangeForm";
-import { Bell, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, User as UserIcon, Video } from "lucide-react";
+import { InvitationsSettings } from "./InvitationsSettings";
+import { capabilitiesOf } from "@/lib/permissions";
+import { Bell, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
@@ -38,7 +40,7 @@ import type {
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
 
-export type UserSettingsSection = "profile" | "messages" | "sessions" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates" | "about";
+export type UserSettingsSection = "profile" | "messages" | "sessions" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates" | "about";
 
 const GROUPS: SettingsCategoryGroup[] = [
   {
@@ -47,6 +49,7 @@ const GROUPS: SettingsCategoryGroup[] = [
       { id: "profile", label: "Profile", icon: <UserIcon /> },
       { id: "messages", label: "Messages", icon: <MessageSquare /> },
       { id: "sessions", label: "Password and devices", icon: <ShieldCheck /> },
+      { id: "invitations", label: "Invitations", icon: <Ticket /> },
     ],
   },
   {
@@ -72,16 +75,25 @@ const GROUPS: SettingsCategoryGroup[] = [
 
 const SECTION_IDS = new Set(GROUPS.flatMap((group) => group.categories.map((category) => category.id)));
 
-export function resolveUserSettingsSection(section?: string): UserSettingsSection {
+/** Invitations is there only for people allowed to invite; anyone else lands on Profile. */
+export function resolveUserSettingsSection(section: string | undefined, canInvite: boolean): UserSettingsSection {
+  if (section === "invitations" && !canInvite) return "profile";
   return section && SECTION_IDS.has(section) ? (section as UserSettingsSection) : "profile";
 }
 
+const GROUPS_WITHOUT_INVITATIONS = GROUPS.map((group) => ({
+  ...group,
+  categories: group.categories.filter((category) => category.id !== "invitations"),
+}));
+
 export function UserSettingsNav({
   section,
+  canInvite,
   onSelect,
   onBack,
 }: {
   section: UserSettingsSection;
+  canInvite: boolean;
   onSelect: (section: UserSettingsSection) => void;
   onBack: () => void;
 }) {
@@ -90,7 +102,7 @@ export function UserSettingsNav({
       title="Settings"
       backLabel="Back"
       onBack={onBack}
-      groups={GROUPS}
+      groups={canInvite ? GROUPS : GROUPS_WITHOUT_INVITATIONS}
       activeId={section}
       onSelect={(id) => onSelect(id as UserSettingsSection)}
     />
@@ -132,6 +144,8 @@ export function UserSettingsView({
       return <ProfileSettings data={data} />;
     case "messages":
       return <ChatSettingsPage chat={chat} />;
+    case "invitations":
+      return capabilitiesOf(data.user).createInvites ? <InvitationsSettings data={data} /> : <ProfileSettings data={data} />;
     case "sessions":
       return (
         <SettingsPage title="Password and devices" description="Your password, and every place your account is signed in. Sign out anything you do not recognise.">
