@@ -1,3 +1,4 @@
+import type { SavedAccount } from "@/lib/accounts";
 import type {
   HomeState,
   JoinRequest,
@@ -105,6 +106,8 @@ export interface RavenShellData {
   serverProperties: ServerProperties;
   apiServerUrl: string;
   apiServerHistory: string[];
+  /** Saved sign-ins, active first. Only the active one is connected. */
+  savedAccounts: SavedAccount[];
   home: HomeState | null;
   presence: UserPresence | null;
   trees: Tree[];
@@ -125,6 +128,12 @@ export interface RavenShellData {
   serverUnreachable: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
+  /** Make a saved account the active one and reload the page. */
+  switchAccount: (account: SavedAccount) => void;
+  /** Go to the sign-in screen with the current account kept, and reload. */
+  addAccount: () => void;
+  /** Sign a saved account out on its server and drop it from the list. */
+  forgetAccount: (account: SavedAccount) => Promise<void>;
   /** The server no longer accepts this session: return to sign-in and say why. */
   sessionExpired: () => void;
   selectApiServer: (url: string) => Promise<void>;

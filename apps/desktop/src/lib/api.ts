@@ -1,3 +1,11 @@
+import {
+  readAccounts,
+  removeBySession,
+  sortForMenu,
+  upsertAccount,
+  writeAccounts,
+  type SavedAccount,
+} from "@/lib/accounts";
 import { avatarVersion, noteAvatarRoute } from "@/lib/avatarVersions";
 
 const DEFAULT_API_BASE_URL = normalizeApiServerUrl(import.meta.env.VITE_RAVEN_API_URL ?? "http://127.0.0.1:6977");
@@ -523,14 +531,77 @@ export class ApiClient {
   }
 
   setSessionId(sessionId: string) {
+    const previous = this.sessionId;
     this.sessionId = sessionId;
     localStorage.setItem(SESSION_ID_KEY, sessionId);
+    // The server rotates ids; keep the saved entry for this session valid.
+    if (previous && previous !== sessionId) {
+      const list = readAccounts(localStorage);
+      if (list.some((item) => item.serverUrl === this.baseUrl && item.sessionId === previous)) {
+        writeAccounts(localStorage, list.map((item) =>
+          item.serverUrl === this.baseUrl && item.sessionId === previous ? { ...item, sessionId } : item));
+      }
+    }
   }
 
   clearSession() {
+    // Sign out and expiry both end here, so the account leaves the saved list too.
+    if (this.sessionId) writeAccounts(localStorage, removeBySession(readAccounts(localStorage), this.baseUrl, this.sessionId));
     this.sessionId = "";
     localStorage.removeItem(SESSION_ID_KEY);
     localStorage.removeItem("raven.token");
+  }
+
+  /** Saved sign-ins for the account menu and the sign-in screen, active first. */
+  savedAccounts() {
+    return sortForMenu(readAccounts(localStorage), this.baseUrl, this.sessionId);
+  }
+
+  /** Saves the active sign-in. Signing the same user in again retires the older session. */
+  rememberAccount(user: { id: string; username: string; displayName: string }, serverName: string) {
+    if (!this.sessionId) return;
+    const { list, replacedSessionId } = upsertAccount(readAccounts(localStorage), {
+      serverUrl: this.baseUrl,
+      sessionId: this.sessionId,
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      serverName,
+      lastUsedAt: Date.now(),
+    });
+    writeAccounts(localStorage, list);
+    if (replacedSessionId) {
+      void this.signOutSaved({ serverUrl: this.baseUrl, sessionId: replacedSessionId }).catch(() => undefined);
+    }
+  }
+
+  /** Makes a saved account the active one. The caller reloads the page. */
+  activateAccount(account: SavedAccount) {
+    localStorage.setItem(API_SERVER_URL_KEY, account.serverUrl);
+    localStorage.setItem(SESSION_ID_KEY, account.sessionId);
+    writeAccounts(localStorage, readAccounts(localStorage).map((item) =>
+      item.serverUrl === account.serverUrl && item.sessionId === account.sessionId
+        ? { ...item, lastUsedAt: Date.now() }
+        : item));
+  }
+
+  /** Leaves the sign-in screen next; the current account stays saved. The caller reloads. */
+  beginAddAccount() {
+    localStorage.removeItem(SESSION_ID_KEY);
+  }
+
+  /** Ends a saved session on its own server (best effort) and forgets it. */
+  async signOutSaved(account: Pick<SavedAccount, "serverUrl" | "sessionId">) {
+    try {
+      const headers = new Headers({ Accept: "application/json", "X-Session-ID": account.sessionId });
+      headers.set("X-Raven-OS", desktopOS());
+      headers.set("X-Raven-Device", "Raven Desktop");
+      addClientCompatibilityHeaders(headers);
+      await fetch(`${account.serverUrl}/v1/auth/logout`, { method: "POST", headers });
+    } catch {
+      // The server may be unreachable; the saved entry goes either way.
+    }
+    writeAccounts(localStorage, removeBySession(readAccounts(localStorage), account.serverUrl, account.sessionId));
   }
 
   getSessionId() {

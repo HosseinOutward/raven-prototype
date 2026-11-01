@@ -544,7 +544,7 @@ function ServerSettings({ data }: { data: RavenShellData }) {
           <SettingsReadOnlyRow label="Address" value={data.apiServerUrl} />
           <SettingsReadOnlyRow label="Calls go through" value={data.serverProperties.rtcServerUrl || "Not announced by this server"} />
         </SettingsRows>
-        <SettingsHint>To use a different server, sign out first.</SettingsHint>
+        <SettingsHint>To use another server or account, add it from your account menu.</SettingsHint>
       </SettingsSection>
     </SettingsPage>
   );

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
+import type { SavedAccount } from "@/lib/accounts";
 import { audioCommands } from "@/lib/audio";
 import { clearAvatarVersions, noteAvatarVersion } from "@/lib/avatarVersions";
 import { ENTRY_CONNECTING_TTL_MS } from "@/lib/callArrivals";
+import { rememberActiveNest } from "@/lib/crashRecovery";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
 import { loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
@@ -53,6 +55,7 @@ export function useRavenShellData(): RavenShellData {
   const [serverProperties, setServerProperties] = useState<ServerProperties>(api.fallbackServerProperties());
   const [apiServerUrl, setApiServerUrl] = useState(api.getBaseUrl());
   const [apiServerHistory, setApiServerHistory] = useState(api.getServerHistory());
+  const [savedAccounts, setSavedAccounts] = useState(api.savedAccounts());
   const [treeDetails, setTreeDetails] = useState<Record<string, TreeDetails>>({});
   const [nestDetails, setNestDetails] = useState<Record<string, NestDetails>>({});
   const [activeSessions, setActiveSessions] = useState<Record<string, SessionSummary | null>>({});
@@ -132,18 +135,22 @@ export function useRavenShellData(): RavenShellData {
   }, []);
 
   const refreshServerProperties = useCallback(async () => {
+    let next: ServerProperties;
     try {
       const properties = await api.serverProperties();
-      setServerProperties({
+      next = {
         ...api.fallbackServerProperties(),
         ...properties,
         properties: properties.properties ?? {},
-      });
+      };
     } catch {
-      setServerProperties(api.fallbackServerProperties());
+      next = api.fallbackServerProperties();
     }
+    setServerProperties(next);
     setApiServerUrl(api.getBaseUrl());
     setApiServerHistory(api.getServerHistory());
+    setSavedAccounts(api.savedAccounts());
+    return next;
   }, []);
 
   /** Fetch home; null when a newer fetch has already been applied. */
@@ -160,11 +167,13 @@ export function useRavenShellData(): RavenShellData {
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
     const operation = (async () => {
       setError("");
-      await refreshServerProperties();
+      const properties = await refreshServerProperties();
       const nextHome = await fetchHome();
       setServerUnreachable(false);
       if (!nextHome) return;
       setHome(nextHome);
+      api.rememberAccount(nextHome.user, properties.name);
+      setSavedAccounts(api.savedAccounts());
       await Promise.all([hydrateTrees(nextHome), hydrateNests(nextHome)]);
     })();
     refreshPromiseRef.current = operation;
@@ -258,7 +267,7 @@ export function useRavenShellData(): RavenShellData {
   useEffect(() => {
     let mounted = true;
     const boot = async () => {
-      await refreshServerProperties();
+      const properties = await refreshServerProperties();
       if (!api.getSessionId()) {
         if (mounted) {
           setHome(null);
@@ -270,12 +279,16 @@ export function useRavenShellData(): RavenShellData {
         const nextHome = await api.home();
         if (!mounted) return;
         setHome(nextHome);
+        // Startup is where an existing sign-in first joins the saved list.
+        api.rememberAccount(nextHome.user, properties.name);
+        setSavedAccounts(api.savedAccounts());
         await Promise.all([hydrateTrees(nextHome), hydrateNests(nextHome)]);
       } catch (err) {
         if (mounted) {
           setHome(null);
           if (isUnauthorizedError(err)) {
             api.clearSession();
+            setSavedAccounts(api.savedAccounts());
             setError("Your session has expired. Sign in again.");
           } else if (isPasswordChangeRequired(err)) {
             setPasswordChangeRequired(true);
@@ -371,6 +384,7 @@ export function useRavenShellData(): RavenShellData {
   // was signed out from another device). Same outcome as finding that out at startup.
   const sessionExpired = useCallback(() => {
     api.clearSession();
+    setSavedAccounts(api.savedAccounts());
     seenKnocksRef.current = null;
     setServerUnreachable(false);
     setHome(null);
@@ -480,6 +494,25 @@ export function useRavenShellData(): RavenShellData {
     setNestDetails({});
     setActiveSessions({});
     setEntryNotices([]);
+    setSavedAccounts(api.savedAccounts());
+  }, []);
+
+  /** Per-server state is spread across module singletons, so switching reloads the page. */
+  const switchAccount = useCallback((account: SavedAccount) => {
+    api.activateAccount(account);
+    rememberActiveNest(null);
+    window.location.reload();
+  }, []);
+
+  const addAccount = useCallback(() => {
+    api.beginAddAccount();
+    rememberActiveNest(null);
+    window.location.reload();
+  }, []);
+
+  const forgetAccount = useCallback(async (account: SavedAccount) => {
+    await api.signOutSaved(account);
+    setSavedAccounts(api.savedAccounts());
   }, []);
 
   const retryConnection = useCallback(async () => {
@@ -491,6 +524,7 @@ export function useRavenShellData(): RavenShellData {
     } catch (err) {
       if (isUnauthorizedError(err)) {
         api.clearSession();
+        setSavedAccounts(api.savedAccounts());
         setServerUnreachable(false);
         setError("Your session has expired. Sign in again.");
       } else {
@@ -739,6 +773,7 @@ export function useRavenShellData(): RavenShellData {
     serverProperties,
     apiServerUrl,
     apiServerHistory,
+    savedAccounts,
     home,
     presence: home?.presence ?? null,
     trees,
@@ -759,6 +794,9 @@ export function useRavenShellData(): RavenShellData {
     serverUnreachable,
     login,
     logout,
+    switchAccount,
+    addAccount,
+    forgetAccount,
     sessionExpired,
     selectApiServer,
     refresh,

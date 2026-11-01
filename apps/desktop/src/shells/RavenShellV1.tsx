@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast, Toaster } from "@/components/ui/toast";
 import { UpdatesSettingsPanel } from "@/components/updates/UpdatesSettings";
-import { Island } from "./ravenv1/atoms";
+import { AccountSummary, Island } from "./ravenv1/atoms";
 import { DeviceDock } from "./ravenv1/DeviceDock";
 import { PasswordChangeForm } from "./ravenv1/PasswordChangeForm";
 import { Sidebar } from "./ravenv1/Sidebar";
@@ -30,6 +30,7 @@ import type { RavenUpdater } from "@/lib/updater";
 import type { RavenShellData } from "./ravenv1/state";
 import type { RavenMediaAdapterState } from "./ravenv1/useRavenMediaAdapter";
 import { resolveUserSettingsSection, UserSettingsNav, UserSettingsView, type UserSettingsSection } from "./ravenv1/UserSettings";
+import { hostOf, type SavedAccount } from "@/lib/accounts";
 import { api } from "@/lib/api";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { takeNestToRejoin } from "@/lib/crashRecovery";
@@ -308,6 +309,8 @@ export function RavenShellV1() {
         apiServerHistory={data.apiServerHistory}
         onServerSelect={data.selectApiServer}
         onLogin={data.login}
+        savedAccounts={data.savedAccounts}
+        onSwitchAccount={data.switchAccount}
       />
     );
   }
@@ -586,14 +589,6 @@ function viewKey(view: RavenView) {
   }
 }
 
-function hostOf(url: string) {
-  try {
-    return new URL(url).host || url;
-  } catch {
-    return url;
-  }
-}
-
 function ShellLogin({
   busy,
   error,
@@ -604,6 +599,8 @@ function ShellLogin({
   apiServerHistory,
   onServerSelect,
   onLogin,
+  savedAccounts,
+  onSwitchAccount,
 }: {
   busy: boolean;
   error: string;
@@ -614,6 +611,8 @@ function ShellLogin({
   apiServerHistory: string[];
   onServerSelect: (url: string) => Promise<void>;
   onLogin: (username: string, password: string) => Promise<void>;
+  savedAccounts: SavedAccount[];
+  onSwitchAccount: (account: SavedAccount) => void;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -650,6 +649,22 @@ function ShellLogin({
             <h1 className="mt-4 text-display font-semibold">Sign in to {name}</h1>
             {serverDescription ? <p className="mt-1 text-small text-muted-foreground">{serverDescription}</p> : null}
           </div>
+          {savedAccounts.length > 0 ? (
+            <div className="mb-6">
+              <p className="px-2.5 pb-1 text-caption text-subtle">Saved accounts</p>
+              {savedAccounts.map((account) => (
+                <button
+                  key={`${account.serverUrl}|${account.sessionId}`}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onSwitchAccount(account)}
+                  className="flex w-full items-center gap-2.5 rounded-control px-2.5 py-1.5 text-left transition-colors hover:bg-secondary disabled:opacity-45"
+                >
+                  <AccountSummary account={account} active={false} />
+                </button>
+              ))}
+            </div>
+          ) : null}
           <form className="space-y-4" onSubmit={submit}>
             <label className="block space-y-1.5 text-small text-muted-foreground" htmlFor="ravenv1-username">
               Username

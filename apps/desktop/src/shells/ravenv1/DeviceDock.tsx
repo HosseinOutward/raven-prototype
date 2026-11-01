@@ -43,14 +43,15 @@ import {
   previewOutputVolume,
   volumeAfterKey,
 } from "@/lib/outputVolume";
+import { hostOf, type SavedAccount } from "@/lib/accounts";
 import { api } from "@/lib/api";
 import { useAvatarVersions } from "@/lib/avatarVersions";
 import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, Video, VideoOff, LogOut } from "lucide-react";
-import { ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
+import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, Video, VideoOff, LogOut } from "lucide-react";
+import { AccountSummary, ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { ChatStore } from "@/lib/chat/store";
 import { pendingTarget } from "./Inbox";
@@ -100,6 +101,9 @@ const SIGNED_OUT_CALL_SNAPSHOT = {
   leavePending: false,
 };
 
+/** What the switch confirm is about to do once the call has been left. */
+type PendingSwitch = { kind: "switch"; account: SavedAccount } | { kind: "add" } | null;
+
 const TRAY_PRESENCES = SELECTABLE_PRESENCES.map((id) => ({ id, label: PRESENCE[id].label }));
 
 /**
@@ -125,6 +129,7 @@ export function DeviceDock({
   const [screenPickerOpen, setScreenPickerOpen] = useState(false);
   const [arranging, setArranging] = useState(false);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch>(null);
   const confirmLeave = useConfirmLeave();
   const mediaRef = useRef(media);
   const hotkeyActionRef = useRef<Set<string>>(new Set());
@@ -492,6 +497,35 @@ export function DeviceDock({
   );
   const leaveName = activeNest?.name ?? data.labels.nestSingular.toLowerCase();
 
+  // Switching reloads the page, so a call is left first. Outside a call it is immediate.
+  const requestSwitch = (next: NonNullable<PendingSwitch>) => {
+    if (media.activeNestId) setPendingSwitch(next);
+    else runSwitch(next);
+  };
+  const runSwitch = (next: NonNullable<PendingSwitch>) => {
+    if (next.kind === "switch") data.switchAccount(next.account);
+    else data.addAccount();
+  };
+  const confirmSwitch = async () => {
+    const next = pendingSwitch;
+    setPendingSwitch(null);
+    if (!next) return;
+    try {
+      await media.leaveMediaSession();
+    } catch (error) {
+      toast({
+        title: `Couldn’t leave ${leaveName}`,
+        description: error instanceof Error ? error.message : typeof error === "string" ? error : undefined,
+        tone: "error",
+      });
+      return;
+    }
+    runSwitch(next);
+  };
+  const pendingSwitchName = pendingSwitch?.kind === "switch"
+    ? pendingSwitch.account.displayName || pendingSwitch.account.username
+    : "";
+
   return (
     <>
       <footer className="grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 px-3">
@@ -513,7 +547,7 @@ export function DeviceDock({
                 </span>
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="start" className="min-w-[220px]">
+            <DropdownMenuContent side="top" align="start" className="min-w-[280px]">
               <DropdownMenuLabel>How you appear</DropdownMenuLabel>
               {SELECTABLE_PRESENCES.map((value) => (
                 <DropdownMenuItem key={value} onSelect={() => void data.setPresence(value).catch(() => undefined)}>
@@ -537,6 +571,37 @@ export function DeviceDock({
                   </DropdownMenuItem>
                 </>
               ) : null}
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Accounts</DropdownMenuLabel>
+              {data.savedAccounts.map((account) => {
+                const active = account.serverUrl === api.getBaseUrl() && account.sessionId === api.getSessionId();
+                const name = account.displayName || account.username;
+                return (
+                  <div key={`${account.serverUrl}|${account.sessionId}`} className="group flex items-center">
+                    <DropdownMenuItem
+                      className="min-w-0 flex-1"
+                      onSelect={() => { if (!active) requestSwitch({ kind: "switch", account }); }}
+                    >
+                      <AccountSummary account={account} active={active} />
+                      {active ? <Check className="text-foreground" /> : null}
+                    </DropdownMenuItem>
+                    {active ? null : (
+                      <DropdownMenuItem
+                        className="w-8 shrink-0 justify-center px-0 text-muted-foreground opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+                        aria-label={`Sign out of ${name} on ${account.serverName || hostOf(account.serverUrl)}`}
+                        title="Sign out"
+                        onSelect={() => void data.forgetAccount(account).catch(() => undefined)}
+                      >
+                        <LogOut />
+                      </DropdownMenuItem>
+                    )}
+                  </div>
+                );
+              })}
+              <DropdownMenuItem onSelect={() => requestSwitch({ kind: "add" })}>
+                <UserPlus className="text-muted-foreground" />
+                Add an account
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => onNavigate({ kind: "settings" })}>
                 <Settings className="text-muted-foreground" />
@@ -624,6 +689,17 @@ export function DeviceDock({
           setLeaveConfirmOpen(false);
           runCallAction("leave");
         }}
+      />
+
+      <ConfirmDialog
+        open={pendingSwitch != null && media.activeNestId != null}
+        onOpenChange={(open) => { if (!open) setPendingSwitch(null); }}
+        title={pendingSwitch?.kind === "switch" ? `Switch to ${pendingSwitchName}?` : "Add an account?"}
+        description={`Switching leaves ${leaveName}. You can join again from ${data.serverProperties.name || "this server"} later.`}
+        confirmLabel="Switch"
+        cancelLabel="Stay"
+        focusCancel
+        onConfirm={confirmSwitch}
       />
 
       <ScreenSharePickerDialog
