@@ -46,7 +46,8 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
    This uploads the installers, checks their hashes on Vala, switches `latest.json`, then
    downloads everything back through the public address and compares it with what was
    built. Every Raven that is open notices within six hours, or at once with **Settings →
-   Updates → Check now**.
+   Updates → Check now**. The same switch rewrites the download page at
+   `https://updates.rvn.bluehour.cloud/` for first installs; `repoint` rewrites it too.
 
 `.\release.ps1 status` shows what is on the server and what is being offered.
 

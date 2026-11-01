@@ -340,15 +340,66 @@ mv '$incoming' '$final'
 
 # Makes <version>/latest.json the live manifest. The swap is a rename, so a client never
 # reads a half-written file; the manifest it replaces is kept as latest.previous.json.
+function Get-DownloadPage {
+  return @"
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download Raven</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f7f8f9; --fg: #16181d; --muted: #5b6270; --card: #ffffff; --line: #dde1e6; --accent: #0f7f86; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111317; --fg: #e8eaee; --muted: #9aa1ad; --card: #191c21; --line: #2a2e35; --accent: #6fd3d8; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 56px 16px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  a { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin: 16px 0; }
+  .card h2 { font-size: 18px; margin: 0 0 8px; }
+  .button { display: inline-block; background: var(--accent); color: var(--bg); text-decoration: none; font-weight: 600; padding: 10px 16px; border-radius: 8px; margin-bottom: 12px; }
+  code { font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Raven $Version</h1>
+  <p>Calls, screen sharing and chat with your friends. Install Raven, then enter your server's address on the sign-in screen. Raven tells you when a newer version is out.</p>
+  <div class="card">
+    <h2>Windows</h2>
+    <a class="button" href="$Version/Raven_${Version}_x64-setup.exe">Download for Windows</a>
+    <p>Windows may say the publisher is unknown. Choose "More info", then "Run anyway".</p>
+  </div>
+  <div class="card">
+    <h2>Linux</h2>
+    <a class="button" href="$Version/Raven_${Version}_amd64.AppImage">Download the AppImage</a>
+    <p>Make it executable with <code>chmod +x Raven_${Version}_amd64.AppImage</code>. On newer Ubuntu, install <code>libfuse2t64</code> first.</p>
+  </div>
+  <p>Running your own server? See the <a href="https://github.com/raven-collective/raven-prototype/blob/main/docs/self-hosting.md">self-hosting guide</a>.</p>
+</main>
+</body>
+</html>
+"@
+}
+
 function Set-Latest {
   Write-Host "== Pointing latest.json at $Version"
   Invoke-Remote @"
 set -euo pipefail
 cd '$RemoteRoot'
 test -f '$Version/latest.json' || { echo 'Version $Version is not on the server.' >&2; exit 4; }
-if [ -f latest.json ]; then cp -p latest.json latest.previous.json; fi
+# Re-pointing at the live version must not overwrite the record of the one before it.
+if [ -f latest.json ] && ! cmp -s latest.json '$Version/latest.json'; then cp -p latest.json latest.previous.json; fi
 cp '$Version/latest.json' .latest.json.new
 mv .latest.json.new latest.json
+# The download page for people installing Raven for the first time. Links are relative,
+# so the same page works under a -Scratch folder.
+cat > .index.html.new <<'PAGE'
+$(Get-DownloadPage)
+PAGE
+chmod 0644 .index.html.new
+mv .index.html.new index.html
 # Keep the newest $KeepVersions versions (and always the live one); the disk here is small.
 ls -1d [0-9]*/ 2>/dev/null | tr -d / | sort -V | head -n -$KeepVersions | while read -r old; do
   [ "`$old" = '$Version' ] || rm -rf -- "`$old"
