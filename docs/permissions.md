@@ -43,10 +43,11 @@ setting per account: follow the default, allow, or don't allow.
 | `messages.read` | Chat is absent: no conversations, no history, no chat events on the stream. |
 | `messages.send` | Chat is read-only. Needs `messages.read`. |
 | `groups.create` | Cannot create group chats. Needs `messages.read`. |
+| `invites.create` | Cannot make invite codes. Starts off. Allowed, it can carry a limit on open invites. Always off while the server's Invitations switch is off, administrators included. |
 
-Every default starts as allowed with no limit, so installing this changes nothing until
-an administrator tightens it. A new account simply gets the defaults, which is also what
-public sign-up will do when it exists.
+Every default except `invites.create` starts as allowed with no limit, so installing this
+changes nothing until an administrator tightens it. A new account simply gets the defaults,
+however it was made.
 
 The desktop app receives the signed-in account's capabilities with `/v1/auth/me` and
 `/v1/home` (`user.capabilities`) and hides what the account cannot do. The server enforces
@@ -92,6 +93,22 @@ ended and a space being deleted all end the call as well as the access: the serv
 the person's place in the call and asks LiveKit to disconnect them, because a media token
 already issued would otherwise keep working for hours. Tokens, sessions and presence are
 re-checked against membership every time.
+
+## Sign-up and invitations
+
+Two server-wide switches in the admin dashboard (Settings, "Who can join") decide who can
+make an account without an administrator. Both start off.
+
+- **Sign-up**: anyone with the server's address can create an account.
+- **Invitations**: people with `invites.create` make single-use codes on their Invitations
+  page. A code works once, for 7 days, and makes the inviter and the new account friends.
+  The code is shown once; only its SHA-256 is stored, with the last four characters as a hint.
+- A code stops working at once when it is withdrawn or expires, when its maker is suspended
+  or loses `invites.create`, or when Invitations is turned off. This is checked when the code
+  is used.
+- Wrong codes count as failed sign-ins for the address, so guessing is slowed down the same
+  way. Plain sign-up has no rate limit.
+- The admin dashboard shows who invited an account.
 
 ## Passwords and sign-in
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
+import { api, HomeState, isTransientNestUpdate, isUnauthorizedError, LauncherNest, NestDetails, NestLiveUpdate, PublicUser, ServerProperties, SessionSummary, SignUpRequest, TreeDetails, TreeJoinPolicy, TreeRole, TreeSearchResult, TreeVisibility } from "@/lib/api";
 import { audioCommands } from "@/lib/audio";
 import { clearAvatarVersions, noteAvatarVersion } from "@/lib/avatarVersions";
 import { ENTRY_CONNECTING_TTL_MS } from "@/lib/callArrivals";
@@ -465,6 +465,23 @@ export function useRavenShellData(): RavenShellData {
     [refresh],
   );
 
+  const signUp = useCallback(
+    async (request: SignUpRequest) => {
+      setBusy(true);
+      setError("");
+      try {
+        await api.signUp(request);
+        await refresh();
+      } catch (err) {
+        setError(messageFromError(err, "The account could not be made"));
+      } finally {
+        setBusy(false);
+        setLoading(false);
+      }
+    },
+    [refresh],
+  );
+
   const logout = useCallback(() => {
     // The request captures the session before it is cleared; the server marks the
     // account offline as part of signing out.
@@ -758,6 +775,7 @@ export function useRavenShellData(): RavenShellData {
     error,
     serverUnreachable,
     login,
+    signUp,
     logout,
     sessionExpired,
     selectApiServer,

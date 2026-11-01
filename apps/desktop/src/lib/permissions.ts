@@ -41,6 +41,9 @@ const EVERYTHING: UserCapabilities = {
   readMessages: true,
   sendMessages: true,
   createGroups: true,
+  // Invitations came later than the rest and start off.
+  createInvites: false,
+  maxOpenInvites: null,
 };
 
 /**

@@ -8,10 +8,24 @@ const (
 	CapabilityMessagesRead    = "messages.read"
 	CapabilityMessagesSend    = "messages.send"
 	CapabilityGroupsCreate    = "groups.create"
+	CapabilityInvitesCreate   = "invites.create"
 )
 
 // Capabilities lists every capability in the order they are shown.
 var Capabilities = []string{
+	CapabilitySpacesCreate,
+	CapabilityRoomsJoin,
+	CapabilityRoomsStartAdhoc,
+	CapabilityMessagesRead,
+	CapabilityMessagesSend,
+	CapabilityGroupsCreate,
+	CapabilityInvitesCreate,
+}
+
+// permissionsCapabilities are the capabilities that existed when permissionsStatements
+// was first applied. Its text is checksummed, so it seeds exactly these; capabilities
+// added later are seeded by their own migrations.
+var permissionsCapabilities = []string{
 	CapabilitySpacesCreate,
 	CapabilityRoomsJoin,
 	CapabilityRoomsStartAdhoc,
@@ -64,7 +78,7 @@ func permissionsStatements(driver string) []string {
 	}
 	// Everything is allowed to begin with, so applying this changes nothing for anyone
 	// until an administrator tightens it.
-	for _, capability := range Capabilities {
+	for _, capability := range permissionsCapabilities {
 		statements = append(statements,
 			`INSERT INTO server_capability_defaults (capability, allowed, limit_value, updated_at)
 			 VALUES ('`+capability+`', TRUE, NULL, '2026-10-12T00:00:00Z') ON CONFLICT(capability) DO NOTHING`,

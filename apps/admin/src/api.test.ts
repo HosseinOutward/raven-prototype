@@ -139,6 +139,9 @@ describe("wording", () => {
     expect(describeEffective({ ...base, mode: "deny", effective: false }, false)).toBe("Not allowed");
     expect(describeEffective({ ...base, mode: "deny", effective: false }, true)).toBe("Allowed (administrator)");
     expect(describeEffective({ ...base, capability: "spaces.create", effectiveLimit: 1 }, false)).toBe("Allowed, up to 1 space");
+    expect(describeEffective({ ...base, capability: "invites.create", effectiveLimit: 3 }, false)).toBe("Allowed, up to 3 open invites");
+    expect(describeEffective({ ...base, capability: "invites.create", effective: false }, false)).toBe("Not allowed (Invitations are off)");
+    expect(describeEffective({ ...base, capability: "invites.create", effective: false }, true)).toBe("Not allowed (Invitations are off)");
   });
 
   test("leaves ids out of audit details", () => {

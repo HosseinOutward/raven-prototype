@@ -32,6 +32,7 @@ GET /healthz
 
 ```http
 POST /v1/auth/login
+POST /v1/auth/sign-up
 POST /v1/auth/logout
 GET  /v1/auth/me
 GET  /v1/auth/sessions
@@ -46,6 +47,36 @@ Login body:
   "password": "admin123"
 }
 ```
+
+Sign-up body (answers like login: it starts a session and returns `{ "user": … }`):
+
+```json
+{
+  "username": "newcomer",
+  "displayName": "New Comer",
+  "password": "a long password",
+  "inviteCode": "ABCDE-12345"
+}
+```
+
+Without `inviteCode` the server's Sign-up switch must be on (`403`, `reasonCode: "sign_up_closed"`
+otherwise). With one, Invitations must be on and the code must be open; a bad code is `400`
+and counts as a failed sign-in for the address. Codes ignore case, spaces and dashes, and read
+`O` as `0` and `I`/`L` as `1`.
+
+### Account invites
+
+```http
+GET    /v1/invites
+POST   /v1/invites
+DELETE /v1/invites/:id
+```
+
+Need `createInvites` in the account's capabilities. `GET` lists the caller's invites, open ones
+plus anything from the last 30 days: `{ id, hint, createdAt, expiresAt, state, usedAt?, usedBy? }`
+with `state` one of `open`, `used`, `expired`, `revoked`. `POST` answers `201` with
+`{ "invite": …, "code": "ABCDE-12345" }`; the code is never shown again. `DELETE` withdraws an
+open invite (`204`).
 
 Active-session records include the device label, operating system, latest IP address, user agent, creation time, last access, expiration, and whether the entry is the current session. Deleting a session immediately invalidates its server-side state.
 
@@ -63,9 +94,13 @@ Response:
   "description": "Desktop RTC for private Nests",
   "avatar": "",
   "rtcServerUrl": "ws://127.0.0.1:7880",
-  "properties": {}
+  "properties": {
+    "accounts": { "signUp": false, "invitations": false }
+  }
 }
 ```
+
+`properties.accounts` tells the sign-in screen which ways in to offer.
 
 The desktop app lets logged-out users choose the Raven API server URL. The realtime server URL comes from this response.
 
@@ -96,6 +131,8 @@ GET    /v1/admin/audit?entityType=&entityId=&actor=&before=&limit=
 GET    /v1/admin/metrics
 GET    /v1/admin/settings/capabilities
 POST   /v1/admin/settings/capabilities
+GET    /v1/admin/settings/accounts
+POST   /v1/admin/settings/accounts
 POST   /v1/admin/server/avatar
 
 GET    /v1/admin/users?q=&status=

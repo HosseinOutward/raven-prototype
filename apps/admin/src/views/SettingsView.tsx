@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import type { AdminApi } from "../api";
-import type { CapabilityDefault } from "../types";
+import type { AccountSettings, CapabilityDefault, CapabilityName } from "../types";
 import { Button, Input, List, Loading, Notice, PageHeader, Row, Section, Select } from "../components/ui";
-import { CAPABILITY_TEXT } from "../lib/format";
+import { CAPABILITY_LIMITS, CAPABILITY_TEXT } from "../lib/format";
 import { IMAGE_TYPES, imageProblem } from "../lib/image";
 import { errorMessage, useLoad } from "../lib/useLoad";
 
 export function SettingsView({ api }: { api: AdminApi }) {
   const loaded = useLoad(() => api.capabilityDefaults(), "capability-defaults");
   const [draft, setDraft] = useState<CapabilityDefault[] | null>(null);
-  const [limit, setLimit] = useState("");
+  const [limits, setLimits] = useState<Partial<Record<CapabilityName, string>>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -17,24 +17,27 @@ export function SettingsView({ api }: { api: AdminApi }) {
   useEffect(() => {
     if (!loaded.data) return;
     setDraft(loaded.data);
-    const spaces = loaded.data.find((item) => item.capability === "spaces.create");
-    setLimit(spaces?.limit == null ? "" : String(spaces.limit));
+    setLimits(currentLimits(loaded.data));
   }, [loaded.data]);
 
-  const changed = draft !== null && loaded.data !== null && (JSON.stringify(draft) !== JSON.stringify(loaded.data) || limit !== currentLimit(loaded.data));
+  const changed = draft !== null && loaded.data !== null && (JSON.stringify(draft) !== JSON.stringify(loaded.data) || JSON.stringify(limits) !== JSON.stringify(currentLimits(loaded.data)));
 
   const save = async () => {
     if (!draft) return;
-    const parsed = limit.trim() === "" ? null : Number.parseInt(limit, 10);
-    if (parsed !== null && (!Number.isFinite(parsed) || parsed < 1)) {
-      setError("The limit must be a whole number of 1 or more, or empty for no limit.");
-      return;
+    const parsed: Partial<Record<CapabilityName, number | null>> = {};
+    for (const [capability, text] of Object.entries(limits) as Array<[CapabilityName, string]>) {
+      const value = text.trim() === "" ? null : Number.parseInt(text, 10);
+      if (value !== null && (!Number.isFinite(value) || value < 1)) {
+        setError("A limit must be a whole number of 1 or more, or empty for no limit.");
+        return;
+      }
+      parsed[capability] = value;
     }
     setBusy(true);
     setError("");
     setSaved(false);
     try {
-      const next = await api.setCapabilityDefaults(draft.map((item) => (item.capability === "spaces.create" ? { ...item, limit: item.allowed ? parsed : null } : item)));
+      const next = await api.setCapabilityDefaults(draft.map((item) => (item.capability in parsed ? { ...item, limit: item.allowed ? (parsed[item.capability] ?? null) : null } : item)));
       loaded.set(next);
       setSaved(true);
     } catch (cause) {
@@ -47,6 +50,7 @@ export function SettingsView({ api }: { api: AdminApi }) {
   return (
     <>
       <PageHeader title="Settings" description="What applies to the whole server." />
+      <WhoCanJoin api={api} />
       <Section
         title="Default permissions"
         description="What an account may do unless it has its own setting. A new account starts with these. Administrators are never limited."
@@ -69,8 +73,18 @@ export function SettingsView({ api }: { api: AdminApi }) {
                     <p className="font-medium">{text.title}</p>
                     <p className="text-small text-muted-foreground">{text.description}</p>
                   </div>
-                  {item.capability === "spaces.create" && item.allowed ? (
-                    <Input className="w-24" inputMode="numeric" aria-label="Most spaces one account may own" placeholder="No limit" value={limit} onChange={(event) => { setLimit(event.target.value); setSaved(false); }} />
+                  {CAPABILITY_LIMITS[item.capability] && item.allowed ? (
+                    <Input
+                      className="w-24"
+                      inputMode="numeric"
+                      aria-label={CAPABILITY_LIMITS[item.capability]?.label}
+                      placeholder="No limit"
+                      value={limits[item.capability] ?? ""}
+                      onChange={(event) => {
+                        setLimits({ ...limits, [item.capability]: event.target.value });
+                        setSaved(false);
+                      }}
+                    />
                   ) : null}
                   <Select
                     aria-label={text.title}
@@ -96,9 +110,60 @@ export function SettingsView({ api }: { api: AdminApi }) {
   );
 }
 
-function currentLimit(defaults: CapabilityDefault[]): string {
-  const spaces = defaults.find((item) => item.capability === "spaces.create");
-  return spaces?.limit == null ? "" : String(spaces.limit);
+function currentLimits(defaults: CapabilityDefault[]): Partial<Record<CapabilityName, string>> {
+  const limits: Partial<Record<CapabilityName, string>> = {};
+  for (const item of defaults) {
+    if (CAPABILITY_LIMITS[item.capability]) limits[item.capability] = item.limit == null ? "" : String(item.limit);
+  }
+  return limits;
+}
+
+const ACCOUNT_SWITCHES: Array<{ key: keyof AccountSettings; title: string; description: string }> = [
+  { key: "signUpOpen", title: "Sign-up", description: "Anyone with the server’s address can create an account." },
+  { key: "invitationsOpen", title: "Invitations", description: "People allowed to Invite people can give a friend a single-use code. Turning this off stops every open code." },
+];
+
+/** The server's two ways in that do not need an administrator to make the account. */
+function WhoCanJoin({ api }: { api: AdminApi }) {
+  const loaded = useLoad(() => api.accountSettings(), "account-settings");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const toggle = async (key: keyof AccountSettings, value: boolean) => {
+    if (!loaded.data) return;
+    setBusy(true);
+    setError("");
+    try {
+      loaded.set(await api.setAccountSettings({ ...loaded.data, [key]: value }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section title="Who can join" description="With both off, only an administrator can make accounts.">
+      {loaded.error ? <Notice>{loaded.error}</Notice> : null}
+      {error ? <div className="mb-3"><Notice>{error}</Notice></div> : null}
+      {loaded.data ? (
+        <List>
+          {ACCOUNT_SWITCHES.map((item) => (
+            <Row key={item.key}>
+              <div className="min-w-0 flex-1 py-1">
+                <p className="font-medium">{item.title}</p>
+                <p className="text-small text-muted-foreground">{item.description}</p>
+              </div>
+              <Select aria-label={item.title} value={loaded.data?.[item.key] ? "on" : "off"} disabled={busy} onChange={(event) => void toggle(item.key, event.target.value === "on")}>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </Select>
+            </Row>
+          ))}
+        </List>
+      ) : loaded.loading ? (
+        <Loading />
+      ) : null}
+    </Section>
+  );
 }
 
 function ServerImage({ api }: { api: AdminApi }) {

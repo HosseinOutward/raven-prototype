@@ -1,4 +1,5 @@
 import type {
+  SignUpRequest,
   HomeState,
   JoinRequest,
   Knock,
@@ -124,6 +125,7 @@ export interface RavenShellData {
   error: string;
   serverUnreachable: boolean;
   login: (username: string, password: string) => Promise<void>;
+  signUp: (request: SignUpRequest) => Promise<void>;
   logout: () => void;
   /** The server no longer accepts this session: return to sign-in and say why. */
   sessionExpired: () => void;
