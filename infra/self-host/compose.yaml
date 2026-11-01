@@ -1,0 +1,155 @@
+# Raven server for self-hosting. See docs/self-hosting.md.
+#   cp .env.example .env   # fill it in
+#   docker compose up -d
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: raven
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - raven_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U raven -d raven
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - raven_redis:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  livekit:
+    image: livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50002
+          port_range_end: 50100
+          use_external_ip: false
+          node_ip: ${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP is required}
+        redis:
+          address: redis:6379
+        room:
+          empty_timeout: 300
+          departure_timeout: 20
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      # Signalling (7880) is reached through your reverse proxy; the media ports are public.
+      - "127.0.0.1:7880:7880/tcp"
+      - "7881:7881/tcp"
+      - "50002-50100:50002-50100/udp"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:7880/
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  api:
+    image: soroushtaheri/raven-api:${RAVEN_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      RAVEN_API_ADDR: 0.0.0.0:6977
+      RAVEN_DATABASE_DRIVER: postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: raven
+      POSTGRES_USER: raven
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_SSLMODE: disable
+      RAVEN_MINIMUM_CLIENT_VERSION: ${RAVEN_MINIMUM_CLIENT_VERSION:-0.1.0}
+      RAVEN_SERVER_NAME: ${RAVEN_SERVER_NAME:-Raven}
+      RAVEN_SERVER_DESCRIPTION: ${RAVEN_SERVER_DESCRIPTION:-A Raven server}
+      LIVEKIT_URL: ${LIVEKIT_URL:?LIVEKIT_URL is required}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+      # Profile pictures and chat images live on this volume; no S3 needed.
+      RAVEN_MEDIA_DIR: /var/lib/raven/media
+      # Your reverse proxy reaches the API from the host's Docker bridge, which is in
+      # these ranges. Only from there is X-Forwarded-For believed.
+      RAVEN_TRUSTED_PROXIES: ${RAVEN_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+    volumes:
+      - raven_media:/var/lib/raven/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:6977:6977"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1:6977/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+  # The admin dashboard's static files. Your reverse proxy serves them on one host and
+  # passes /v1/ to the API (nginx.example.conf).
+  admin:
+    image: soroushtaheri/raven-admin:${RAVEN_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://127.0.0.1/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - raven_internal
+
+volumes:
+  raven_postgres:
+  raven_redis:
+  raven_media:
+
+networks:
+  raven_internal:

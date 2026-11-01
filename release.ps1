@@ -10,7 +10,7 @@
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("help", "build", "publish", "repoint", "status")]
+  [ValidateSet("help", "build", "publish", "repoint", "status", "images")]
   [string]$Command = "help",
   [string]$Version,
   # Release notes shown in the app. Defaults to release-notes-<version>.md when it exists.
@@ -23,7 +23,13 @@ param(
   [switch]$AllowDirty,
   # Publish into a folder beside the real releases (for example "test") and leave the
   # real latest.json alone. Point a debug build at it with RAVEN_UPDATE_ENDPOINT.
-  [string]$Scratch
+  [string]$Scratch,
+  # images: the Docker Hub account the server images are pushed to.
+  [string]$ImageNamespace = "soroushtaheri",
+  # images: push only the X.Y.Z tag, not :latest.
+  [switch]$NoLatest,
+  # images: build both platforms but push nothing.
+  [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -373,10 +379,60 @@ du -sh . | cut -f1 | sed 's/^/Disk used: /'
   catch { Write-Host "Offered to friends: nothing ($PublicBase/latest.json is not reachable)" }
 }
 
+function Invoke-Images {
+  Assert-Version
+  $dirty = @(& git -C $Root status --porcelain)
+  if ($dirty.Count -gt 0 -and -not $AllowDirty) {
+    throw "The working tree has uncommitted changes. Commit them, or pass -AllowDirty for a rehearsal."
+  }
+  if ($dirty.Count -gt 0 -and -not $DryRun) { throw "-AllowDirty only works with -DryRun: published images must come from a commit." }
+  $commit = "HEAD"
+  if ($dirty.Count -gt 0) { Write-Warning "Building the last commit (HEAD); uncommitted changes are not in the images." }
+  $stage = Get-Stage
+  Write-Host "== Building the server images in WSL ($WslDistro)"
+  $sourceTar = Join-Path $Stage "source.tar"
+  # 'git archive' gives the committed line endings (LF), which the Dockerfiles and scripts need.
+  Invoke-Native "git" @("archive", "--format=tar", "--output=$sourceTar", $commit)
+  $stageInWsl = (& wsl.exe -d $WslDistro -- wslpath -a ($stage -replace '\', '/')).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $stageInWsl) { throw "Could not reach the WSL distro '$WslDistro'." }
+  $tags = if ($NoLatest) { "" } else { " -t $ImageNamespace/raven-`$name:latest" }
+  $output = if ($DryRun) { "--output type=image,push=false" } else { "--push" }
+  $script = @"
+set -euo pipefail
+command -v docker >/dev/null || { echo 'Docker is not installed in this WSL distro. See docs/releasing.md.' >&2; exit 3; }
+docker buildx version >/dev/null || { echo 'docker buildx is missing in this WSL distro.' >&2; exit 3; }
+docker buildx inspect raven-multi >/dev/null 2>&1 || docker buildx create --name raven-multi >/dev/null
+base="`$HOME/raven-images"
+rm -rf "`$base/source"
+mkdir -p "`$base/source"
+tar -xf '$stageInWsl/source.tar' -C "`$base/source"
+cd "`$base/source"
+for name in api admin; do
+  docker buildx build --builder raven-multi --platform linux/amd64,linux/arm64     -f infra/homelab/`$name.Dockerfile --build-arg RAVEN_VERSION=$Version     -t $ImageNamespace/raven-`$name:$Version$tags $output .
+done
+if [ '$DryRun' = 'False' ]; then
+  for name in api admin; do
+    docker buildx imagetools inspect $ImageNamespace/raven-`$name:$Version | grep -E '^(Name|Digest)'
+  done
+fi
+"@
+  $scriptFile = Join-Path $stage "build-images.sh"
+  [IO.File]::WriteAllText($scriptFile, (($script -replace "`r", "") + "`n"), (New-Object Text.UTF8Encoding($false)))
+  $ErrorActionPreference = "Continue"
+  & wsl.exe -d $WslDistro --cd $stage -- bash ./build-images.sh
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = "Stop"
+  Remove-Item -LiteralPath $scriptFile, $sourceTar -Force -ErrorAction SilentlyContinue
+  if ($code -ne 0) { throw "The image build failed with exit code $code. If the push was refused, run 'docker login' in WSL once." }
+  if ($DryRun) { Write-Host "Dry run: both images build for amd64 and arm64; nothing was pushed." }
+  else { Write-Host "Pushed $ImageNamespace/raven-api and $ImageNamespace/raven-admin $Version." }
+}
+
 switch ($Command) {
   "build" { Invoke-Build }
   "publish" { Invoke-Publish }
   "repoint" { Invoke-Repoint }
   "status" { Invoke-Status }
+  "images" { Invoke-Images }
   default { Get-Help $PSCommandPath -Examples }
 }

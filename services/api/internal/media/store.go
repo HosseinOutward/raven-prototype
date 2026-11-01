@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -40,7 +41,15 @@ func (s UnavailableStore) Put(context.Context, string, []byte, string) error { r
 func (s UnavailableStore) Get(context.Context, string) (Object, error)       { return Object{}, s.err }
 func (s UnavailableStore) Delete(context.Context, string) error              { return s.err }
 
+// RAVEN_MEDIA_DIR wins over the S3 settings: a self-hosted server needs no object store.
 func NewStoreFromEnv() Store {
+	if dir := strings.TrimSpace(os.Getenv("RAVEN_MEDIA_DIR")); dir != "" {
+		store, err := NewDiskStore(dir)
+		if err != nil {
+			return UnavailableStore{err: err}
+		}
+		return store
+	}
 	store, err := NewS3Store(
 		firstNonEmpty(os.Getenv("RAVEN_MEDIA_S3_ENDPOINT"), os.Getenv("S3_ENDPOINT"), os.Getenv("S3_HOST")),
 		firstNonEmpty(os.Getenv("RAVEN_MEDIA_S3_BUCKET"), os.Getenv("S3_BUCKET")),
@@ -130,6 +139,95 @@ func (s *S3Store) Delete(ctx context.Context, key string) error {
 		return errors.New("profile image could not be removed")
 	}
 	return nil
+}
+
+// DiskStore keeps objects as files under root: the bytes at root/<key> and the content
+// type beside them in root/<key>.content-type.
+type DiskStore struct{ root string }
+
+func NewDiskStore(root string) (*DiskStore, error) {
+	root, err := filepath.Abs(strings.TrimSpace(root))
+	if err != nil || os.MkdirAll(root, 0o750) != nil {
+		return nil, errors.New("profile image storage directory is unavailable")
+	}
+	return &DiskStore{root: root}, nil
+}
+
+func (s *DiskStore) path(key string) (string, error) {
+	key, err := validKey(key)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(s.root, filepath.FromSlash(key))
+	if relative, err := filepath.Rel(s.root, path); err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", errors.New("profile image object key is invalid")
+	}
+	return path, nil
+}
+
+func (s *DiskStore) Put(_ context.Context, key string, body []byte, contentType string) error {
+	path, err := s.path(key)
+	if err != nil {
+		return err
+	}
+	if os.MkdirAll(filepath.Dir(path), 0o750) != nil ||
+		writeFileAtomic(path+".content-type", []byte(contentType)) != nil ||
+		writeFileAtomic(path, body) != nil {
+		return errors.New("profile image could not be stored")
+	}
+	return nil
+}
+
+func (s *DiskStore) Get(_ context.Context, key string) (Object, error) {
+	path, err := s.path(key)
+	if err != nil {
+		return Object{}, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return Object{}, errors.New("profile image is unavailable")
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, 10*1024*1024+1))
+	if err != nil || len(body) > 10*1024*1024 {
+		return Object{}, errors.New("profile image could not be read")
+	}
+	contentType, _ := os.ReadFile(path + ".content-type")
+	return Object{Bytes: body, ContentType: string(contentType)}, nil
+}
+
+func (s *DiskStore) Delete(_ context.Context, key string) error {
+	path, err := s.path(key)
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{path, path + ".content-type"} {
+		if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.New("profile image could not be removed")
+		}
+	}
+	return nil
+}
+
+// writeFileAtomic writes beside the target and renames, so a reader never sees half a file.
+func writeFileAtomic(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Chmod(0o640); err != nil && !errors.Is(err, os.ErrPermission) {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temp.Name(), path)
 }
 
 func validKey(value string) (string, error) {

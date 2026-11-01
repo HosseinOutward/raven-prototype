@@ -2,6 +2,8 @@ package media
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,5 +28,60 @@ func TestS3GetSupportsFullChatImagesAndBoundsReads(t *testing.T) {
 	size++
 	if _, err := store.Get(context.Background(), "chat-attachments/too-large.png"); err == nil {
 		t.Fatal("accepted object beyond the read bound")
+	}
+}
+
+func TestDiskStoreRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewDiskStore(filepath.Join(t.TempDir(), "media"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, "profile-images/a.png"); err == nil || err.Error() != "profile image is unavailable" {
+		t.Fatalf("missing key: %v", err)
+	}
+	if err := store.Put(ctx, "profile-images/a.png", []byte("one"), "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "profile-images/a.png", []byte("two"), "image/webp"); err != nil {
+		t.Fatal(err)
+	}
+	object, err := store.Get(ctx, "profile-images/a.png")
+	if err != nil || string(object.Bytes) != "two" || object.ContentType != "image/webp" {
+		t.Fatalf("overwrite: %+v %v", object, err)
+	}
+	if err := store.Delete(ctx, "profile-images/a.png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "profile-images/a.png"); err != nil {
+		t.Fatalf("deleting a missing key: %v", err)
+	}
+	if _, err := store.Get(ctx, "profile-images/a.png"); err == nil {
+		t.Fatal("read after delete")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(store.root, "profile-images")); len(entries) != 0 {
+		t.Fatalf("leftover files: %v", entries)
+	}
+}
+
+func TestDiskStoreRejectsKeysOutsideRoot(t *testing.T) {
+	store, err := NewDiskStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"", ".", "..", "../x", "a/../../x", "/etc/passwd", "a/.."} {
+		if err := store.Put(context.Background(), key, []byte("x"), "image/png"); err == nil {
+			t.Errorf("accepted key %q", key)
+		}
+		if _, err := store.Get(context.Background(), key); err == nil {
+			t.Errorf("read key %q", key)
+		}
+	}
+}
+
+func TestNewStoreFromEnvPrefersMediaDir(t *testing.T) {
+	t.Setenv("RAVEN_MEDIA_DIR", filepath.Join(t.TempDir(), "m"))
+	if _, ok := NewStoreFromEnv().(*DiskStore); !ok {
+		t.Fatal("RAVEN_MEDIA_DIR did not select the disk store")
 	}
 }
