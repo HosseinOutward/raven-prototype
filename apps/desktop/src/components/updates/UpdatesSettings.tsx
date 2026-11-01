@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Download, RefreshCw, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { parseInline, parseNotes, type NotesBlock } from "@/lib/releaseNotes";
 import { downloadPercent, formatUpdateBytes, updateStatusLine, type RavenUpdater } from "@/lib/updater";
 import {
   SettingsHint,
@@ -94,10 +95,71 @@ export function UpdatesSettingsPanel({ updater }: { updater: RavenUpdater }) {
       {available?.notes ? (
         <div className="rounded-card bg-secondary/50 px-4 py-3">
           <div className="text-body">What’s new in {available.version}</div>
-          <p className="mt-1 select-text whitespace-pre-wrap text-small text-muted-foreground">{available.notes}</p>
+          <ReleaseNotes markdown={available.notes} />
         </div>
       ) : null}
     </SettingsSection>
+  );
+}
+
+function ReleaseNotes({ markdown }: { markdown: string }) {
+  const blocks = parseNotes(markdown);
+  // The card already says "What's new in X"; drop the file's own title line.
+  const body = blocks[0]?.kind === "heading" && blocks[0].level === 1 ? blocks.slice(1) : blocks;
+  return (
+    <div className="mt-2 select-text space-y-2 text-small text-muted-foreground">
+      {body.map((block, index) => renderBlock(block, index))}
+    </div>
+  );
+}
+
+function renderBlock(block: NotesBlock, key: number) {
+  if (block.kind === "heading") {
+    return (
+      <div key={key} className="pt-1 text-body text-foreground">
+        <Inline text={block.text} />
+      </div>
+    );
+  }
+  if (block.kind === "list") {
+    return (
+      <ul key={key} className="list-disc space-y-1.5 pl-5">
+        {block.items.map((item, i) => (
+          <li key={i}>
+            <Inline text={item} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  return (
+    <p key={key}>
+      <Inline text={block.text} />
+    </p>
+  );
+}
+
+function Inline({ text }: { text: string }) {
+  return (
+    <>
+      {parseInline(text).map((part, i) => {
+        if (part.kind === "code") return <code key={i} className="rounded bg-secondary px-1 py-0.5 text-foreground">{part.text}</code>;
+        if (part.kind === "bold") return <strong key={i} className="font-semibold text-foreground">{part.text}</strong>;
+        if (part.kind === "link") {
+          return (
+            <button
+              key={i}
+              type="button"
+              className="underline underline-offset-2"
+              onClick={() => void invoke("plugin:opener|open_url", { url: part.href }).catch(() => undefined)}
+            >
+              {part.text}
+            </button>
+          );
+        }
+        return part.text;
+      })}
+    </>
   );
 }
 
