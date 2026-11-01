@@ -1,0 +1,36 @@
+{
+  "brand": "Raven",
+  "tagline": "A quiet communication home",
+  "brief": "Raven is a lean, open-source desktop app for trusted groups to talk, see and share, with presence people control themselves. It should feel calm, warm, precise and a little cyberpunk, and nothing like a dashboard, a feed or a gamer brand.",
+  "adjectives": ["quiet", "warm", "precise", "trustworthy"],
+  "criteria": "Success: one shape that says both 'raven' and 'talk', recognisable at 16 px, works in one colour, sits naturally in Raven's graphite-and-aqua interface.",
+  "mockups": ["app-icon", "favicon-tab", "readme", "website", "sticker", "terminal"],
+  "nav": ["Download", "Self-host", "Manifesto"],
+  "brand_color": "#6EC4B8",
+  "tile_color": "#0F0E0D",
+  "greyscale": false,
+  "designer": "Raven",
+  "round": 2,
+  "concepts": [
+    {
+      "name": "Talking raven",
+      "symbol": "raven-symbol.svg",
+      "lockup": "raven-horizontal.svg",
+      "symbol_on_tile": "raven-symbol-aqua.svg",
+      "lockup_on_dark": "raven-horizontal-on-dark.svg",
+      "idea": "A speech bubble that is also a raven's head: the bubble's tail is the beak, the eye is the only cut.",
+      "rationale": [
+        "One shape carries both the name and the purpose: people talking",
+        "Built from a circle and two tangents at 15 and 45 degrees; nothing else",
+        "Aqua is Raven's 'someone is live' colour, so the mark speaks in the app's own voice",
+        "Solid silhouette with a separate small-size cut, so it holds at 16 px"
+      ]
+    }
+  ],
+  "recommendation": "Talking raven, aqua on graphite as the app icon, graphite on light grounds.",
+  "next_steps": [
+    "Swap the Tauri app icons and installer art for the new mark",
+    "Trademark search before public launch",
+    "Optional: a custom touch in the wordmark (e.g. the R's leg) for more ownership"
+  ]
+}
