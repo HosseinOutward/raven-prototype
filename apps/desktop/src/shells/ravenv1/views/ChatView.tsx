@@ -242,7 +242,7 @@ function OpenConversation({
         : [tree?.name, summary.topic].filter(Boolean).join(" · ") || undefined;
 
   const intro = summary.kind === "dm"
-    ? `Messages here are between you and ${summary.name}.${summary.peerReadSeq !== undefined && sharesReadStatus ? " You can each see when the other has read them; Settings › Messages turns that off." : ""}`
+    ? `Messages here are between you and ${summary.name}.${summary.peerReadSeq !== undefined && sharesReadStatus && !summary.peerDeleted ?" You can each see when the other has read them; Settings › Messages turns that off." : ""}`
     : summary.kind === "group"
       ? "Only people in this group can read it. Anyone added later sees messages from then on."
       : `Everyone in ${tree?.name ?? "this place"} can read and write here.`;
