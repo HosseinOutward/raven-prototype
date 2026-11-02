@@ -474,7 +474,8 @@ function ShareCard({ tile, onWatch }: { tile: StageTile; onWatch: () => void }) 
   return (
     <div className={SHARE_CARD_CLASS}>
       <span
-        className={cn("block shrink-0 rounded-full", tile.speaking && "raven-speaking-ring")}
+        className="raven-voice-ring raven-voice-ring-sm block shrink-0 rounded-full"
+        data-speaking={tile.speaking || undefined}
         style={speakingGlowStyle(tile.speakingIntensity, "avatar")}
       >
         <Avatar name={tile.displayName} src={api.userAvatarUrl(tile.participantId)} className="h-8 w-8" />
@@ -560,7 +561,8 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
           >
             <span className="relative">
               <span
-                className={cn("block rounded-full", person.speaking && "raven-speaking-avatar", person.connecting && "raven-connecting-avatar", person.away && !person.connecting && "raven-away-avatar")}
+                data-speaking={person.speaking || undefined}
+                className={cn("raven-voice-ring block rounded-full", person.connecting && "raven-connecting-avatar", person.away && !person.connecting && "raven-away-avatar")}
                 style={speakingGlowStyle(person.speakingIntensity, "avatar")}
               >
                 <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className={size} />
@@ -610,7 +612,8 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
             aria-hidden={phase === "leave" || undefined}
           >
             <span
-              className={cn("block rounded-full", person.speaking && "raven-speaking-ring", person.connecting && "raven-connecting-avatar", person.away && !person.connecting && "raven-away-avatar")}
+              data-speaking={person.speaking || undefined}
+              className={cn("raven-voice-ring raven-voice-ring-sm block rounded-full", person.connecting && "raven-connecting-avatar", person.away && !person.connecting && "raven-away-avatar")}
               style={speakingGlowStyle(person.speakingIntensity, "avatar")}
             >
               <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className="h-7 w-7" />

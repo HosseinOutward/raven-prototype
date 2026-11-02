@@ -14,10 +14,12 @@ export const SPEAKING_RELEASE_HOLD_MS = 240;
 /**
  * Loudness alone lights up for keyboards, clicks and coughs, so a microphone also needs
  * the voice detector to agree. Without a probability (an older engine, a source that is
- * not a microphone) the level decides, as it did before.
+ * not a microphone) the level decides, as it did before. Soft or noise-suppressed speech
+ * often peaks between 0.4 and 0.6, so the entry is kept low: at 0.6 people who were
+ * clearly heard got no ring.
  */
-export const SPEAKING_ENTER_VOICE_PROBABILITY = 0.6;
-export const SPEAKING_EXIT_VOICE_PROBABILITY = 0.3;
+export const SPEAKING_ENTER_VOICE_PROBABILITY = 0.4;
+export const SPEAKING_EXIT_VOICE_PROBABILITY = 0.2;
 export const FALLBACK_SPEAKING_INTENSITY = 0.35;
 
 const FULL_INTENSITY_RMS_DB = -18;
@@ -82,6 +84,7 @@ export function speakingGlowStyle(intensity: number, variant: "tile" | "avatar")
   const level = Number.isFinite(intensity) ? Math.min(1, Math.max(0, intensity)) : 0;
   const compact = variant === "avatar";
   return {
+    "--raven-speaking-level": String(roundIntensity(level)),
     "--raven-speaking-border-alpha": String(roundIntensity(0.62 + level * 0.36)),
     "--raven-speaking-glow-alpha": String(roundIntensity((compact ? 0.16 : 0.14) + level * 0.3)),
     "--raven-speaking-glow-radius": `${roundIntensity((compact ? 8 : 12) + level * (compact ? 12 : 22))}px`,

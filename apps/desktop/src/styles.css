@@ -74,6 +74,8 @@
 
   /* Someone is live or speaking. Nothing else uses this colour. */
   --live: 172 42% 60%;
+  /* The speaking ring and your mic level; the user can pick it (lib/speakingColor). */
+  --speaking: var(--live);
   --live-foreground: 172 40% 8%;
 
   /* `destructive` is text-safe on dark; `destructive-fill` carries white text. */
@@ -149,25 +151,89 @@ textarea {
   outline-offset: 0;
 }
 
-/* Speaking: a ring whose strength follows the voice. No glow. The alpha comes
+/* Speaking: a ring whose strength follows the voice. The alpha comes
    from `speakingGlowStyle` in lib/speakingActivity. Tiles and the overlay draw
    the ring inside their edge so it is never clipped by a scrolling parent. */
 .raven-speaking-tile,
 .raven-overlay-speaking {
-  outline: 2px solid hsl(var(--live) / var(--raven-speaking-border-alpha, 0.7));
+  outline: 2px solid hsl(var(--speaking) / var(--raven-speaking-border-alpha, 0.7));
   outline-offset: -2px;
   transition: outline-color 140ms ease-out;
 }
 
-.raven-speaking-avatar {
-  box-shadow:
-    0 0 0 2px hsl(var(--card)),
-    0 0 0 4px hsl(var(--live) / var(--raven-speaking-border-alpha, 0.7));
-  transition: box-shadow 140ms ease-out;
+/* A person's avatar while they talk: a crisp ring, plus a soft halo behind it
+   that swells with their voice (`--raven-speaking-level`, 0..1, every 120 ms
+   meter tick). It moves only while someone speaks, so it never idles. Both
+   layers are always present and fade in and out, so starting and stopping
+   settle instead of snapping. Only opacity and transform change. */
+.raven-voice-ring {
+  position: relative;
+  isolation: isolate;
+  /* The ring sits right on the avatar's edge: a gap reads as a dark band once the
+     halo lights the space around it. */
+  --raven-voice-ring-gap: -2px;
+}
+
+.raven-voice-ring::before,
+.raven-voice-ring::after {
+  content: "";
+  position: absolute;
+  inset: var(--raven-voice-ring-gap);
+  z-index: -1;
+  border-radius: 9999px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.94);
+  will-change: opacity, transform;
+  /* Fading out is soft and a little slower, so the short gaps between words read as
+     a dip, not a blink. */
+  transition:
+    opacity 300ms cubic-bezier(0.45, 0, 0.55, 1),
+    transform 300ms cubic-bezier(0.45, 0, 0.55, 1),
+    border-color 300ms cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+.raven-voice-ring::after {
+  border: 2px solid hsl(var(--speaking) / var(--raven-speaking-border-alpha, 0.7));
+}
+
+/* Filled, not just a shadow: the halo grows past the ring, and a hollow one left a
+   dark band between them. The avatar covers its centre. */
+.raven-voice-ring::before {
+  background-color: hsl(var(--speaking) / 0.35);
+  box-shadow: 0 0 16px 4px hsl(var(--speaking) / 0.45);
+}
+
+.raven-voice-ring-sm::before {
+  display: none;
+}
+
+.raven-voice-ring[data-speaking]::before,
+.raven-voice-ring[data-speaking]::after {
+  /* Longer than the 120 ms meter tick, with a gentle ease-out: each new level picks
+     up the motion already under way, so the halo glides instead of stepping. */
+  transition:
+    opacity 260ms cubic-bezier(0.33, 1, 0.68, 1),
+    transform 260ms cubic-bezier(0.33, 1, 0.68, 1),
+    border-color 260ms cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.raven-voice-ring[data-speaking]::after {
+  opacity: 1;
+  transform: none;
+}
+
+.raven-voice-ring[data-speaking]::before {
+  opacity: calc(0.3 + var(--raven-speaking-level, 0) * 0.7);
+  transform: scale(calc(1 + var(--raven-speaking-level, 0) * 0.14));
+}
+
+.raven-speaking-fill {
+  background-color: hsl(var(--speaking));
 }
 
 .raven-speaking-ring {
-  outline: 2px solid hsl(var(--live) / var(--raven-speaking-border-alpha, 0.7));
+  outline: 2px solid hsl(var(--speaking) / var(--raven-speaking-border-alpha, 0.7));
   outline-offset: 1px;
   transition: outline-color 140ms ease-out;
 }

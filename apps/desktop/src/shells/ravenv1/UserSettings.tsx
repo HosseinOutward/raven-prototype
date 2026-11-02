@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { PasswordChangeForm } from "./PasswordChangeForm";
 import { InvitationsSettings } from "./InvitationsSettings";
 import { capabilitiesOf } from "@/lib/permissions";
-import { Bell, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video } from "lucide-react";
+import { Bell, Check, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tooltip } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { VoiceOverlaySettingsPanel } from "@/components/VoiceOverlaySettings";
 import { MediaHotkeySettingsPanel } from "@/components/MediaHotkeySettings";
@@ -32,6 +33,7 @@ import {
 } from "./SettingsScaffold";
 import { InfoTooltip } from "./atoms";
 import { cn } from "@/lib/utils";
+import { SPEAKING_COLORS, useSpeakingColor, writeSpeakingColor } from "@/lib/speakingColor";
 import { ConfirmLeaveSection, DockOrderSection } from "./DockSettings";
 import type { RavenShellData, RavenView } from "./state";
 import type {
@@ -314,12 +316,48 @@ function AppearanceSettings({ data }: { data: RavenShellData }) {
           />
         </SettingsRows>
       </SettingsSection>
+      <SpeakingColorSection />
       <DockOrderSection />
       <SettingsSection title="Theme">
         <SettingsReadOnlyRow label="Colour" value="Raven dark" />
         <SettingsHint>Raven has one theme for now.</SettingsHint>
       </SettingsSection>
     </SettingsPage>
+  );
+}
+
+/** The colour that shows who is talking. Kept on this device. */
+function SpeakingColorSection() {
+  const selected = useSpeakingColor();
+  const label = SPEAKING_COLORS.find((color) => color.id === selected)?.label ?? "";
+  return (
+    <SettingsSection title="Speaking colour" description="The ring around whoever is talking, and your own mic level. It is kept on this device.">
+      <SettingsRows>
+        <div className="flex min-h-12 items-center justify-between gap-4 px-4 py-2.5">
+          <div className="text-body">{label}</div>
+          <div role="radiogroup" aria-label="Speaking colour" className="flex items-center gap-2.5">
+            {SPEAKING_COLORS.map((color) => (
+              <Tooltip key={color.id} label={color.label}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={selected === color.id}
+                  aria-label={color.label}
+                  onClick={() => writeSpeakingColor(color.id)}
+                  className={cn(
+                    "flex h-7 w-7 items-center justify-center rounded-full transition-[box-shadow] duration-150",
+                    selected === color.id && "shadow-[0_0_0_2px_hsl(var(--card)),0_0_0_4px_hsl(var(--foreground))]",
+                  )}
+                  style={{ backgroundColor: `hsl(${color.hsl})` }}
+                >
+                  {selected === color.id ? <Check className="h-3.5 w-3.5 text-primary-foreground" /> : null}
+                </button>
+              </Tooltip>
+            ))}
+          </div>
+        </div>
+      </SettingsRows>
+    </SettingsSection>
   );
 }
 

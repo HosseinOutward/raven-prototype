@@ -1228,7 +1228,7 @@ function LevelBars({ level }: { level: number }) {
       {heights.map((height, index) => (
         <span
           key={index}
-          className={cn("w-[2px] rounded-full transition-[height,background-color] duration-100", clamped > 0.02 ? "bg-live" : "bg-subtle")}
+          className={cn("w-[2px] rounded-full transition-[height,background-color] duration-200 ease-out", clamped > 0.02 ? "raven-speaking-fill" : "bg-subtle")}
           style={{ height }}
         />
       ))}

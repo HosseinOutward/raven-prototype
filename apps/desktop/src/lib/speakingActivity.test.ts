@@ -58,7 +58,14 @@ describe("participant voice activity", () => {
     // A keyboard: far over the level threshold, nowhere near a voice.
     expect(tracker.processMeter(state, localMeter(-25, 0.1), 0, "person")["person"]?.speaking).toBe(false);
     // Between "not a voice" and "a voice": not enough to start.
-    expect(tracker.processMeter(state, localMeter(-25, 0.5), 100, "person")["person"]?.speaking).toBe(false);
+    expect(tracker.processMeter(state, localMeter(-25, 0.3), 100, "person")["person"]?.speaking).toBe(false);
+  });
+
+  test("soft speech the detector is unsure of still lights a person up", () => {
+    const tracker = new ParticipantVoiceActivityTracker();
+    const state = mixerState([localMicrophone()]);
+
+    expect(tracker.processMeter(state, localMeter(-40, 0.45), 0, "person")["person"]?.speaking).toBe(true);
   });
 
   test("a quiet voice does", () => {

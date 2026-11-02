@@ -7,6 +7,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AppCrashFallback } from "@/shells/ravenv1/RegionFallback";
 import { installGlobalErrorLogging, logUiError } from "@/lib/diagnostics";
 import { parseRoute } from "@/lib/route";
+import { installSpeakingColor } from "@/lib/speakingColor";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 // Persian and Arabic script, which Geist does not cover.
@@ -15,6 +16,7 @@ import "@/styles.css";
 const route = parseRoute();
 
 installGlobalErrorLogging();
+installSpeakingColor();
 
 // A render error no boundary caught unmounts the whole tree and blanks the window; the
 // boundaries below should make this rare, and the log says where it came from.
