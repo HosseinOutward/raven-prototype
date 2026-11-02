@@ -18,6 +18,7 @@
 | `exports/symbol/` | Black, white, aqua, square and app-icon variants; `favicon.ico`, PNG icon set, `site.webmanifest`, `head-snippet.html` |
 | `exports/horizontal/`, `exports/stacked/` | Black and white lockups as SVG and PNG |
 | `board.html`, `slides/` | Presentation board with mockups |
+| `icons.py` | Writes the desktop app's window, taskbar, tray and installer icons (aqua mark on transparency, every Windows DPI size) into `apps/desktop/src-tauri/icons/` |
 
 ## Colour
 
@@ -52,6 +53,5 @@ The wordmark is Geist SemiBold (600) at −1 % tracking, converted to outlines, 
 
 ## Open items
 
-- The desktop app icons in `apps/desktop/src-tauri/icons/` still show the old mark.
 - No trademark search has been done. Get a professional search before public launch.
 - The wordmark is stock Geist. A custom touch, such as the R's leg, would make it more ownable.

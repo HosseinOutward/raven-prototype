@@ -41,8 +41,8 @@ def raven(cx, cy, r, tip, eye, eye_r):
     return head + circle(eye[0], eye[1], eye_r)
 
 
-def raven_on_grid(r, upper, lower, eye_at, eye_r, size=256, overshoot=4, lift=4):
-    """Builds the raven from clean angles: the culmen falls at `upper` degrees, the jaw rises at `lower`.
+def grid_geometry(r, upper, lower, eye_at, eye_r, size=256, overshoot=4, lift=4):
+    """Places the raven from clean angles: the culmen falls at `upper` degrees, the jaw rises at `lower`.
 
     The beak tip is where the two tangents meet. The form is centred in the box, then the tip is
     let out by `overshoot` (a point looks shorter than it is) and the whole lifted by `lift`
@@ -63,13 +63,15 @@ def raven_on_grid(r, upper, lower, eye_at, eye_r, size=256, overshoot=4, lift=4)
     cx = (size - width) / 2 + r + overshoot / 2
     cy = size / 2 - lift
     eye = (cx + eye_at[0] * r, cy - eye_at[1] * r)
-    return raven(cx, cy, r, (cx + tip[0], cy + tip[1]), eye, eye_r)
+    return cx, cy, r, (cx + tip[0], cy + tip[1]), eye, eye_r
 
 
 # Master: 256 grid. Head r=72, culmen falls 15 deg, jaw rises 45 deg.
-SYMBOL = raven_on_grid(72, 15, 45, (0.6, 0.36), 10.5)
-# Small-size cut (<= 24 px): bigger head, shorter beak, larger eye so it stays open.
-SYMBOL_SMALL = raven_on_grid(76, 15, 45, (0.58, 0.36), 15)
+GEOMETRY = grid_geometry(72, 15, 45, (0.6, 0.36), 10.5)
+# Small-size cut (<= 48 px): bigger head, shorter beak, larger eye so it stays open.
+GEOMETRY_SMALL = grid_geometry(76, 15, 45, (0.58, 0.36), 15)
+SYMBOL = raven(*GEOMETRY)
+SYMBOL_SMALL = raven(*GEOMETRY_SMALL)
 
 
 def svg(view_w, view_h, body, title="Raven"):
