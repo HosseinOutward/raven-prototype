@@ -25,6 +25,7 @@ function person(userId: string, patch: Partial<VoiceOverlayParticipant> = {}): V
     muted: false,
     deafened: false,
     screenSharing: false,
+    watchers: [],
     cameraOn: false,
     connectionQuality: "good",
     joinedAt: null,

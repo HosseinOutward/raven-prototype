@@ -16,6 +16,7 @@ Object.defineProperty(globalThis, "localStorage", {
 
 const {
   cameraUserIdsForOverlay,
+  shareWatchersForOverlay,
   formatHotkeyEvent,
   normalizeVoiceOverlayLocationLabel,
 } = await import("./voiceOverlay");
@@ -32,6 +33,7 @@ function participant(userId: string, speaking = false): VoiceOverlayParticipant 
     deafened: false,
     away: false,
     screenSharing: false,
+    watchers: [],
     cameraOn: false,
     connectionQuality: "unknown",
     joinedAt: null,
@@ -81,5 +83,31 @@ describe("voice overlay presentation", () => {
     expect(normalizeVoiceOverlayLocationLabel("Room")).toBe("room");
     expect(normalizeVoiceOverlayLocationLabel(" Nest ")).toBe("nest");
     expect(normalizeVoiceOverlayLocationLabel(" ")).toBe("nest");
+  });
+});
+
+describe("shareWatchersForOverlay", () => {
+  test("lists others watching each share, by name, without you or the sharer", () => {
+    const person = (participantId: string, displayName: string, watching: string[], isLocal = false) => ({
+      participantId,
+      displayName,
+      isLocal,
+      audioMuted: false,
+      speaking: false,
+      connectionQuality: "good" as const,
+      watching,
+    });
+    const videoMixer = {
+      participants: [
+        person("me", "Me", ["sara"], true),
+        person("omid", "Omid", ["sara", "omid"]),
+        person("ali", "Ali", ["sara"]),
+        person("sara", "Sara", []),
+      ],
+    } as unknown as VideoMixerState;
+    const names: Record<string, string> = { omid: "Omid", ali: "Ali" };
+    const watchers = shareWatchersForOverlay(videoMixer, (id) => names[id] ?? id);
+    expect(watchers.get("sara")).toEqual(["ali", "omid"]);
+    expect(watchers.has("omid")).toBe(false);
   });
 });

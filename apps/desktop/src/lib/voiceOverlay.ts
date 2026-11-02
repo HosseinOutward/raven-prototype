@@ -156,6 +156,8 @@ export interface VoiceOverlayParticipant {
   /** "Back in a bit". */
   away: boolean;
   screenSharing: boolean;
+  /** Others watching this person's screen share, by user id, in name order. */
+  watchers: string[];
   cameraOn: boolean;
   connectionQuality: VoiceOverlayConnectionQuality;
   /** When they joined the call (ISO 8601); the card keeps people in this order. */
@@ -204,8 +206,13 @@ export const voiceOverlayCommands = {
   setContentSize: (size: VoiceOverlayContentSize) => invoke<void>("overlay_set_content_size", { size }),
   /** A button or scroll on the card; the main window runs it through the dock's own path. */
   action: (action: VoiceOverlayAction) => invoke<void>("overlay_action", { action }),
-  /** The button went down on the card: follow the cursor until release, then snap and anchor. */
-  drag: () => invoke<VoiceOverlaySettings>("overlay_drag"),
+  /**
+   * The button went down on the card: follow the cursor until release, then snap and anchor.
+   * `dragId` grows with each drag; `dragRelease` with the same id ends it.
+   */
+  drag: (dragId: number) => invoke<VoiceOverlaySettings>("overlay_drag", { dragId }),
+  /** The button came up on the card. A game in front can hide that from Rust, so the card tells it. */
+  dragRelease: (dragId: number) => invoke<void>("overlay_drag_release", { dragId }),
   resetPosition: () => invoke<VoiceOverlaySettings>("overlay_reset_position"),
   getLayout: () => invoke<VoiceOverlayLayout>("overlay_get_layout"),
   getSnapshot: () => invoke<VoiceOverlaySnapshot>("overlay_get_snapshot"),
@@ -336,6 +343,7 @@ export function buildVoiceOverlaySnapshot({
     screenSharing.add(user.id);
   }
   const cameraUsers = cameraUserIdsForOverlay(videoMixer, user.id);
+  const watchers = shareWatchersForOverlay(videoMixer, (userId) => names.get(userId) ?? userId);
   const liveKitSpeaking = new Map<string, boolean>();
   for (const participant of videoMixer?.participants ?? []) {
     const userId = stripSidecarIdentity(participant.participantId);
@@ -376,6 +384,7 @@ export function buildVoiceOverlaySnapshot({
         deafened: callStates.get(participant.userId)?.deafened ?? false,
         away: callStates.get(participant.userId)?.away ?? false,
         screenSharing: screenSharing.has(participant.userId),
+        watchers: screenSharing.has(participant.userId) ? (watchers.get(participant.userId) ?? []) : [],
         cameraOn: cameraUsers.has(participant.userId),
         connectionQuality: connectionQuality.get(participant.userId) ?? "unknown",
         joinedAt: participant.joinedAt,
@@ -391,6 +400,25 @@ function overlayConnectionQuality(quality: VideoConnectionQuality): VoiceOverlay
 
 export function normalizeVoiceOverlayLocationLabel(locationLabel: string) {
   return locationLabel.trim().toLowerCase() || "nest";
+}
+
+/** Who is watching whose share, by user id: others only, as on the stage's watcher stack. */
+export function shareWatchersForOverlay(videoMixer: VideoMixerState | null, nameOf: (userId: string) => string) {
+  const watchers = new Map<string, string[]>();
+  for (const person of videoMixer?.participants ?? []) {
+    if (person.isLocal) continue;
+    const watcherId = stripSidecarIdentity(person.participantId);
+    if (!watcherId) continue;
+    for (const target of person.watching ?? []) {
+      const sharerId = stripSidecarIdentity(target);
+      if (!sharerId || sharerId === watcherId) continue;
+      const list = watchers.get(sharerId) ?? [];
+      if (!list.includes(watcherId)) list.push(watcherId);
+      watchers.set(sharerId, list);
+    }
+  }
+  for (const list of watchers.values()) list.sort((left, right) => nameOf(left).localeCompare(nameOf(right)));
+  return watchers;
 }
 
 export function cameraUserIdsForOverlay(videoMixer: VideoMixerState | null, localUserId: string) {

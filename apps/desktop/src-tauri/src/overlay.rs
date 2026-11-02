@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     time::Duration,
 };
 
@@ -430,6 +433,8 @@ pub struct VoiceOverlayParticipant {
     /// "Back in a bit": a marker with no time or duration.
     pub away: bool,
     pub screen_sharing: bool,
+    /// Others watching this person's screen share, by user id.
+    pub watchers: Vec<String>,
     pub camera_on: bool,
     pub connection_quality: VoiceOverlayConnectionQuality,
     /// When they joined the call (ISO 8601); the card keeps people in this order.
@@ -521,6 +526,9 @@ pub struct VoiceOverlayState {
     registered_hotkey: Mutex<Option<String>>,
     registration_error: Mutex<Option<String>>,
     window: Mutex<OverlayWindowState>,
+    /// The newest drag the card has seen the button come up for. The card numbers its
+    /// drags, so a release that arrives before its drag starts still ends it.
+    drag_released: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Default)]
@@ -618,6 +626,7 @@ pub fn new_voice_overlay_state() -> VoiceOverlayState {
             scale: 1.0,
             ..OverlayWindowState::default()
         }),
+        drag_released: Arc::new(AtomicU64::new(0)),
     }
 }
 
@@ -752,6 +761,7 @@ pub async fn overlay_set_content_size(
 pub async fn overlay_drag(
     app: AppHandle,
     state: State<'_, VoiceOverlayState>,
+    drag_id: u64,
 ) -> Result<VoiceOverlaySettingsView, VoiceOverlayError> {
     let current = state.settings.lock().map_err(state_poisoned)?.clone();
     let Some(window) = app.get_webview_window(VOICE_OVERLAY_LABEL) else {
@@ -764,8 +774,11 @@ pub async fn overlay_drag(
     {
         let handle = state.window.lock().map_err(state_poisoned)?.hwnd;
         if let Some(handle) = handle {
+            let released = state.drag_released.clone();
             let _ = tauri::async_runtime::spawn_blocking(move || {
-                native::follow_cursor_while_pressed(handle, DRAG_RELEASE_TIMEOUT)
+                native::follow_cursor_while_pressed(handle, DRAG_RELEASE_TIMEOUT, || {
+                    released.load(Ordering::SeqCst) >= drag_id
+                })
             })
             .await;
         }
@@ -790,6 +803,13 @@ pub async fn overlay_drag(
     emit_settings(&app, &view);
     emit_layout(&app);
     Ok(view)
+}
+
+/// The button came up on the card (or the card lost the pointer): drag `drag_id` ends.
+/// A game in front can hide the button's state from Raven, so the card says so itself.
+#[tauri::command]
+pub fn overlay_drag_release(state: State<'_, VoiceOverlayState>, drag_id: u64) {
+    state.drag_released.fetch_max(drag_id, Ordering::SeqCst);
 }
 
 /// Back to the default corner, for when the overlay can't be dragged (Interact: never)
@@ -1742,15 +1762,29 @@ mod native {
         Some((point.x, point.y))
     }
 
-    /// Move the window with the cursor while the primary button is held.
-    pub fn follow_cursor_while_pressed(handle: isize, timeout: std::time::Duration) {
+    /// Move the window with the cursor while the primary button is held. The button's state
+    /// comes from two places: Windows, and the card's own `released`. A game running as
+    /// administrator hides the button from `GetAsyncKeyState`, so that alone would end
+    /// the drag before it starts; the card's pointer events still arrive.
+    pub fn follow_cursor_while_pressed(
+        handle: isize,
+        timeout: std::time::Duration,
+        released: impl Fn() -> bool,
+    ) {
         let hwnd = from_handle(handle);
         let (Some(start_cursor), Some(start)) = (cursor_position(), window_rect(handle)) else {
             return;
         };
         let started = std::time::Instant::now();
         let mut last = start_cursor;
-        while unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0 && started.elapsed() < timeout {
+        let mut seen_down = false;
+        while !released() && started.elapsed() < timeout {
+            let down = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } < 0;
+            if down {
+                seen_down = true;
+            } else if seen_down {
+                break;
+            }
             if let Some(cursor) = cursor_position() {
                 if cursor != last {
                     last = cursor;

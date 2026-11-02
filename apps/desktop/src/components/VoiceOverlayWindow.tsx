@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Headphones, HeadphoneOff, Mic, MicOff, WifiLow, WifiOff } from "lucide-react";
+import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import type { KnockReply } from "@/lib/api";
+import { api, type KnockReply } from "@/lib/api";
 import { overlayAnswers } from "@/shells/ravenv1/knockReplies";
 import { cn } from "@/lib/utils";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
+import { splitWatcherStack, watchersTooltip, type WatchPerson } from "@/components/media/watchers";
 import { mediaHotkeyCommands } from "@/lib/mediaHotkeys";
 import {
   DEFAULT_VOICE_OVERLAY_BACKGROUND,
@@ -162,7 +163,16 @@ export function VoiceOverlayWindow() {
   const [linesTick, setLinesTick] = useState(0);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const lastSizeRef = useRef("");
-  const draggingRef = useRef(false);
+  // The drag in progress, if any, and the last number given out.
+  const dragIdRef = useRef<number | null>(null);
+  // Starts at the clock so a reloaded card never reuses a number Rust already saw released.
+  const dragSeqRef = useRef(Date.now());
+  const endDrag = () => {
+    const dragId = dragIdRef.current;
+    if (dragId === null) return;
+    dragIdRef.current = null;
+    void voiceOverlayCommands.dragRelease(dragId).catch(() => undefined);
+  };
   const rosterRef = useRef<RosterMemory | null>(null);
   const displayRef = useRef(display);
   displayRef.current = display;
@@ -610,6 +620,13 @@ export function VoiceOverlayWindow() {
   };
 
   const hasOthers = rowList.length > 0 || cards.folded.length > 0 || cards.hiddenOthers > 0;
+  const watchersOf = (participant: VoiceOverlayParticipant): WatchPerson[] | null =>
+    participant.screenSharing
+      ? (participant.watchers ?? []).map((userId) => ({
+          participantId: userId,
+          displayName: participants.find((person) => person.userId === userId)?.displayName ?? userId,
+        }))
+      : null;
   const personProps = { shape, avatarSize: scale.avatar, shadow: fillOff };
 
   const others: ReactNode[] = rowList.map(({ participant, ghost }) => {
@@ -628,6 +645,7 @@ export function VoiceOverlayWindow() {
         animateIn={arrived}
         leaving={ghost?.leaving ?? false}
         volume={volumeFor(participant, ghost)}
+        share={ghost ? null : watchersOf(participant)}
       />
     );
   });
@@ -661,6 +679,7 @@ export function VoiceOverlayWindow() {
       saying={saying}
       animateIn={false}
       leaving={false}
+      share={watchersOf(local)}
     />
   ) : null;
 
@@ -742,7 +761,7 @@ export function VoiceOverlayWindow() {
     ) : null;
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-transparent text-foreground">
+    <div className="relative h-screen w-screen select-none overflow-hidden bg-transparent text-foreground">
       <div
         ref={cardRef}
         style={cardStyle}
@@ -755,17 +774,25 @@ export function VoiceOverlayWindow() {
         onPointerDown={(event) => {
           if (!layout.interactive || event.button !== 0) return;
           if ((event.target as HTMLElement).closest("button, a, input")) return;
-          if (draggingRef.current) return;
+          // No text selection while dragging the card.
+          event.preventDefault();
+          if (dragIdRef.current !== null) return;
           // Rust moves the window while the button is held; the system's own move loop
-          // would activate the window and take focus from the game.
-          draggingRef.current = true;
+          // would activate the window and take focus from the game. The card keeps the
+          // pointer so it hears the button come up and tells Rust.
+          const dragId = ++dragSeqRef.current;
+          dragIdRef.current = dragId;
+          event.currentTarget.setPointerCapture(event.pointerId);
           void voiceOverlayCommands
-            .drag()
+            .drag(dragId)
             .catch(() => undefined)
             .finally(() => {
-              draggingRef.current = false;
+              if (dragIdRef.current === dragId) dragIdRef.current = null;
             });
         }}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
       >
         {participants.length || rowList.length ? (
           shape === "row" ? (
@@ -919,6 +946,7 @@ function PersonItem({
   animateIn,
   leaving,
   volume = null,
+  share = null,
 }: {
   participant: VoiceOverlayParticipant;
   shape: VoiceOverlayResolvedShape;
@@ -932,7 +960,10 @@ function PersonItem({
   animateIn: boolean;
   leaving: boolean;
   volume?: PersonVolume | null;
+  /** Sharing their screen: who else is watching it (maybe nobody yet). */
+  share?: WatchPerson[] | null;
 }) {
+  const shareNode = share ? <ShareMark watchers={share} isLocal={participant.isLocal} avatarSize={avatarSize} shadow={shadow} /> : null;
   const name = participant.isLocal ? "You" : participant.displayName;
   const motion = cn(animateIn && "animate-pop-in", leaving && "animate-pop-out");
   const label = `${name}${participant.speaking ? ", speaking" : ""}`;
@@ -980,6 +1011,7 @@ function PersonItem({
           {saying ? null : <StatusBadge status={status} shadow={shadow} />}
         </div>
         {nameNode}
+        {shareNode}
         {readout}
         {caption ? <span className="text-muted-foreground">{caption}</span> : null}
         {saying ? <SayingLine saying={saying} shadow={shadow} /> : null}
@@ -989,7 +1021,7 @@ function PersonItem({
 
   return (
     <div
-      className={cn("min-w-0", !showName && !saying && !caption && !status && "w-fit", motion)}
+      className={cn("min-w-0", !showName && !saying && !caption && !status && !share && "w-fit", motion)}
       aria-label={label}
       data-volume-user={volumeUser}
     >
@@ -997,6 +1029,7 @@ function PersonItem({
         <ParticipantAvatar participant={participant} size={avatarSize} />
         {nameNode}
         <div className={cn("flex shrink-0 items-center gap-1", showName && "ml-auto pl-3")}>
+          {shareNode}
           {readout}
           {saying ? (
             <SayingLine saying={saying} shadow={shadow} />
@@ -1009,6 +1042,40 @@ function PersonItem({
       </div>
       {volumeBar}
     </div>
+  );
+}
+
+/** A screen-share mark, then up to three faces of who is watching it and "+N". */
+function ShareMark({ watchers, isLocal, avatarSize, shadow }: { watchers: WatchPerson[]; isLocal: boolean; avatarSize: number; shadow: boolean }) {
+  const sharing = isLocal ? "Sharing your screen" : "Sharing their screen";
+  const label = watchers.length ? `${sharing}. ${watchersTooltip(watchers)}` : sharing;
+  const face = Math.max(14, Math.round(avatarSize * 0.67));
+  const { shown, extra } = splitWatcherStack(watchers);
+  return (
+    <span role="img" aria-label={label} title={label} className="flex shrink-0 items-center gap-1">
+      <MonitorUp className={cn("h-3.5 w-3.5 shrink-0 text-primary", shadow && ICON_SHADOW_CLASS)} aria-hidden />
+      {shown.length ? (
+        <span className="flex items-center">
+          {shown.map((watcher, index) => (
+            <span
+              key={watcher.participantId}
+              className={cn("rounded-full ring-1 ring-black/60", index > 0 && "-ml-1")}
+              style={{ width: face, height: face }}
+            >
+              <Avatar name={watcher.displayName} src={api.userAvatarUrl(watcher.participantId) ?? undefined} className="h-full w-full text-[9px]" />
+            </span>
+          ))}
+          {extra > 0 ? (
+            <span
+              className="-ml-1 flex items-center justify-center rounded-full bg-white/20 px-1 text-[10px] tabular-nums text-foreground ring-1 ring-black/60"
+              style={{ minWidth: face, height: face }}
+            >
+              +{extra}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+    </span>
   );
 }
 

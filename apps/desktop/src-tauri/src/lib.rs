@@ -48,7 +48,7 @@ use media_hotkeys::{
     media_hotkeys_get_settings, media_hotkeys_update_settings, new_media_hotkey_state,
 };
 use overlay::{
-    new_voice_overlay_state, overlay_action, overlay_drag, overlay_get_layout,
+    new_voice_overlay_state, overlay_action, overlay_drag, overlay_drag_release, overlay_get_layout,
     overlay_get_settings, overlay_get_snapshot, overlay_hide, overlay_is_supported,
     overlay_reset_position, overlay_set_content_size, overlay_show, overlay_toggle,
     overlay_update_settings, overlay_update_snapshot,
@@ -178,6 +178,7 @@ pub fn run() {
             overlay_hide,
             overlay_set_content_size,
             overlay_drag,
+            overlay_drag_release,
             overlay_reset_position,
             overlay_get_layout,
             overlay_get_snapshot,

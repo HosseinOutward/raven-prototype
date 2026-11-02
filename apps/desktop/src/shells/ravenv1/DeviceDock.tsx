@@ -24,6 +24,7 @@ import {
   remoteMicTracks,
   subscribeVoiceOverlayActions,
   voiceOverlayCommands,
+  type VoiceOverlaySnapshot,
 } from "@/lib/voiceOverlay";
 import { mediaHotkeyCommands, subscribeMediaHotkeys, type MediaHotkeySettings } from "@/lib/mediaHotkeys";
 import { useTalkingWhileMuted } from "@/lib/mutedSpeech";
@@ -149,6 +150,14 @@ export function DeviceDock({
   const [hotkeys, setHotkeys] = useState<MediaHotkeySettings | null>(null);
   const [connectedSince, setConnectedSince] = useState<string | null>(null);
   const lastOverlaySnapshotRef = useRef("");
+  const pendingOverlaySnapshotRef = useRef<{ snapshot: VoiceOverlaySnapshot; serialized: string } | null>(null);
+  const overlaySendTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (overlaySendTimerRef.current != null) window.clearTimeout(overlaySendTimerRef.current);
+    },
+    [],
+  );
   const presence = presenceFromApi(data.presence);
   const activeDetails = media.activeNestId ? data.getNestDetails(media.activeNestId) : undefined;
   const activeSession = media.activeNestId ? data.getActiveSession(media.activeNestId) ?? null : null;
@@ -438,6 +447,8 @@ export function DeviceDock({
       // Knocks reach the overlay with or without a call.
       const empty = { ...EMPTY_VOICE_OVERLAY_SNAPSHOT, headsUp: data.user ? headsUp : [] };
       const serialized = JSON.stringify(empty);
+      // A send still waiting for a call that has ended must not overwrite this one.
+      pendingOverlaySnapshotRef.current = null;
       if (lastOverlaySnapshotRef.current === serialized) return;
       lastOverlaySnapshotRef.current = serialized;
       void voiceOverlayCommands.updateSnapshot(empty).catch(() => undefined);
@@ -460,11 +471,18 @@ export function DeviceDock({
     });
     const serialized = JSON.stringify(snapshot);
     if (lastOverlaySnapshotRef.current === serialized) return;
-    const timer = window.setTimeout(() => {
-      lastOverlaySnapshotRef.current = serialized;
-      void voiceOverlayCommands.updateSnapshot(snapshot).catch(() => undefined);
+    // At most one send every 80 ms, always of the newest snapshot. Speaking levels change
+    // on every meter tick, so a debounce here would hold the card back while anyone talks.
+    pendingOverlaySnapshotRef.current = { snapshot, serialized };
+    if (overlaySendTimerRef.current != null) return;
+    overlaySendTimerRef.current = window.setTimeout(() => {
+      overlaySendTimerRef.current = null;
+      const pending = pendingOverlaySnapshotRef.current;
+      pendingOverlaySnapshotRef.current = null;
+      if (!pending || lastOverlaySnapshotRef.current === pending.serialized) return;
+      lastOverlaySnapshotRef.current = pending.serialized;
+      void voiceOverlayCommands.updateSnapshot(pending.snapshot).catch(() => undefined);
     }, 80);
-    return () => window.clearTimeout(timer);
   }, [
     activeDetails,
     activeSession,
