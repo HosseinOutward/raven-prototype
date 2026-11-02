@@ -517,8 +517,9 @@ func (s *Server) searchUsers(c *fiber.Ctx) error {
 		 COALESCE((SELECT fr.id FROM friend_requests fr WHERE fr.from_user_id = u.id AND fr.to_user_id = ? AND fr.status = 'pending' LIMIT 1), '')
 		 FROM users u
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
-		 WHERE LOWER(u.username) LIKE LOWER(?) ESCAPE '!'
-		    OR LOWER(COALESCE(up.display_name, '')) LIKE LOWER(?) ESCAPE '!'
+		 WHERE u.deleted_at IS NULL
+		   AND (LOWER(u.username) LIKE LOWER(?) ESCAPE '!'
+		    OR LOWER(COALESCE(up.display_name, '')) LIKE LOWER(?) ESCAPE '!')
 		 ORDER BY u.username
 		 LIMIT 12`,
 		actor.ID, actor.ID, actor.ID, pattern, pattern,
@@ -868,7 +869,7 @@ func (s *Server) addTreeMember(c *fiber.Ctx) error {
 	if role != treeRoleMember && !treeRoleAllows(actorRole, treeActionAssignRoles) {
 		return errTreeForbidden
 	}
-	user, err := s.findUserByUsername(strings.TrimSpace(body.Username))
+	user, err := s.liveUser(s.findUserByUsername(strings.TrimSpace(body.Username)))
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "user not found")
 	}
@@ -1858,9 +1859,9 @@ func (s *Server) canResolveKnock(userID string, knock Knock) (bool, error) {
 
 func (s *Server) findKnockTargetUser(userID, username string) (User, error) {
 	if strings.TrimSpace(userID) != "" {
-		return s.findUserByID(strings.TrimSpace(userID))
+		return s.liveUser(s.findUserByID(strings.TrimSpace(userID)))
 	}
-	return s.findUserByUsername(strings.TrimSpace(username))
+	return s.liveUser(s.findUserByUsername(strings.TrimSpace(username)))
 }
 
 func normalizeTreeRole(role string) string {

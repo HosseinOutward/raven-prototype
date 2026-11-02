@@ -25,7 +25,9 @@ type chatAccess struct {
 	// conversation.
 	SendDisabled bool
 	// PeerID is the other person in a direct message.
-	PeerID         string
+	PeerID string
+	// PeerDeleted is set when the other person in a direct message deleted their account.
+	PeerDeleted    bool
 	VisibleFromSeq int64
 	ReadSeq        int64
 	SharedReadSeq  int64
@@ -36,6 +38,9 @@ type chatAccess struct {
 func (a chatAccess) sendError() error {
 	if a.SendDisabled {
 		return errCapabilitySendMessages
+	}
+	if a.PeerDeleted {
+		return errChatPeerDeleted
 	}
 	return errChatFriendsOnly
 }
@@ -110,6 +115,11 @@ func (s *Server) chatAccessFor(q chatQuerier, conversationID, userID string) (ch
 				return chatAccess{}, err
 			}
 			access.CanSend = friends
+			var peerDeletedAt sql.NullString
+			if err := q.QueryRow(`SELECT deleted_at FROM users WHERE id = ?`, access.PeerID).Scan(&peerDeletedAt); err != nil {
+				return chatAccess{}, err
+			}
+			access.PeerDeleted = peerDeletedAt.Valid
 		}
 	case chatKindGroup:
 		if memberState.String != "joined" {

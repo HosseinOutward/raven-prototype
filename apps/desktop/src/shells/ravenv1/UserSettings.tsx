@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { PasswordChangeForm } from "./PasswordChangeForm";
 import { InvitationsSettings } from "./InvitationsSettings";
+import { YourDataSettings } from "./YourDataSettings";
 import { capabilitiesOf } from "@/lib/permissions";
-import { Bell, Check, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video } from "lucide-react";
+import { Bell, Check, Download, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
@@ -42,7 +43,7 @@ import type {
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
 
-export type UserSettingsSection = "profile" | "messages" | "sessions" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates" | "about";
+export type UserSettingsSection = "profile" | "messages" | "sessions" | "data" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates" | "about";
 
 const GROUPS: SettingsCategoryGroup[] = [
   {
@@ -51,6 +52,7 @@ const GROUPS: SettingsCategoryGroup[] = [
       { id: "profile", label: "Profile", icon: <UserIcon /> },
       { id: "messages", label: "Messages", icon: <MessageSquare /> },
       { id: "sessions", label: "Password and devices", icon: <ShieldCheck /> },
+      { id: "data", label: "Your data", icon: <Download /> },
       { id: "invitations", label: "Invitations", icon: <Ticket /> },
     ],
   },
@@ -154,6 +156,8 @@ export function UserSettingsView({
           <SessionSettings data={data} />
         </SettingsPage>
       );
+    case "data":
+      return <YourDataSettings data={data} onNavigate={onNavigate} />;
     case "appearance":
       return <AppearanceSettings data={data} />;
     case "audio-video":

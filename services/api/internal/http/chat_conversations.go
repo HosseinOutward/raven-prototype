@@ -24,7 +24,7 @@ func chatSummarySQL(one bool) string {
 	}
 	return fmt.Sprintf(`SELECT b.id, b.kind, b.name, b.topic, b.tree_id, b.last_seq, b.last_activity_ms, b.created_at,
 		b.notify, b.member_role, b.visible_from_seq, b.read_seq, b.hide_rev, b.archived, b.listed, b.tree_role,
-		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_read_at, b.peer_is_friend, b.shares_read,
+		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_read_at, b.peer_is_friend, b.peer_deleted, b.shares_read,
 		b.member_count, b.preview_seq, b.unread_count,
 		COALESCE(pm.id, ''), COALESCE(pm.sender_id, ''), COALESCE(NULLIF(TRIM(pmp.display_name), ''), pmu.username, ''),
 		COALESCE(pm.kind, ''), COALESCE(pm.body, ''), pm.system_json, COALESCE(pm.created_at, ''),
@@ -45,7 +45,8 @@ func chatSummarySQL(one bool) string {
 			CASE WHEN peer.user_id IS NOT NULL AND EXISTS (
 				SELECT 1 FROM friendships f WHERE f.user_id = cm.user_id AND f.friend_user_id = peer.user_id
 			) THEN 1 ELSE 0 END AS peer_is_friend,
-			CASE WHEN COALESCE(ms.read_dm, TRUE) AND COALESCE(ps.read_dm, TRUE) THEN 1 ELSE 0 END AS shares_read,
+			CASE WHEN pu.deleted_at IS NULL THEN 0 ELSE 1 END AS peer_deleted,
+				CASE WHEN COALESCE(ms.read_dm, TRUE) AND COALESCE(ps.read_dm, TRUE) THEN 1 ELSE 0 END AS shares_read,
 			CASE WHEN c.kind = 'nest'
 				THEN (SELECT COUNT(*) FROM tree_members x WHERE x.tree_id = c.tree_id AND x.state = 'joined')
 				ELSE (SELECT COUNT(*) FROM chat_members x WHERE x.conversation_id = c.id AND x.state = 'joined')
@@ -103,7 +104,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 	for rows.Next() {
 		var item ChatConversation
 		var memberRole, treeRole, peerID, peerUsername, peerName string
-		var archived, listed, peerIsFriend, sharesRead int
+		var archived, listed, peerIsFriend, peerDeleted, sharesRead int
 		var peerReadSeq, previewSeq int64
 		var peerReadAt sql.NullString
 		var preview ChatMessagePreview
@@ -113,7 +114,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 		if err := rows.Scan(
 			&item.ID, &item.Kind, &item.Name, &item.Topic, &item.TreeID, &item.LastSeq, &item.LastActivityMs, &item.CreatedAt,
 			&item.Notify, &memberRole, &item.VisibleFromSeq, &item.ReadSeq, &item.HideRev, &archived, &listed, &treeRole,
-			&peerID, &peerUsername, &peerName, &peerReadSeq, &peerReadAt, &peerIsFriend, &sharesRead,
+			&peerID, &peerUsername, &peerName, &peerReadSeq, &peerReadAt, &peerIsFriend, &peerDeleted, &sharesRead,
 			&item.MemberCount, &previewSeq, &item.UnreadCount,
 			&preview.ID, &preview.SenderID, &preview.SenderName, &preview.Kind, &previewBody, &previewSystem, &preview.CreatedAt,
 			&previewDeleted,
@@ -129,6 +130,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 			item.Role = "member"
 			item.Name = peerName
 			item.CanSend = peerIsFriend != 0
+			item.PeerDeleted = peerDeleted != 0
 			if peerID != "" {
 				item.Peer = &ChatUser{ID: peerID, Username: peerUsername, DisplayName: peerName}
 				if sharesRead != 0 {
@@ -671,17 +673,45 @@ func (s *Server) removeChatMember(c *fiber.Ctx) error {
 	if !leaving && !access.CanManage {
 		return errChatNotAllowed
 	}
-	var targetRole, targetState string
-	err = tx.QueryRow(`SELECT role, state FROM chat_members WHERE conversation_id = ? AND user_id = ?`, conversationID, targetID).Scan(&targetRole, &targetState)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && targetState != "joined") {
-		return fiber.NewError(fiber.StatusNotFound, "That person is not in this group.")
-	}
+	departure, err := s.chatGroupDepartureTx(tx, access, user, targetID, leaving, seq, now)
 	if err != nil {
 		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if !departure.groupGone {
+		s.publishChatMessage("message.created", departure.message, seq, nil, departure.recipients, time.Now())
+	}
+	s.publishChatEvent(ChatEvent{Type: "conversation.removed", ConversationID: conversationID}, []string{targetID})
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// chatDeparture is what taking someone out of a group leaves behind.
+type chatDeparture struct {
+	// groupGone is set when they were the last person, so the group was deleted.
+	groupGone  bool
+	message    ChatMessage
+	recipients []chatRecipient
+}
+
+// chatGroupDepartureTx takes targetID out of a group inside tx: they leave, or actor
+// removes them. seq is the conversation's new sequence number, already taken. A group
+// keeps an owner: when the owner goes, whoever has been in it longest takes over. Only
+// access.ConversationID and access.Kind are read.
+func (s *Server) chatGroupDepartureTx(tx *database.Tx, access chatAccess, actor User, targetID string, leaving bool, seq int64, now string) (chatDeparture, error) {
+	conversationID := access.ConversationID
+	var targetRole, targetState string
+	err := tx.QueryRow(`SELECT role, state FROM chat_members WHERE conversation_id = ? AND user_id = ?`, conversationID, targetID).Scan(&targetRole, &targetState)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && targetState != "joined") {
+		return chatDeparture{}, fiber.NewError(fiber.StatusNotFound, "That person is not in this group.")
+	}
+	if err != nil {
+		return chatDeparture{}, err
 	}
 	target, err := chatUserRef(tx, targetID)
 	if err != nil {
-		return err
+		return chatDeparture{}, err
 	}
 
 	state, event := "removed", "member_removed"
@@ -692,51 +722,38 @@ func (s *Server) removeChatMember(c *fiber.Ctx) error {
 		`UPDATE chat_members SET state = ?, role = 'member', left_at = ?, updated_at = ? WHERE conversation_id = ? AND user_id = ?`,
 		state, now, now, conversationID, targetID,
 	); err != nil {
-		return err
+		return chatDeparture{}, err
 	}
 
 	var remaining int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM chat_members WHERE conversation_id = ? AND state = 'joined'`, conversationID).Scan(&remaining); err != nil {
-		return err
+		return chatDeparture{}, err
 	}
 	if remaining == 0 {
 		// The last person left. A group nobody is in has nobody to keep it for.
-		if err := chatDeleteConversationTx(tx, conversationID); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		s.publishChatEvent(ChatEvent{Type: "conversation.removed", ConversationID: conversationID}, []string{targetID})
-		return c.SendStatus(fiber.StatusNoContent)
+		return chatDeparture{groupGone: true}, chatDeleteConversationTx(tx, conversationID)
 	}
 	if targetRole == "owner" {
-		// The group keeps an owner: whoever has been in it longest.
 		var heir string
 		if err := tx.QueryRow(
 			`SELECT user_id FROM chat_members WHERE conversation_id = ? AND state = 'joined' ORDER BY joined_at, user_id LIMIT 1`,
 			conversationID,
 		).Scan(&heir); err != nil {
-			return err
+			return chatDeparture{}, err
 		}
 		if _, err := tx.Exec(`UPDATE chat_members SET role = 'owner', updated_at = ? WHERE conversation_id = ? AND user_id = ?`, now, conversationID, heir); err != nil {
-			return err
+			return chatDeparture{}, err
 		}
 	}
-	message, err := chatInsertSystemMessage(tx, conversationID, user, seq, now, fiber.Map{"event": event, "user": target})
+	message, err := chatInsertSystemMessage(tx, conversationID, actor, seq, now, fiber.Map{"event": event, "user": target})
 	if err != nil {
-		return err
+		return chatDeparture{}, err
 	}
 	recipients, err := s.chatAudience(tx, access, "")
 	if err != nil {
-		return err
+		return chatDeparture{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	s.publishChatMessage("message.created", message, seq, nil, recipients, time.Now())
-	s.publishChatEvent(ChatEvent{Type: "conversation.removed", ConversationID: conversationID}, []string{targetID})
-	return c.SendStatus(fiber.StatusNoContent)
+	return chatDeparture{message: message, recipients: recipients}, nil
 }
 
 // updateChatConversation renames a group or a text nest, or changes its description.

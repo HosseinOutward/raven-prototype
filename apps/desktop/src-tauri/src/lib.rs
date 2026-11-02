@@ -5,6 +5,7 @@ use std::{
 
 use tauri::{Manager, RunEvent, WindowEvent};
 
+mod account_export;
 pub mod attachments;
 pub mod audio;
 mod diagnostics;
@@ -85,6 +86,7 @@ pub fn run() {
             attachments::attachment_discard,
             attachments::attachment_sweep,
             attachments::attachment_save,
+            account_export::save_export_file,
             audio_get_state,
             audio_get_capabilities,
             audio_get_network_totals,

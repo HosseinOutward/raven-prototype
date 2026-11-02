@@ -25,6 +25,8 @@ type AdminUser struct {
 	LastSeenAt         *string `json:"lastSeenAt"`
 	ActiveSessions     int     `json:"activeSessions"`
 	SpaceCount         int     `json:"spaceCount"`
+	// Deleted marks an account its owner deleted. Only the row remains, as a tombstone.
+	Deleted bool `json:"deleted"`
 }
 
 // AdminCapability is one capability for one account: the server's default, the account's
@@ -51,21 +53,23 @@ const adminUserSelect = `SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.displa
 	CASE WHEN u.must_change_password THEN 1 ELSE 0 END, u.password_changed_at, u.created_at, u.updated_at,
 	(SELECT MAX(a.last_accessed_at) FROM auth_sessions a WHERE a.user_id = u.id),
 	(SELECT COUNT(*) FROM auth_sessions a WHERE a.user_id = u.id AND a.revoked_at IS NULL AND a.expires_at > ?),
-	(SELECT COUNT(*) FROM tree_members tm JOIN trees t ON t.id = tm.tree_id WHERE tm.user_id = u.id AND tm.state = 'joined' AND t.status = 'active')
+	(SELECT COUNT(*) FROM tree_members tm JOIN trees t ON t.id = tm.tree_id WHERE tm.user_id = u.id AND tm.state = 'joined' AND t.status = 'active'),
+	CASE WHEN u.deleted_at IS NULL THEN 0 ELSE 1 END
 	FROM users u
 	LEFT JOIN user_preferences up ON up.user_id = u.id`
 
 func scanAdminUser(scanner rowScanner, user *AdminUser) error {
-	var mustChange int
+	var mustChange, deleted int
 	var passwordChangedAt, lastSeenAt sql.NullString
 	if err := scanner.Scan(
 		&user.ID, &user.Username, &user.DisplayName, &user.Role, &user.Status, &user.StatusReason,
 		&mustChange, &passwordChangedAt, &user.CreatedAt, &user.UpdatedAt,
-		&lastSeenAt, &user.ActiveSessions, &user.SpaceCount,
+		&lastSeenAt, &user.ActiveSessions, &user.SpaceCount, &deleted,
 	); err != nil {
 		return err
 	}
 	user.MustChangePassword = mustChange != 0
+	user.Deleted = deleted != 0
 	user.PasswordChangedAt = nullStringPtr(passwordChangedAt)
 	user.LastSeenAt = nullStringPtr(lastSeenAt)
 	return nil
@@ -78,6 +82,21 @@ func (s *Server) adminUser(userID string) (AdminUser, error) {
 		return AdminUser{}, fiber.NewError(fiber.StatusNotFound, "That account doesn’t exist.")
 	}
 	return user, err
+}
+
+var errAdminDeletedAccount = fiber.NewError(fiber.StatusConflict, "This account was deleted and can’t be changed.")
+
+// adminMutableUser is adminUser for the routes that change an account, which a deleted
+// one refuses.
+func (s *Server) adminMutableUser(userID string) (AdminUser, error) {
+	user, err := s.adminUser(userID)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	if user.Deleted {
+		return AdminUser{}, errAdminDeletedAccount
+	}
+	return user, nil
 }
 
 func (s *Server) adminListUsers(c *fiber.Ctx) error {
@@ -354,7 +373,7 @@ func (s *Server) requireAnotherAdmin(target AdminUser) error {
 // adminUpdateUser changes an account's display name or whether it is an administrator.
 func (s *Server) adminUpdateUser(c *fiber.Ctx) error {
 	actor := currentUser(c)
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}
@@ -420,7 +439,7 @@ func (s *Server) adminUpdateUser(c *fiber.Ctx) error {
 
 func (s *Server) adminSuspendUser(c *fiber.Ctx) error {
 	actor := currentUser(c)
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}
@@ -454,7 +473,7 @@ func (s *Server) adminSuspendUser(c *fiber.Ctx) error {
 
 func (s *Server) adminReactivateUser(c *fiber.Ctx) error {
 	actor := currentUser(c)
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}
@@ -475,7 +494,7 @@ func (s *Server) adminReactivateUser(c *fiber.Ctx) error {
 // once. The account is signed out everywhere and must choose its own at next sign-in.
 func (s *Server) adminResetPassword(c *fiber.Ctx) error {
 	actor := currentUser(c)
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}
@@ -500,7 +519,7 @@ func (s *Server) adminResetPassword(c *fiber.Ctx) error {
 
 func (s *Server) adminSetUserCapabilities(c *fiber.Ctx) error {
 	actor := currentUser(c)
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}

@@ -688,19 +688,7 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": message})
 	}
 
-	if _, err := tx.Exec(`DELETE FROM chat_reactions WHERE message_id = ?`, messageID); err != nil {
-		return err
-	}
-	if err := chatQueuePurgesTx(tx, `message_id = ?`, messageID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`UPDATE chat_messages SET body = '', deleted_at = ?, deleted_by_user_id = ?, changed_seq = ? WHERE id = ?`,
-		now, user.ID, seq, messageID,
-	); err != nil {
-		return err
-	}
-	recipients, err := s.chatAudience(tx, access, messageID)
+	recipients, err := s.chatEraseMessageTx(tx, access, messageID, user.ID, seq, now)
 	if err != nil {
 		return err
 	}
@@ -715,6 +703,25 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 	}
 	s.publishChatMessage("message.updated", message, seq, nil, recipients, committedAt)
 	return c.JSON(fiber.Map{"message": message})
+}
+
+// chatEraseMessageTx erases a message's text, its reactions and its files, and leaves the
+// marker. seq is the conversation's new sequence number, already taken. It returns who
+// is to be told. Only access.ConversationID, Kind and TreeID are read.
+func (s *Server) chatEraseMessageTx(tx *database.Tx, access chatAccess, messageID, actorID string, seq int64, now string) ([]chatRecipient, error) {
+	if _, err := tx.Exec(`DELETE FROM chat_reactions WHERE message_id = ?`, messageID); err != nil {
+		return nil, err
+	}
+	if err := chatQueuePurgesTx(tx, `message_id = ?`, messageID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE chat_messages SET body = '', deleted_at = ?, deleted_by_user_id = ?, changed_seq = ? WHERE id = ?`,
+		now, actorID, seq, messageID,
+	); err != nil {
+		return nil, err
+	}
+	return s.chatAudience(tx, access, messageID)
 }
 
 // hideChatMessage removes a message for the caller only. Nobody else is told and the

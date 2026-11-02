@@ -287,6 +287,7 @@ func (s *Server) routes() {
 	authenticated.Get("/preferences", s.getPreferences)
 	authenticated.Post("/preferences", s.updatePreferences)
 	authenticated.Post("/profile/avatar", s.uploadUserAvatar)
+	s.registerAccountExitRoutes(authenticated)
 	s.registerAdminRoutes(authenticated)
 	service := authenticated.Use(s.requireCompatibleClient)
 	s.registerChatRoutes(service)
@@ -994,7 +995,7 @@ func (s *Server) inviteUser(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid invitation payload")
 	}
-	invited, err := s.findUserByUsername(strings.TrimSpace(body.Username))
+	invited, err := s.liveUser(s.findUserByUsername(strings.TrimSpace(body.Username)))
 	if err != nil {
 		return fiber.NewError(fiber.StatusNotFound, "user not found")
 	}

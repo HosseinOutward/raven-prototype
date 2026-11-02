@@ -64,6 +64,8 @@ export function useRavenShellData(): RavenShellData {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Told once on the sign-in screen, then gone with the next attempt.
+  const [notice, setNotice] = useState("");
   const [serverUnreachable, setServerUnreachable] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [entryNotices, setEntryNotices] = useState<NestEntryNotice[]>([]);
@@ -477,6 +479,7 @@ export function useRavenShellData(): RavenShellData {
     async (username: string, password: string) => {
       setBusy(true);
       setError("");
+      setNotice("");
       try {
         await api.login(username, password);
         await refresh();
@@ -498,6 +501,7 @@ export function useRavenShellData(): RavenShellData {
     async (request: SignUpRequest) => {
       setBusy(true);
       setError("");
+      setNotice("");
       try {
         await api.signUp(request);
         await refresh();
@@ -511,10 +515,8 @@ export function useRavenShellData(): RavenShellData {
     [refresh],
   );
 
-  const logout = useCallback(() => {
-    // The request captures the session before it is cleared; the server marks the
-    // account offline as part of signing out.
-    void api.logout().catch(() => undefined);
+  // Forgets this sign-in and everything shown for it.
+  const forgetSignIn = useCallback(() => {
     api.clearSession();
     setPasswordChangeRequired(false);
     forgetUnsentMessages(localStorage);
@@ -528,6 +530,20 @@ export function useRavenShellData(): RavenShellData {
     setEntryNotices([]);
     setSavedAccounts(api.savedAccounts());
   }, []);
+
+  const logout = useCallback(() => {
+    // The request captures the session before it is cleared; the server marks the
+    // account offline as part of signing out.
+    void api.logout().catch(() => undefined);
+    forgetSignIn();
+  }, [forgetSignIn]);
+
+  // The server deleted this account and ended every session, so there is nothing to sign
+  // out of: forget it here and say so on the sign-in screen.
+  const accountDeleted = useCallback((host: string) => {
+    forgetSignIn();
+    setNotice(`Your account on ${host} is deleted. You’re signed out everywhere.`);
+  }, [forgetSignIn]);
 
   /** Per-server state is spread across module singletons, so switching reloads the page. */
   const switchAccount = useCallback((account: SavedAccount) => {
@@ -868,10 +884,12 @@ export function useRavenShellData(): RavenShellData {
     loading,
     busy,
     error,
+    notice,
     serverUnreachable,
     login,
     signUp,
     logout,
+    accountDeleted,
     switchAccount,
     addAccount,
     forgetAccount,

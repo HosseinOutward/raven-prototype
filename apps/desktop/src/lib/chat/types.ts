@@ -116,6 +116,8 @@ export interface ChatConversation {
   peer?: ChatUser;
   role: string;
   canSend: boolean;
+  /** The other person in a direct message deleted their account. */
+  peerDeleted?: boolean;
   canManage: boolean;
   memberCount: number;
   lastSeq: number;

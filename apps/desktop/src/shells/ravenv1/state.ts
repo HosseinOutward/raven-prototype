@@ -129,10 +129,14 @@ export interface RavenShellData {
   loading: boolean;
   busy: boolean;
   error: string;
+  /** Something to tell the person on the sign-in screen that is not a failure. */
+  notice: string;
   serverUnreachable: boolean;
   login: (username: string, password: string) => Promise<void>;
   signUp: (request: SignUpRequest) => Promise<void>;
   logout: () => void;
+  /** The server deleted this account: forget it and explain on the sign-in screen. */
+  accountDeleted: (host: string) => void;
   /** Make a saved account the active one and reload the page. */
   switchAccount: (account: SavedAccount) => void;
   /** Go to the sign-in screen with the current account kept, and reload. */

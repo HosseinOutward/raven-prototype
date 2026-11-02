@@ -148,14 +148,16 @@ type ChatMessagePreview struct {
 
 // ChatConversation is a conversation as one person sees it.
 type ChatConversation struct {
-	ID             string              `json:"id"`
-	Kind           string              `json:"kind"`
-	Name           string              `json:"name"`
-	Topic          string              `json:"topic"`
-	TreeID         string              `json:"treeId,omitempty"`
-	Peer           *ChatUser           `json:"peer,omitempty"`
-	Role           string              `json:"role"`
-	CanSend        bool                `json:"canSend"`
+	ID      string    `json:"id"`
+	Kind    string    `json:"kind"`
+	Name    string    `json:"name"`
+	Topic   string    `json:"topic"`
+	TreeID  string    `json:"treeId,omitempty"`
+	Peer    *ChatUser `json:"peer,omitempty"`
+	Role    string    `json:"role"`
+	CanSend bool      `json:"canSend"`
+	// PeerDeleted is set on a direct message whose other person deleted their account.
+	PeerDeleted    bool                `json:"peerDeleted,omitempty"`
 	CanManage      bool                `json:"canManage"`
 	MemberCount    int64               `json:"memberCount"`
 	LastSeq        int64               `json:"lastSeq"`
@@ -165,12 +167,12 @@ type ChatConversation struct {
 	ReadSeq        int64               `json:"readSeq"`
 	// PeerReadSeq is how far the other person in a direct message has read. It is present
 	// only when both people share read status.
-	PeerReadSeq    *int64 `json:"peerReadSeq,omitempty"`
+	PeerReadSeq *int64 `json:"peerReadSeq,omitempty"`
 	// PeerReadAt is when that position last moved.
 	PeerReadAt     *string `json:"peerReadAt,omitempty"`
-	HideRev        int64  `json:"hideRev"`
-	VisibleFromSeq int64  `json:"visibleFromSeq"`
-	Archived       bool   `json:"archived"`
+	HideRev        int64   `json:"hideRev"`
+	VisibleFromSeq int64   `json:"visibleFromSeq"`
+	Archived       bool    `json:"archived"`
 	// Notify is "default" (on for direct messages and groups, off for text nests), "on"
 	// or "off".
 	Notify    string `json:"notify"`
@@ -250,6 +252,11 @@ func (s *Server) chatRoute(operation string, handler fiber.Handler) fiber.Handle
 // chatLimiter caps how often one person may call a route. It is keyed by the account, not
 // the address: behind the reverse proxy every request has the proxy's address.
 func (s *Server) chatLimiter(route string, max int, window time.Duration) fiber.Handler {
+	return s.userLimiter(route, max, window, "You’re sending too quickly. Try again in a moment.")
+}
+
+// userLimiter is chatLimiter with its own wording. The limiter sets Retry-After.
+func (s *Server) userLimiter(route string, max int, window time.Duration, message string) fiber.Handler {
 	return limiter.New(limiter.Config{
 		Max:               max,
 		Expiration:        window,
@@ -259,7 +266,7 @@ func (s *Server) chatLimiter(route string, max int, window time.Duration) fiber.
 		},
 		LimitReached: func(c *fiber.Ctx) error {
 			s.metrics.chatRateLimited.inc(route)
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "You’re sending too quickly. Try again in a moment."})
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": message})
 		},
 	})
 }
@@ -268,6 +275,7 @@ var (
 	errChatNotFound      = fiber.NewError(fiber.StatusNotFound, "This conversation isn’t available.")
 	errChatMessageGone   = fiber.NewError(fiber.StatusNotFound, "That message isn’t available.")
 	errChatFriendsOnly   = fiber.NewError(fiber.StatusForbidden, "You can only message people you are friends with.")
+	errChatPeerDeleted   = fiber.NewError(fiber.StatusForbidden, "This account was deleted. You can still read your conversation.")
 	errChatNotAllowed    = fiber.NewError(fiber.StatusForbidden, "You are not allowed to do that here.")
 	errChatInvalidBody   = fiber.NewError(fiber.StatusBadRequest, "Raven couldn’t read that request.")
 	errChatGroupFull     = fiber.NewError(fiber.StatusBadRequest, "A group can have up to 50 people.")

@@ -263,7 +263,7 @@ func (s *Server) adminUploadServerAvatar(c *fiber.Ctx) error {
 // adminUploadUserAvatar replaces another account's profile picture, the same way the
 // account's own upload does, and tells the people who can see them.
 func (s *Server) adminUploadUserAvatar(c *fiber.Ctx) error {
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func (s *Server) adminUploadUserAvatar(c *fiber.Ctx) error {
 // adminRemoveUserAvatar clears another account's profile picture, so the apps show
 // their initial again.
 func (s *Server) adminRemoveUserAvatar(c *fiber.Ctx) error {
-	target, err := s.adminUser(c.Params("id"))
+	target, err := s.adminMutableUser(c.Params("id"))
 	if err != nil {
 		return err
 	}

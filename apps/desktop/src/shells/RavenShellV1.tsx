@@ -304,6 +304,7 @@ export function RavenShellV1() {
       <ShellLogin
         busy={data.busy}
         error={data.error}
+        notice={data.notice}
         serverName={data.serverProperties.name}
         serverDescription={data.serverProperties.description}
         serverAvatar={data.serverProperties.avatar}
@@ -597,6 +598,7 @@ function viewKey(view: RavenView) {
 function ShellLogin({
   busy,
   error,
+  notice,
   serverName,
   serverDescription,
   serverAvatar,
@@ -611,6 +613,7 @@ function ShellLogin({
 }: {
   busy: boolean;
   error: string;
+  notice: string;
   serverName: string;
   serverDescription: string;
   serverAvatar: string;
@@ -707,6 +710,7 @@ function ShellLogin({
               <Input id="ravenv1-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={creating ? "new-password" : "current-password"} />
             </label>
             {serverError || error ? <p role="alert" className="text-small text-destructive">{serverError || error}</p> : null}
+            {notice && !serverError && !error ? <p role="status" className="text-small text-muted-foreground">{notice}</p> : null}
             <Button type="submit" size="lg" className="w-full" disabled={busy || !serverUrl || !username || !password || (needsCode && !inviteCode.trim())}>
               {creating ? (busy ? "Creating your account…" : "Create account") : busy ? "Signing in…" : "Sign in"}
             </Button>

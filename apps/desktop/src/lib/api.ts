@@ -52,6 +52,13 @@ export function isUnauthorizedError(error: unknown): error is ApiError {
   return error instanceof ApiError && error.status === 401;
 }
 
+/** What stands between a person and deleting their account. */
+export interface AccountDeletionState {
+  ownedTrees: { id: string; name: string }[];
+  onlyAdmin: boolean;
+  inCall: boolean;
+}
+
 export type UserRole = "admin" | "user";
 export type NestType = "persistent" | "temporary";
 export type NestRole = "creator" | "moderator" | "participant";
@@ -699,6 +706,20 @@ export class ApiClient {
 
   logout() {
     return this.request<void>("/v1/auth/logout", { method: "POST" });
+  }
+
+  accountDeletion() {
+    return this.request<AccountDeletionState>("/v1/account/deletion");
+  }
+
+  /** A .zip of everything the person can see. Throws an ApiError with `retryAfterSeconds` when they asked too often. */
+  async exportAccount(): Promise<ArrayBuffer> {
+    const blob = await this.request<Blob>("/v1/account/export", { response: "blob" });
+    return blob.arrayBuffer();
+  }
+
+  deleteAccount(input: { password: string; confirmUsername: string; messages: "erase" | "keep" }) {
+    return this.request<void>("/v1/account/delete", { method: "POST", body: JSON.stringify(input) });
   }
 
   authSessions() {

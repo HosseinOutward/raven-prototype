@@ -356,7 +356,9 @@ function OpenConversation({
           />
         ) : (
           <p className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-5 text-center text-small text-muted-foreground">
-            You and {summary.name} are not friends at the moment. What was said stays here, but new messages can’t be sent.
+            {summary.peerDeleted
+              ? "This account was deleted. You can still read your conversation."
+              : `You and ${summary.name} are not friends at the moment. What was said stays here, but new messages can’t be sent.`}
           </p>
         )}
         {dropping && takesImages ? (
