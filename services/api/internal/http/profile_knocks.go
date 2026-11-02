@@ -25,6 +25,7 @@ type ProfileKnockState struct {
 	Outcome    string `json:"outcome"`
 	Reply      string `json:"reply,omitempty"`
 	ReplyUntil string `json:"replyUntil,omitempty"`
+	Message    string `json:"message,omitempty"`
 	ExpiresAt  string `json:"expiresAt"`
 	RetryAt    string `json:"retryAt"`
 }
@@ -50,8 +51,14 @@ func profileKnockState(knock Knock, now time.Time) *ProfileKnockState {
 			return nil
 		}
 		state.Reply, state.ReplyUntil, state.RetryAt = *knock.Reply, *knock.ReplyUntil, *knock.ReplyUntil
+		if knock.ReplyMessage != nil {
+			state.Message = *knock.ReplyMessage
+		}
 		switch {
 		case now.Before(until):
+			state.State = "replied"
+		case *knock.Reply == "message" && knockMessageShown(knock, now):
+			// The note stays readable for a while, though the knocker may already knock again.
 			state.State = "replied"
 		case *knock.Reply == "later" && now.Before(until.Add(knockReminderWindow)):
 			state.State = "reminder"
@@ -87,6 +94,21 @@ func profileKnockState(knock Knock, now time.Time) *ProfileKnockState {
 	}
 	state.RetryAt = retry.Format(time.RFC3339Nano)
 	return &state
+}
+
+func knockRetryPassed(state ProfileKnockState, now time.Time) bool {
+	retry, err := time.Parse(time.RFC3339Nano, state.RetryAt)
+	return state.State == "replied" && state.Reply == "message" && err == nil && !now.Before(retry)
+}
+
+// knockMessageShown says whether a message answer is still shown to the knocker: for
+// knockReminderWindow after it was sent.
+func knockMessageShown(knock Knock, now time.Time) bool {
+	if knock.ResolvedAt == nil {
+		return false
+	}
+	resolved, err := time.Parse(time.RFC3339Nano, *knock.ResolvedAt)
+	return err == nil && now.Before(resolved.Add(knockReminderWindow))
 }
 
 var profileKnockRank = map[string]int{"pending": 3, "replied": 2, "reminder": 1, "cooldown": 0}
@@ -170,8 +192,9 @@ func (s *Server) createProfileKnock(c *fiber.Ctx, fromUserID, toUserID, message 
 	if err != nil {
 		return err
 	}
-	// A due "Ask me later" is the moment to knock again, so it does not hold the knocker back.
-	if states := profileKnockStates(knocks, now); len(states) > 0 && states[0].State != "reminder" {
+	// A due "Ask me later" is the moment to knock again, and a message whose hold has
+	// passed (or never had one) is still shown, but neither holds the knocker back.
+	if states := profileKnockStates(knocks, now); len(states) > 0 && states[0].State != "reminder" && !knockRetryPassed(states[0], now) {
 		state := states[0]
 		if state.State == "pending" {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Your knock is still waiting for an answer.", "reasonCode": "knock_pending", "profileKnock": state})

@@ -24,7 +24,7 @@ A dismiss is quiet. The knocker is never told: their `profileKnock` stays `pendi
 
 ### Answers
 
-`POST /v1/knocks/:id/reply` answers a knock on the caller with `{"reply": ..., "until"?: RFC 3339}`. Only the person knocked on can answer, and only knocks on a person (not a Nest) take answers.
+`POST /v1/knocks/:id/reply` answers a knock on the caller with `{"reply": ..., "until"?: RFC 3339, "message"?: string}`. Only the person knocked on can answer, and only knocks on a person (not a Nest) take answers.
 
 | `reply` | Shown as | Status | `replyUntil` | Knocker may knock again |
 |---|---|---|---|---|
@@ -32,10 +32,11 @@ A dismiss is quiet. The knocker is never told: their `profileKnock` stays `pendi
 | `soon` | Coming in 10 min | `accepted` | now + 10 min | at `replyUntil` |
 | `later` | Ask me later | `declined` | `until`, 15 min to 24 h ahead | at `replyUntil`, with one reminder |
 | `not_today` | Not today | `declined` | `until`, 6 h to 36 h ahead | at `replyUntil` |
+| `message` | Send a message | `declined` with `until`, else `accepted` | `until`, 15 min to 24 h ahead, or now | at `replyUntil`, no reminder |
 
-`until` is required for `later` and `not_today` and ignored for the others; out-of-range times return `400`. Knocks carry `reply` and `replyUntil` once answered. Answers and new knocks on a person send live updates (`knock.replied`, `knock.created`) to the two people involved only.
+`until` is required for `later` and `not_today`, optional for `message`, and ignored for the others; out-of-range times return `400`. `message` is required for a `message` answer and rejected with any other: whitespace collapses to single spaces, and it must be 1 to 140 characters. Knocks carry `reply`, `replyUntil` and `replyMessage` once answered. Answers and new knocks on a person send live updates (`knock.replied`, `knock.created`) to the two people involved only.
 
-Successful sends return both `knock` and `profileKnock`. `GET /v1/home` includes the sender's active `profileKnocks` separately from incoming `pendingKnocks`. Each state has `knockId`, `userId`, `state`, `outcome`, `expiresAt`, `retryAt`, and when answered `reply` and `replyUntil`. `state` is `pending`, `cooldown`, `replied` (an answer holds; sends return `429` until `retryAt`), or `reminder` (an Ask me later is due; it lasts one hour and sending is allowed). Reloading preserves the limit; clients can count down to `retryAt` without repeated requests. User targets are serialized in the database so concurrent clients cannot create duplicates. Nest-only knocks and voice-room entry announcements are unaffected.
+Successful sends return both `knock` and `profileKnock`. `GET /v1/home` includes the sender's active `profileKnocks` separately from incoming `pendingKnocks`. Each state has `knockId`, `userId`, `state`, `outcome`, `expiresAt`, `retryAt`, and when answered `reply`, `replyUntil` and `message`. `state` is `pending`, `cooldown`, `replied` (an answer holds; sends return `429` until `retryAt`; a `message` answer stays `replied` for one hour after it was sent so the note can be read, and sending is allowed once `retryAt` has passed), or `reminder` (an Ask me later is due; it lasts one hour and sending is allowed). Reloading preserves the limit; clients can count down to `retryAt` without repeated requests. User targets are serialized in the database so concurrent clients cannot create duplicates. Nest-only knocks and voice-room entry announcements are unaffected.
 
 ## Health
 

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"raven/services/api/internal/auth"
 	"raven/services/api/internal/database"
@@ -68,6 +69,7 @@ type Knock struct {
 	ResolvedByUserID *string `json:"resolvedByUserId,omitempty"`
 	Reply            *string `json:"reply,omitempty"`
 	ReplyUntil       *string `json:"replyUntil,omitempty"`
+	ReplyMessage     *string `json:"replyMessage,omitempty"`
 }
 
 type PublicUser struct {
@@ -1146,23 +1148,24 @@ func (s *Server) listKnocks(c *fiber.Ctx) error {
 }
 
 func (s *Server) acceptKnock(c *fiber.Ctx) error {
-	return s.resolveKnock(c, "accepted", "", time.Time{})
+	return s.resolveKnock(c, "accepted", "", time.Time{}, "")
 }
 
 func (s *Server) declineKnock(c *fiber.Ctx) error {
-	return s.resolveKnock(c, "declined", "", time.Time{})
+	return s.resolveKnock(c, "declined", "", time.Time{}, "")
 }
 
 func (s *Server) dismissKnock(c *fiber.Ctx) error {
-	return s.resolveKnock(c, "dismissed", "", time.Time{})
+	return s.resolveKnock(c, "dismissed", "", time.Time{}, "")
 }
 
 // replyKnock answers a knock on the actor with Coming now, Coming in 10 min, Ask me
 // later or Not today. The knocker is told the answer and when they may knock again.
 func (s *Server) replyKnock(c *fiber.Ctx) error {
 	var body struct {
-		Reply string `json:"reply"`
-		Until string `json:"until"`
+		Reply   string `json:"reply"`
+		Until   string `json:"until"`
+		Message string `json:"message"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid knock answer")
@@ -1172,11 +1175,36 @@ func (s *Server) replyKnock(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return s.resolveKnock(c, status, body.Reply, until)
+	message := ""
+	if body.Reply == "message" {
+		if message, err = knockReplyMessage(body.Message); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(body.Message) != "" {
+		return fiber.NewError(fiber.StatusBadRequest, "only a message answer carries a message")
+	}
+	return s.resolveKnock(c, status, body.Reply, until, message)
+}
+
+// knockReplyMaxRunes is how long the note in a message answer may be.
+const knockReplyMaxRunes = 140
+
+// knockReplyMessage is the note on one line, at most knockReplyMaxRunes characters.
+func knockReplyMessage(raw string) (string, error) {
+	message := strings.Join(strings.Fields(raw), " ")
+	if message == "" {
+		return "", fiber.NewError(fiber.StatusBadRequest, "write a message to send")
+	}
+	if utf8.RuneCountInString(message) > knockReplyMaxRunes {
+		return "", fiber.NewError(fiber.StatusBadRequest, "a message can be at most "+strconv.Itoa(knockReplyMaxRunes)+" characters")
+	}
+	return message, nil
 }
 
 // knockReplyWindow checks an answer and returns the status it stores and the time it
 // holds until. Coming answers set their own time; the others carry the answerer's pick.
+// A message holds the knocker back only if the answerer picked a time; without one it
+// holds until now, so they can knock again at once.
 func knockReplyWindow(reply, rawUntil string, now time.Time) (time.Time, string, error) {
 	switch reply {
 	case "coming":
@@ -1184,6 +1212,10 @@ func knockReplyWindow(reply, rawUntil string, now time.Time) (time.Time, string,
 	case "soon":
 		return now.Add(10 * time.Minute), "accepted", nil
 	case "later", "not_today":
+	case "message":
+		if strings.TrimSpace(rawUntil) == "" {
+			return now, "accepted", nil
+		}
 	default:
 		return time.Time{}, "", fiber.NewError(fiber.StatusBadRequest, "unknown knock answer")
 	}
@@ -1201,7 +1233,7 @@ func knockReplyWindow(reply, rawUntil string, now time.Time) (time.Time, string,
 	return until.UTC(), "declined", nil
 }
 
-func (s *Server) resolveKnock(c *fiber.Ctx, status, reply string, replyUntil time.Time) error {
+func (s *Server) resolveKnock(c *fiber.Ctx, status, reply string, replyUntil time.Time, replyMessage string) error {
 	actor := currentUser(c)
 	knock, err := s.findKnock(c.Params("id"))
 	if err != nil {
@@ -1219,9 +1251,12 @@ func (s *Server) resolveKnock(c *fiber.Ctx, status, reply string, replyUntil tim
 	if reply != "" && (knock.NestID != nil || knock.ToUserID == nil) {
 		return fiber.NewError(fiber.StatusBadRequest, "only a knock on you can be answered this way")
 	}
-	var storedReply, storedUntil any
+	var storedReply, storedUntil, storedMessage any
 	if reply != "" {
 		storedReply, storedUntil = reply, replyUntil.Format(time.RFC3339Nano)
+	}
+	if replyMessage != "" {
+		storedMessage = replyMessage
 	}
 	now := database.Now()
 	tx, err := s.db.Begin()
@@ -1230,8 +1265,8 @@ func (s *Server) resolveKnock(c *fiber.Ctx, status, reply string, replyUntil tim
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`UPDATE knocks SET status = ?, resolved_at = ?, resolved_by_user_id = ?, reply = ?, reply_until = ? WHERE id = ? AND status = 'pending'`,
-		status, now, actor.ID, storedReply, storedUntil, knock.ID,
+		`UPDATE knocks SET status = ?, resolved_at = ?, resolved_by_user_id = ?, reply = ?, reply_until = ?, reply_message = ? WHERE id = ? AND status = 'pending'`,
+		status, now, actor.ID, storedReply, storedUntil, storedMessage, knock.ID,
 	); err != nil {
 		return err
 	}
@@ -1944,7 +1979,7 @@ func nullableStringPtr(value *string) any {
 func knockSelectSQL() string {
 	return `SELECT k.id, k.from_user_id, fu.username, COALESCE(NULLIF(TRIM(fup.display_name), ''), fu.username),
 		k.to_user_id, tu.username, COALESCE(NULLIF(TRIM(tup.display_name), ''), tu.username), k.nest_id, n.name,
-		k.status, k.message, k.created_at, k.expires_at, k.resolved_at, k.resolved_by_user_id, k.reply, k.reply_until
+		k.status, k.message, k.created_at, k.expires_at, k.resolved_at, k.resolved_by_user_id, k.reply, k.reply_until, k.reply_message
 		FROM knocks k
 		JOIN users fu ON fu.id = k.from_user_id
 		LEFT JOIN user_preferences fup ON fup.user_id = fu.id
@@ -1958,7 +1993,7 @@ func scanKnocks(rows *sql.Rows) ([]Knock, error) {
 	knocks := []Knock{}
 	for rows.Next() {
 		var knock Knock
-		var toUserID, toUsername, toDisplayName, nestID, nestName, message, resolvedAt, resolvedBy, reply, replyUntil sql.NullString
+		var toUserID, toUsername, toDisplayName, nestID, nestName, message, resolvedAt, resolvedBy, reply, replyUntil, replyMessage sql.NullString
 		if err := rows.Scan(
 			&knock.ID,
 			&knock.FromUserID,
@@ -1977,6 +2012,7 @@ func scanKnocks(rows *sql.Rows) ([]Knock, error) {
 			&resolvedBy,
 			&reply,
 			&replyUntil,
+			&replyMessage,
 		); err != nil {
 			return nil, err
 		}
@@ -1990,6 +2026,7 @@ func scanKnocks(rows *sql.Rows) ([]Knock, error) {
 		knock.ResolvedByUserID = nullStringPtr(resolvedBy)
 		knock.Reply = nullStringPtr(reply)
 		knock.ReplyUntil = nullStringPtr(replyUntil)
+		knock.ReplyMessage = nullStringPtr(replyMessage)
 		knocks = append(knocks, knock)
 	}
 	return knocks, rows.Err()

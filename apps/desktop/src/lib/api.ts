@@ -64,7 +64,7 @@ export type UserPresenceState = "offline" | "available" | "dnd" | "in_nest" | "i
 export type UserReachability = "open" | "around" | "focused" | "unavailable";
 export type KnockStatus = "pending" | "accepted" | "declined" | "dismissed" | "expired";
 /** An answer to a knock on a person: Coming now, Coming in 10 min, Ask me later, Not today. */
-export type KnockReply = "coming" | "soon" | "later" | "not_today";
+export type KnockReply = "coming" | "soon" | "later" | "not_today" | "message";
 export type UserRelationship = "self" | "none" | "friends" | "incoming_pending" | "outgoing_pending";
 export type UILabelPreference = "tree_nest" | "space_room";
 
@@ -349,6 +349,7 @@ export interface Knock {
   resolvedByUserId?: string | null;
   reply?: KnockReply | null;
   replyUntil?: string | null;
+  replyMessage?: string | null;
 }
 
 export interface Friend {
@@ -413,6 +414,8 @@ export interface ProfileKnockState {
   outcome: KnockStatus;
   reply?: KnockReply;
   replyUntil?: string;
+  /** The note sent with a "message" answer. */
+  message?: string;
   expiresAt: string;
   retryAt: string;
 }
@@ -1170,10 +1173,10 @@ export class ApiClient {
     return this.request<{ knock: Knock }>(`/v1/knocks/${id}/dismiss`, { method: "POST" });
   }
 
-  replyToKnock(id: string, reply: KnockReply, until?: string) {
+  replyToKnock(id: string, reply: KnockReply, until?: string, message?: string) {
     return this.request<{ knock: Knock }>(`/v1/knocks/${id}/reply`, {
       method: "POST",
-      body: JSON.stringify(until ? { reply, until } : { reply }),
+      body: JSON.stringify({ reply, ...(until ? { until } : {}), ...(message ? { message } : {}) }),
     });
   }
 

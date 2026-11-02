@@ -9,6 +9,7 @@ import {
   knockAnswers,
   knockerView,
   laterChoices,
+  messageSummary,
   newKnockAnswers,
   notTodayUntil,
   overlayAnswers,
@@ -134,4 +135,25 @@ test("answers become lines, and only new ones become notifications", () => {
   expect(newKnockAnswers(first.seen, "me", [soon], base).fresh).toEqual([]);
   const due = newKnockAnswers(first.seen, "me", [soon], at(2, 16, 0).getTime());
   expect(due.fresh).toEqual([{ name: "Sara", line: "Sara asked you to knock again now." }]);
+});
+
+test("a message says what the knocker sees, and holds them back only when a time was picked", () => {
+  const now = at(2, 14, 0);
+  expect(messageSummary("Sara", null, now)).toBe("Sara sees your note and can knock again any time.");
+  expect(messageSummary("Sara", at(2, 16, 0), now)).toBe(`Sara sees your note and can’t knock before ${clock(at(2, 16, 0))}. Raven won’t remind them.`);
+  expect(answerToast("message", "Sara", now, now)).toBe("Sent Sara your note.");
+  expect(answerToast("message", "Sara", at(2, 16, 0), now)).toBe(`Sent Sara your note. They can’t knock before ${clock(at(2, 16, 0))}.`);
+
+  const note: ProfileKnockState = {
+    ...sent, knockId: "k2", name: "Sara", state: "replied", reply: "message", message: "In a meeting",
+    replyUntil: at(2, 16, 0).toISOString(), retryAt: at(2, 16, 0).toISOString(),
+  };
+  expect(knockerView(note, "Sara", base)).toMatchObject({
+    disabled: true,
+    label: `Knock at ${clock(at(2, 16, 0))}`,
+    answerLine: `Sara wrote: “In a meeting”. You can knock again at ${clock(at(2, 16, 0))}.`,
+  });
+  // Once the hold passes, or with none, the note stays and Knock works.
+  expect(knockerView(note, "Sara", at(2, 16, 0).getTime())).toMatchObject({ disabled: false, label: "Knock", answerLine: "Sara wrote: “In a meeting”" });
+  expect(knockAnswers([note], base).map((item) => item.context)).toEqual([`Sara wrote: “In a meeting”. You can knock again at ${clock(at(2, 16, 0))}.`]);
 });

@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -162,4 +163,51 @@ func TestKnockDismissIsHiddenFromTheKnocker(t *testing.T) {
 	if state := senderKnockState(t, server, aliceToken, bob.ID); state == nil || state.State != "cooldown" || state.Outcome != "expired" {
 		t.Fatalf("wrong cooldown after the dismissed knock expired: %+v", state)
 	}
+}
+
+func TestKnockMessageReply(t *testing.T) {
+	t.Run("free to knock again", func(t *testing.T) {
+		server, aliceToken := newTestServer(t)
+		bob, bobToken := createTestUser(t, server, "bob")
+		knock := knockOn(t, server, aliceToken, bob.ID)
+		postJSON(t, server, bobToken, "/v1/knocks/"+knock.ID+"/reply", map[string]string{"reply": "message", "message": "  In a meeting,\n call me after  "}, http.StatusOK)
+		state := senderKnockState(t, server, aliceToken, bob.ID)
+		if state == nil || state.State != "replied" || state.Reply != "message" || state.Message != "In a meeting, call me after" {
+			t.Fatalf("wrong sender state: %+v", state)
+		}
+		// The note still shows, but it holds nobody back.
+		knockOn(t, server, aliceToken, bob.ID)
+	})
+	t.Run("held until a time", func(t *testing.T) {
+		server, aliceToken := newTestServer(t)
+		bob, bobToken := createTestUser(t, server, "bob")
+		knock := knockOn(t, server, aliceToken, bob.ID)
+		until := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339Nano)
+		postJSON(t, server, bobToken, "/v1/knocks/"+knock.ID+"/reply", map[string]string{"reply": "message", "message": "Busy", "until": until}, http.StatusOK)
+		state := senderKnockState(t, server, aliceToken, bob.ID)
+		if state == nil || state.State != "replied" || state.Message != "Busy" || state.RetryAt != until {
+			t.Fatalf("wrong sender state: %+v", state)
+		}
+		postJSON(t, server, aliceToken, "/v1/knocks", map[string]string{"toUserId": bob.ID}, http.StatusTooManyRequests)
+		// No reminder when the hold ends, and the note goes an hour after it was sent.
+		if _, err := server.db.Exec(`UPDATE knocks SET reply_until = ?, resolved_at = ? WHERE id = ?`,
+			time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), time.Now().UTC().Add(-61*time.Minute).Format(time.RFC3339Nano), knock.ID); err != nil {
+			t.Fatal(err)
+		}
+		if state := senderKnockState(t, server, aliceToken, bob.ID); state != nil {
+			t.Fatalf("message stayed past its hour: %+v", state)
+		}
+	})
+	t.Run("validation", func(t *testing.T) {
+		server, aliceToken := newTestServer(t)
+		bob, bobToken := createTestUser(t, server, "bob")
+		path := "/v1/knocks/" + knockOn(t, server, aliceToken, bob.ID).ID + "/reply"
+		in := func(d time.Duration) string { return time.Now().UTC().Add(d).Format(time.RFC3339Nano) }
+		postJSON(t, server, bobToken, path, map[string]string{"reply": "message", "message": "   "}, http.StatusBadRequest)
+		postJSON(t, server, bobToken, path, map[string]string{"reply": "message", "message": strings.Repeat("é", 141)}, http.StatusBadRequest)
+		postJSON(t, server, bobToken, path, map[string]string{"reply": "message", "message": "Hi", "until": in(5 * time.Minute)}, http.StatusBadRequest)
+		postJSON(t, server, bobToken, path, map[string]string{"reply": "message", "message": "Hi", "until": in(25 * time.Hour)}, http.StatusBadRequest)
+		postJSON(t, server, bobToken, path, map[string]string{"reply": "coming", "message": "Hi"}, http.StatusBadRequest)
+		postJSON(t, server, bobToken, path, map[string]string{"reply": "message", "message": strings.Repeat("é", 140)}, http.StatusOK)
+	})
 }

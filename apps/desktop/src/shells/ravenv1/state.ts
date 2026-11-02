@@ -180,8 +180,8 @@ export interface RavenShellData {
   joinNest: (nestId: string) => Promise<"joined" | "waiting">;
   knockUser: (userId: string) => Promise<void>;
   dismissKnock: (knockId: string) => Promise<void>;
-  /** Answer a knock on you. `until` is the time picked for Ask me later. */
-  replyToKnock: (knockId: string, reply: KnockReply, until?: Date) => Promise<void>;
+  /** Answer a knock on you. `until` is the time picked for Ask me later or a message's hold; `message` is its note. */
+  replyToKnock: (knockId: string, reply: KnockReply, until?: Date, message?: string) => Promise<void>;
   /** Hide an answer to your knock on this device. */
   clearKnockAnswer: (key: string) => void;
 }

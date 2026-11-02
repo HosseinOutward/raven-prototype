@@ -61,8 +61,11 @@ export function notTodayUntil(now: Date): Date {
   return at;
 }
 
-/** When an answer holds until. Ask me later has no time of its own: the answerer picks it. */
-export function answerUntil(reply: Exclude<KnockReply, "later">, now: Date): Date {
+/** The longest note a message answer can carry. */
+export const KNOCK_MESSAGE_MAX = 140;
+
+/** When an answer holds until. Ask me later and a message have no time of their own: the answerer picks it. */
+export function answerUntil(reply: Exclude<KnockReply, "later" | "message">, now: Date): Date {
   if (reply === "coming") return new Date(now.getTime() + 5 * MINUTE);
   if (reply === "soon") return new Date(now.getTime() + 10 * MINUTE);
   return notTodayUntil(now);
@@ -75,6 +78,7 @@ export const answerLabels: Record<KnockReply, string> = {
   soon: "Coming in 10 min",
   later: "Ask me later…",
   not_today: "Not today",
+  message: "Send a message…",
 };
 
 /** The line under each answer in the menu: what {name} sees, what they can do, until when. */
@@ -82,6 +86,7 @@ export function answerHint(reply: KnockReply, name: string, now: Date): string {
   if (reply === "coming") return `${name} sees that you’re on your way.`;
   if (reply === "soon") return `${name} sees you’ll come at ${formatWhen(answerUntil("soon", now), now)}. They can knock again then.`;
   if (reply === "later") return `Pick a time. ${name} can’t knock before it, and Raven reminds them then.`;
+  if (reply === "message") return `Write ${name} a short note, and choose whether they can knock again.`;
   return `${name} sees you can’t today. They can knock again from ${formatWhen(notTodayUntil(now), now)}.`;
 }
 
@@ -94,11 +99,26 @@ export function laterHeading(name: string) {
   return `${name} can knock again at:`;
 }
 
+/** The question above the choices in the message dialog. */
+export function messageHoldQuestion(name: string) {
+  return `Can ${name} knock again?`;
+}
+
+/** What {name} will see and be able to do, said under the message before it is sent. */
+export function messageSummary(name: string, until: Date | null, now: Date): string {
+  return until
+    ? `${name} sees your note and can’t knock before ${formatWhen(until, now)}. Raven won’t remind them.`
+    : `${name} sees your note and can knock again any time.`;
+}
+
 /** What was sent, said once the answer has gone. */
 export function answerToast(reply: KnockReply, name: string, until: Date, now: Date): string {
   if (reply === "coming") return `Told ${name} you’re coming.`;
   if (reply === "soon") return `Told ${name} you’ll come at ${formatWhen(until, now)}.`;
   if (reply === "later") return `Raven will remind ${name} at ${formatWhen(until, now)}.`;
+  if (reply === "message") {
+    return until.getTime() > now.getTime() ? `Sent ${name} your note. They can’t knock before ${formatWhen(until, now)}.` : `Sent ${name} your note.`;
+  }
   return `Told ${name} not today.`;
 }
 
@@ -139,6 +159,14 @@ export function knockerView(state: ProfileKnockState | undefined, name: string, 
   if (state && isReminderDue(state, now)) {
     const line = `${name} asked you to knock again now.`;
     return { disabled: false, label: "Knock", description: line, answerLine: line };
+  }
+  if (state?.state === "replied" && state.reply === "message") {
+    // The note shows for a while, also after the knocker may knock again.
+    const held = now < Date.parse(state.retryAt);
+    const when = formatWhen(state.retryAt, at);
+    const note = `${name} wrote: “${state.message ?? ""}”`;
+    const line = held ? `${note}. You can knock again at ${when}.` : note;
+    return { disabled: held, label: held ? `Knock at ${when}` : "Knock", description: line, answerLine: line };
   }
   if (!state || now >= Date.parse(state.retryAt)) {
     return { disabled: false, label: "Knock", description: `A knock asks without demanding. ${name} can answer, or leave it.` };

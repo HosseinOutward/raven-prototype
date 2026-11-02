@@ -109,7 +109,7 @@ export function PendingList({
                     knock={item.knock}
                     name={item.from}
                     disabled={busy}
-                    onAnswer={(reply, until) => actions.run(key, () => data.replyToKnock(item.knock.id, reply, until))}
+                    onAnswer={(reply, until, message) => actions.run(key, () => data.replyToKnock(item.knock.id, reply, until, message))}
                     onDismiss={() => actions.run(key, () => data.dismissKnock(item.knock.id))}
                   >
                     {compact ? (
