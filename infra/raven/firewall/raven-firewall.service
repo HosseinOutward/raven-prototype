@@ -1,0 +1,14 @@
+[Unit]
+Description=Raven firewall (nftables table inet raven_fw)
+Wants=network-pre.target
+After=network-pre.target
+Before=network.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/raven-firewall-apply
+ExecStop=/usr/sbin/nft delete table inet raven_fw
+
+[Install]
+WantedBy=multi-user.target

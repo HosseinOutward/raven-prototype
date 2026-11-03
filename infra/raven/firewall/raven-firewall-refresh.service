@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh ArvanCloud CDN ranges in the Raven firewall
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/raven-firewall-refresh

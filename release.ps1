@@ -20,7 +20,7 @@ param(
   [string]$NotesFile,
   # The server a fresh install signs in to (people can change it on the sign-in screen).
   [string]$ApiUrl = "https://mimir.rvn.bluehour.cloud",
-  [string]$SshTarget = "vala",
+  [string]$SshTarget = "raven",
   [string]$WslDistro = "Ubuntu",
   # Build from a tree with uncommitted changes. For rehearsals, not for real releases.
   [switch]$AllowDirty,
@@ -45,7 +45,7 @@ Set-StrictMode -Version Latest
 $Root = $PSScriptRoot
 $Desktop = Join-Path $Root "apps\desktop"
 $PublicBase = "https://updates.rvn.bluehour.cloud"
-$RemoteRoot = "/home/ubuntu/services/raven/releases"
+$RemoteRoot = "/srv/raven/releases"
 $PublicKey = Join-Path $Desktop "src-tauri\updater\raven-updater.key.pub"
 $KeepVersions = 5
 $GitHubRepo = "raven-collective/raven-prototype"
