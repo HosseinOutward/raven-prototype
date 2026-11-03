@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
   ACCOUNTS_KEY,
+  accountCaption,
   readAccounts,
   removeBySession,
   sortForMenu,
@@ -29,6 +30,33 @@ function account(overrides: Partial<SavedAccount> = {}): SavedAccount {
     ...overrides,
   };
 }
+
+describe("accountCaption", () => {
+  test("a named server shows its name, without the username", () => {
+    const only = account();
+    expect(accountCaption(only, [only])).toEqual({ handle: undefined, server: "Alpha", serverIsHost: false });
+  });
+
+  test("an unnamed or default-named server shows its host", () => {
+    for (const serverName of ["", "Raven"]) {
+      const only = account({ serverName });
+      expect(accountCaption(only, [only])).toEqual({ handle: undefined, server: "a.example", serverIsHost: true });
+    }
+  });
+
+  test("two servers sharing a name show their hosts", () => {
+    const first = account();
+    const second = account({ serverUrl: "https://b.example", sessionId: "s2" });
+    expect(accountCaption(second, [first, second])).toEqual({ handle: undefined, server: "b.example", serverIsHost: true });
+  });
+
+  test("two people with one name on a server show their usernames", () => {
+    const first = account();
+    const second = account({ userId: "u2", sessionId: "s2", username: "mina2" });
+    expect(accountCaption(second, [first, second]).handle).toBe("@mina2");
+    expect(accountCaption(first, [first, account({ userId: "u3", displayName: "Other" })]).handle).toBeUndefined();
+  });
+});
 
 describe("saved accounts storage", () => {
   test("a missing, unreadable or non-list value reads as empty", () => {

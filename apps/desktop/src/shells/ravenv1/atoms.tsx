@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Tooltip } from "@/components/ui/tooltip";
-import { hostOf, type SavedAccount } from "@/lib/accounts";
+import { accountCaption, type SavedAccount } from "@/lib/accounts";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Info } from "lucide-react";
@@ -159,15 +159,17 @@ export function InfoTooltip({
 }
 
 /** A saved sign-in as two lines: who, then which server. Only the active one has a picture. */
-export function AccountSummary({ account, active }: { account: SavedAccount; active: boolean }) {
+export function AccountSummary({ account, accounts, active }: { account: SavedAccount; accounts: SavedAccount[]; active: boolean }) {
   const name = account.displayName || account.username;
+  const caption = accountCaption(account, accounts);
   return (
     <>
       <Avatar name={name} src={active ? api.userAvatarUrl(account.userId) : undefined} className="h-8 w-8" />
       <span className="min-w-0 flex-1" title={account.serverUrl}>
         <span className="block truncate text-small font-medium">{name}</span>
         <span className="block truncate text-caption text-muted-foreground">
-          @{account.username} · {account.serverName || "Raven"} <span className="rv-mono">{hostOf(account.serverUrl)}</span>
+          {caption.handle ? `${caption.handle} · ` : null}
+          {caption.serverIsHost ? <span className="rv-mono">{caption.server}</span> : caption.server}
         </span>
       </span>
     </>

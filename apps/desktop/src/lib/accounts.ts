@@ -26,6 +26,29 @@ export function hostOf(url: string) {
   }
 }
 
+/**
+ * The short line under an account's name: which server, and the username only
+ * when that is what tells two accounts apart. "Raven" is the name a server has
+ * when nobody named it, so it says nothing; the host says more.
+ */
+export function accountCaption(account: SavedAccount, all: SavedAccount[]) {
+  const label = (item: SavedAccount) => (item.serverName && item.serverName !== "Raven" ? item.serverName : hostOf(item.serverUrl));
+  const host = hostOf(account.serverUrl);
+  const named = label(account) !== host;
+  const nameIsShared = all.some((item) => item.serverUrl !== account.serverUrl && label(item) === label(account));
+  const twin = all.some(
+    (item) =>
+      item.serverUrl === account.serverUrl &&
+      item.userId !== account.userId &&
+      (item.displayName || item.username) === (account.displayName || account.username),
+  );
+  return {
+    handle: twin ? `@${account.username}` : undefined,
+    server: named && !nameIsShared ? label(account) : host,
+    serverIsHost: !named || nameIsShared,
+  };
+}
+
 export const ACCOUNTS_KEY = "raven.accounts";
 
 type AccountStorage = Pick<Storage, "getItem" | "setItem">;

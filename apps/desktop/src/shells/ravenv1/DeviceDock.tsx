@@ -7,7 +7,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -44,7 +44,7 @@ import {
   previewOutputVolume,
   volumeAfterKey,
 } from "@/lib/outputVolume";
-import { hostOf, type SavedAccount } from "@/lib/accounts";
+import { accountCaption, type SavedAccount } from "@/lib/accounts";
 import { api } from "@/lib/api";
 import { useAvatarVersions } from "@/lib/avatarVersions";
 import { focusPanelOnOpen } from "@/lib/focusHandoff";
@@ -578,7 +578,7 @@ export function DeviceDock({
                 </span>
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="start" className="min-w-[280px]">
+            <DropdownMenuContent side="top" align="start" className="w-[260px]">
               <DropdownMenuLabel>How you appear</DropdownMenuLabel>
               {SELECTABLE_PRESENCES.map((value) => (
                 <DropdownMenuItem key={value} onSelect={() => void data.setPresence(value).catch(() => undefined)}>
@@ -603,37 +603,44 @@ export function DeviceDock({
                 </>
               ) : null}
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>Accounts</DropdownMenuLabel>
-              {data.savedAccounts.map((account) => {
-                const active = account.serverUrl === api.getBaseUrl() && account.sessionId === api.getSessionId();
-                const name = account.displayName || account.username;
-                return (
-                  <div key={`${account.serverUrl}|${account.sessionId}`} className="group flex items-center">
-                    <DropdownMenuItem
-                      className="min-w-0 flex-1"
-                      onSelect={() => { if (!active) requestSwitch({ kind: "switch", account }); }}
-                    >
-                      <AccountSummary account={account} active={active} />
-                      {active ? <Check className="text-foreground" /> : null}
-                    </DropdownMenuItem>
-                    {active ? null : (
-                      <DropdownMenuItem
-                        className="w-8 shrink-0 justify-center px-0 text-muted-foreground opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
-                        aria-label={`Sign out of ${name} on ${account.serverName || hostOf(account.serverUrl)}`}
-                        title="Sign out"
-                        onSelect={() => void data.forgetAccount(account).catch(() => undefined)}
-                      >
-                        <LogOut />
-                      </DropdownMenuItem>
-                    )}
-                  </div>
-                );
-              })}
-              <DropdownMenuItem onSelect={() => requestSwitch({ kind: "add" })}>
-                <UserPlus className="text-muted-foreground" />
-                Add an account
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <ArrowLeftRight className="text-muted-foreground" />
+                  Switch account
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-[280px]">
+                  {data.savedAccounts.map((account) => {
+                    const active = account.serverUrl === api.getBaseUrl() && account.sessionId === api.getSessionId();
+                    const name = account.displayName || account.username;
+                    return (
+                      <div key={`${account.serverUrl}|${account.sessionId}`} className="group flex items-center">
+                        <DropdownMenuItem
+                          className="min-w-0 flex-1"
+                          onSelect={() => { if (!active) requestSwitch({ kind: "switch", account }); }}
+                        >
+                          <AccountSummary account={account} accounts={data.savedAccounts} active={active} />
+                          {active ? <Check className="text-foreground" /> : null}
+                        </DropdownMenuItem>
+                        {active ? null : (
+                          <DropdownMenuItem
+                            className="w-8 shrink-0 justify-center px-0 text-muted-foreground opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+                            aria-label={`Sign out of ${name} on ${accountCaption(account, data.savedAccounts).server}`}
+                            title="Sign out"
+                            onSelect={() => void data.forgetAccount(account).catch(() => undefined)}
+                          >
+                            <LogOut />
+                          </DropdownMenuItem>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => requestSwitch({ kind: "add" })}>
+                    <UserPlus className="text-muted-foreground" />
+                    Add an account
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuItem onSelect={() => onNavigate({ kind: "settings" })}>
                 <Settings className="text-muted-foreground" />
                 Settings
