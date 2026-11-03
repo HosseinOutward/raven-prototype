@@ -9,7 +9,7 @@
 //! - a failed check, download or install leaves the current version running;
 //! - Raven never restarts while the shell reports it is busy (in a Nest, capturing).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,11 +36,20 @@ pub enum UpdatePhase {
     Installing,
 }
 
+/// One earlier version's notes, from the manifest's `history`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PastRelease {
+    pub version: String,
+    pub notes: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailableUpdate {
     pub version: String,
     pub notes: String,
+    /// Notes of the versions before this one, for someone several versions behind.
+    pub history: Vec<PastRelease>,
     /// The signed installer itself, offered as a manual download if installing fails.
     pub download_url: String,
 }
@@ -175,6 +184,7 @@ impl UpdaterRuntime {
                 state.snapshot.available = Some(AvailableUpdate {
                     version: found.version.clone(),
                     notes: found.body.clone().unwrap_or_default(),
+                    history: past_releases(&found.raw_json),
                     download_url: found.download_url.to_string(),
                 });
                 state.bytes = None;
@@ -426,8 +436,26 @@ fn is_main_window_label(label: &str) -> bool {
     label == "main"
 }
 
+/// A manifest without a usable `history` still offers the update, with its own notes.
+fn past_releases(manifest: &serde_json::Value) -> Vec<PastRelease> {
+    manifest
+        .get("history")
+        .and_then(|history| serde_json::from_value(history.clone()).ok())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manifest_history_is_read_and_its_absence_is_harmless() {
+        let manifest = serde_json::json!({ "history": [{ "version": "0.1.6", "notes": "Fixes" }] });
+        let history = super::past_releases(&manifest);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].version, "0.1.6");
+        assert!(super::past_releases(&serde_json::json!({})).is_empty());
+        assert!(super::past_releases(&serde_json::json!({ "history": "nope" })).is_empty());
+    }
+
     #[test]
     fn endpoint_and_key_are_fixed_release_inputs() {
         assert_eq!(

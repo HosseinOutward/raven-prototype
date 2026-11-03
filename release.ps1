@@ -207,6 +207,19 @@ cp "`$base/out/Raven_${Version}_amd64.AppImage" "`$base/out/compatibility-linux.
   if (-not (Test-Path -LiteralPath $Destination)) { throw "The Linux build did not produce $Destination." }
 }
 
+# The notes of every version before this one, so someone several versions behind sees them all.
+function Get-NotesHistory([string]$Current) {
+  $currentCore = [version]($Current -replace '-.*$', '')
+  $entries = foreach ($file in Get-ChildItem -LiteralPath $Root -Filter "release-notes-*.md") {
+    $name = $file.BaseName -replace '^release-notes-', ''
+    $core = [version]::new()
+    if ([version]::TryParse(($name -replace '-.*$', ''), [ref]$core) -and $core -lt $currentCore) {
+      [ordered]@{ version = $name; notes = (Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName).Trim() }
+    }
+  }
+  return , @($entries)
+}
+
 function Invoke-Build {
   Assert-Version
   $dirty = @(& git -C $Root status --porcelain)
@@ -245,6 +258,7 @@ function Invoke-Build {
 
   $notesPath = if ($NotesFile) { $NotesFile } else { Join-Path $Root "release-notes-$Version.md" }
   $notes = if (Test-Path -LiteralPath $notesPath) { (Get-Content -Raw -Encoding UTF8 -LiteralPath $notesPath).Trim() } else { "" }
+  $history = Get-NotesHistory $Version
   $platforms = [ordered]@{}
   foreach ($entry in $artifacts.GetEnumerator()) {
     $platforms[$entry.Key] = [ordered]@{
@@ -255,6 +269,7 @@ function Invoke-Build {
   $manifest = [ordered]@{
     version   = $Version
     notes     = $notes
+    history   = $history
     pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     commit    = $commit
     platforms = $platforms

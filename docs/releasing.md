@@ -19,7 +19,9 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
 1. Set the same version in `apps/desktop/package.json`,
    `apps/desktop/src-tauri/tauri.conf.json`, `apps/desktop/src-tauri/Cargo.toml` and
    `packages/shared/package.json`.
-2. Optionally write `release-notes-<version>.md`. The app shows it as "What's new".
+2. Optionally write `release-notes-<version>.md`. The app shows it as "What's new". `build`
+   also puts the notes of every older `release-notes-*.md` in `latest.json`, so someone
+   several versions behind sees everything they are getting.
 3. Regenerate the licence notices and commit them with the version:
 
    ```powershell
