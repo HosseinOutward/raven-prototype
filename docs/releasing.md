@@ -49,6 +49,16 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
    Updates → Check now**. The same switch rewrites the download page at
    `https://updates.rvn.bluehour.cloud/` for first installs; `repoint` rewrites it too.
 
+   Two optional flags publish to the outside services too, for a PC that can reach them:
+
+   ```powershell
+   .\release.ps1 publish -Version 0.1.1 -Docker -GitHub
+   ```
+
+   `-Docker` pushes the [server images](#server-images) before the update host switches.
+   `-GitHub` creates the [GitHub release](#github-release) after it. Without the flags only
+   Vala is touched. If a flagged step fails, run `images` or `github` on its own afterwards.
+
 `.\release.ps1 status` shows what is on the server and what is being offered.
 
 A fresh install signs in to `https://mimir.rvn.bluehour.cloud` by default; `-ApiUrl` on
@@ -58,17 +68,43 @@ A fresh install signs in to `https://mimir.rvn.bluehour.cloud` by default; `-Api
 
 People who host their own Raven server run it from Docker Hub images
 (`soroushtaheri/raven-api`, `soroushtaheri/raven-admin`; guide: `docs/self-hosting.md`).
-Publish them when the API or admin dashboard changed in a release:
+Publish them with `publish -Docker`, or on their own:
 
 ```powershell
 .\release.ps1 images -Version X.Y.Z            # :X.Y.Z and :latest, linux/amd64 + linux/arm64
 .\release.ps1 images -Version X.Y.Z -DryRun     # builds both platforms, pushes nothing
 ```
 
-It builds the last commit with buildx in WSL (clean tree required; `-NoLatest` skips
-`:latest`). Run `docker login` inside WSL once; the password stays in WSL's Docker config.
-It prints each pushed image's digest. Paste `infra/self-host/DOCKERHUB-api.md` and `DOCKERHUB-admin.md` into their
-Docker Hub repository pages when it changes.
+It builds with buildx in WSL, from the commit this version's installers were built from.
+With no build of that version on this PC it builds the last commit instead, which needs a
+clean tree. `-DryRun` always builds the last commit. `-NoLatest` skips `:latest`. Run
+`docker login` inside WSL once; the password stays in WSL's Docker config. It prints each
+pushed image's digest. Paste `infra/self-host/DOCKERHUB-api.md` and `DOCKERHUB-admin.md`
+into their Docker Hub repository pages when it changes.
+
+## GitHub release
+
+The installers can also be downloaded from
+[GitHub](https://github.com/raven-collective/raven-prototype/releases). Publish them with
+`publish -GitHub`, or on their own from a PC that has this version's build:
+
+```powershell
+.\release.ps1 github -Version X.Y.Z
+```
+
+The release holds the Windows installer, the AppImage and `SHA256SUMS`, with the release
+notes and install steps as its text. The server is not attached: self-hosters use the
+Docker images, and the text links to them. Raven does not update from GitHub; it only ever
+reads `latest.json` on Vala.
+
+This makes code public, because the repository is. The command tags the commit the
+installers were built from as `vX.Y.Z` and pushes the tag. It also moves GitHub's `main`
+forward to that commit, and stops if GitHub's `main` has diverged. Commits after the
+release commit stay local. Rehearsal builds are refused. It needs `gh auth login` once.
+
+A release that already exists is left alone and compared with this build. It downloads
+the release back and stops if a file differs: bump the version instead. If an upload died
+half way, the command names the draft to delete before running it again.
 
 ## What a friend sees
 
