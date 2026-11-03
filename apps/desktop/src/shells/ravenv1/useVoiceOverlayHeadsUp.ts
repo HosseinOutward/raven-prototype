@@ -83,7 +83,7 @@ export function useVoiceOverlayHeadsUp({
     trackers.current = {
       knock: trackHeadsUp(trackers.current.knock, {
         candidates: [
-          ...knockCandidates({ knocks: current.knocks, enabled: current.settings.showKnocks, avatarUrl }),
+          ...knockCandidates({ knocks: current.knocks, enabled: current.settings.showKnocks, avatarUrl, now: Date.now() }),
           ...answerCandidates({ answers: current.answers, enabled: current.settings.showKnocks, avatarUrl }),
         ],
         ready: current.knocksReady,

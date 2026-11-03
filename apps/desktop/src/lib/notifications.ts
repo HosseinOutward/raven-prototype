@@ -58,6 +58,17 @@ export function newProfileKnocks(seen: SeenKnocks | null, userId: string, knocks
   return { seen: { userId, ids }, fresh };
 }
 
+/** How long ago a knock came, the way a person would say it: "just now", "6 min ago". */
+export function knockAge(createdAt: string, now: number) {
+  const minutes = Math.floor((now - new Date(createdAt).getTime()) / 60_000);
+  if (!(minutes >= 1)) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
 export const notificationCommands = {
   notifyMessage: (title: string, body: string) => invoke<boolean>("notify_message", { title, body }),
   supported: () => invoke<boolean>("notifications_supported"),

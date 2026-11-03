@@ -139,21 +139,21 @@ describe("tracking what is new", () => {
 
 describe("knocks", () => {
   test("a knock reads as the person's name and what they did", () => {
-    const [entry] = knockCandidates({ knocks: [knock("k1")], enabled: true, avatarUrl });
+    const [entry] = knockCandidates({ knocks: [knock("k1")], enabled: true, avatarUrl, now: Date.parse("2026-10-29T10:06:00Z") });
     expect(entry.eligible).toBe(true);
-    expect(entry.line).toMatchObject({ id: "knock:k1", kind: "knock", actorName: "Arash", text: "knocked", avatarUrl: "avatar/u_Arash" });
+    expect(entry.line).toMatchObject({ id: "knock:k1", kind: "knock", actorName: "Arash", text: "knocked 6 min ago", avatarUrl: "avatar/u_Arash" });
     expect(knockIdOfLine(entry.line.id)).toBe("k1");
     expect(knockIdOfLine("message:x")).toBeNull();
     expect(knockLineId("k1")).toBe("knock:k1");
   });
 
   test("the switch decides whether a knock may show", () => {
-    expect(knockCandidates({ knocks: [knock("k1")], enabled: false, avatarUrl })[0].eligible).toBe(false);
+    expect(knockCandidates({ knocks: [knock("k1")], enabled: false, avatarUrl, now: 0 })[0].eligible).toBe(false);
   });
 
   test("falls back to the username", () => {
     const named = { ...knock("k2"), fromDisplayName: "" };
-    expect(knockCandidates({ knocks: [named], enabled: true, avatarUrl })[0].line.actorName).toBe("arash");
+    expect(knockCandidates({ knocks: [named], enabled: true, avatarUrl, now: 0 })[0].line.actorName).toBe("arash");
   });
 });
 

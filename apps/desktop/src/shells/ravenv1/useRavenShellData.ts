@@ -7,7 +7,7 @@ import { ENTRY_CONNECTING_TTL_MS } from "@/lib/callArrivals";
 import { rememberActiveNest } from "@/lib/crashRecovery";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
-import { loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
+import { knockAge, loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
 import type { NestEntryNotice, PendingItem, RavenShellData, SelectablePresence, ShellPerson, UILabelCopy } from "./state";
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
 import { ApiError, type KnockReply, type ProfileKnockState } from "@/lib/api";
@@ -93,7 +93,7 @@ export function useRavenShellData(): RavenShellData {
     void audioCommands.playSoundCue("profileKnock").catch(() => undefined);
     if (!loadNotificationSettings().knocks) return;
     for (const knock of fresh) {
-      void notificationCommands.notifyKnock(knock.fromDisplayName || knock.fromUsername, "wants to reach you").catch(() => undefined);
+      void notificationCommands.notifyKnock(knock.fromDisplayName || knock.fromUsername, `Knocked ${knockAge(knock.createdAt, Date.now())}`).catch(() => undefined);
     }
   }, [home]);
 

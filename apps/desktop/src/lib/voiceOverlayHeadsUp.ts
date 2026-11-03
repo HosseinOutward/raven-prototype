@@ -6,6 +6,7 @@
 
 import type { Knock } from "@/lib/api";
 import type { ChatState } from "@/lib/chat/types";
+import { knockAge } from "@/lib/notifications";
 import type { VoiceOverlayCorner, VoiceOverlayHeadsUp, VoiceOverlayMessages, VoiceOverlayResolvedShape } from "./voiceOverlay";
 
 /** A knock stays on the card this long unless it is dismissed or answered first. */
@@ -98,10 +99,12 @@ export function knockCandidates({
   knocks,
   enabled,
   avatarUrl,
+  now,
 }: {
   knocks: ReadonlyArray<Knock>;
   enabled: boolean;
   avatarUrl: (userId: string) => string | null;
+  now: number;
 }): HeadsUpCandidate[] {
   return knocks.map((knock) => ({
     eligible: enabled,
@@ -110,7 +113,7 @@ export function knockCandidates({
       kind: "knock",
       actorName: knock.fromDisplayName || knock.fromUsername,
       avatarUrl: avatarUrl(knock.fromUserId),
-      text: "knocked",
+      text: `knocked ${knockAge(knock.createdAt, now)}`,
       answerable: !knock.nestId,
     },
   }));
