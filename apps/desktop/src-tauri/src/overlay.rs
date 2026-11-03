@@ -612,7 +612,7 @@ pub enum VoiceOverlayError {
     Io { message: String },
     #[error("voice overlay window failed: {message}")]
     Window { message: String },
-    #[error("voice overlay hotkey failed: {message}")]
+    #[error("{message}")]
     Shortcut { message: String },
 }
 
@@ -1581,7 +1581,6 @@ fn reconcile_hotkey_registration(
                 let _ = register_hotkey(app, current_hotkey);
             }
             *state.registered_hotkey.lock().map_err(state_poisoned)? = current;
-            set_registration_error(state, Some(err.to_string()))?;
             return Err(err);
         }
     }
@@ -1607,7 +1606,9 @@ fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), VoiceOverlayErro
         .on_shortcut(hotkey, |app, _shortcut, event| {
             handle_overlay_hotkey(app, event.state == ShortcutState::Pressed);
         })
-        .map_err(shortcut_error)
+        .map_err(|err| VoiceOverlayError::Shortcut {
+            message: crate::media_hotkeys::refused_hotkey_message(hotkey, &err.to_string()),
+        })
 }
 
 #[cfg(windows)]

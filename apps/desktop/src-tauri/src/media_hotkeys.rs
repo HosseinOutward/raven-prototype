@@ -75,7 +75,7 @@ pub enum MediaHotkeyError {
     Io { message: String },
     #[error("each media action needs a different hotkey")]
     Duplicate,
-    #[error("media hotkey failed: {message}")]
+    #[error("{message}")]
     Shortcut { message: String },
 }
 
@@ -313,7 +313,6 @@ fn reconcile_registration(
                 let _ = register(app, old_hotkey, old_action);
             }
             *state.registered.lock().map_err(state_poisoned)? = current;
-            set_registration_error(state, Some(error.to_string()))?;
             return Err(error);
         }
         newly_registered.push((hotkey.clone(), action.clone()));
@@ -343,7 +342,28 @@ fn register(app: &AppHandle, hotkey: &str, action: &str) -> Result<(), MediaHotk
                 let _ = app.emit(MEDIA_HOTKEY_EVENT, action.clone());
             }
         })
-        .map_err(shortcut_error)
+        .map_err(|error| MediaHotkeyError::Shortcut {
+            message: refused_hotkey_message(hotkey, &error.to_string()),
+        })
+}
+
+/// Say why the system refused a shortcut, in words the person can act on.
+///
+/// Windows holds F12 and Shift+F12 for the debugger, and reports them as already
+/// registered. The shortcut plugin only hands us the error as text, so a key held by
+/// another app can only be recognised from that text.
+#[cfg(any(windows, target_os = "linux", test))]
+pub(crate) fn refused_hotkey_message(hotkey: &str, error: &str) -> String {
+    let reserved = ["F12", "Shift+F12"]
+        .iter()
+        .any(|key| key.eq_ignore_ascii_case(hotkey));
+    if cfg!(windows) && reserved {
+        format!("Windows reserves {hotkey}, so Raven can't use it. Try another shortcut, like Control+F12.")
+    } else if error.contains("already registered") {
+        format!("{hotkey} is already in use, possibly by another app. Try a different shortcut.")
+    } else {
+        error.to_string()
+    }
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -396,6 +416,31 @@ mod tests {
         assert!(linux_session_support(Some("Wayland"), false, true).is_err());
 
         assert!(linux_session_support(Some("tty"), false, false).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn explains_keys_windows_reserves() {
+        let raw = "HotKey already registered: HotKey { mods: Modifiers(0x0), key: F12, id: 171 }";
+        for hotkey in ["F12", "Shift+F12", "shift+f12"] {
+            let message = refused_hotkey_message(hotkey, raw);
+            assert!(message.starts_with(&format!("Windows reserves {hotkey},")));
+        }
+    }
+
+    #[test]
+    fn explains_a_key_already_in_use_without_the_raw_error() {
+        let raw = "HotKey already registered: HotKey { mods: Modifiers(0x0), key: F9, id: 7 }";
+        let message = refused_hotkey_message("F9", raw);
+        assert!(message.starts_with("F9 is already in use"));
+        assert!(!message.contains("Modifiers"));
+        // Modifiers make F12 an ordinary key, which Windows does not reserve.
+        assert!(refused_hotkey_message("Control+F12", raw).starts_with("Control+F12 is already"));
+    }
+
+    #[test]
+    fn keeps_other_refusals_as_they_are() {
+        assert_eq!(refused_hotkey_message("Nope", "bad key"), "bad key");
     }
 
     #[test]
