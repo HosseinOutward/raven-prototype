@@ -51,7 +51,7 @@ import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, Video, VideoOff, LogOut } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, Video, VideoOff, LogOut } from "lucide-react";
 import { AccountSummary, ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { ChatStore } from "@/lib/chat/store";
@@ -1628,20 +1628,17 @@ function NetworkActivityIndicator({
   const sendingShareQuality = screenShareQualityNotice(activity.screenShareQuality, activity.screenShareCaptureFps);
   const receivingShareQuality = receivedScreenShareQualityNotice(activity.screenShareQuality);
   const measuring = !activity.active || !summary || activity.updatedAt == null;
-  const triggerLabel = [showConnection ? `Connection ${connectionLine}` : null, showRates ? summaryText : null].filter(Boolean).join(", ");
   return (
     <Popover onOpenChange={onOpenChange}>
       <Tooltip label="Network activity">
         <PopoverTrigger asChild>
           <button
             type="button"
-            aria-label={`Network activity: ${triggerLabel}`}
+            aria-label={showRates ? `Network activity: ${summaryText}` : "Network activity"}
             className="hidden h-9 shrink-0 items-center gap-2 rounded-control px-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground data-[state=open]:bg-secondary min-[1100px]:flex"
           >
-            {showConnection ? (
-              <span className={cn("rv-mono whitespace-nowrap text-caption tabular-nums", connectionWarning && "text-warning")}>{connectionLine}</span>
-            ) : null}
-            {!showRates ? null : measuring ? (
+            {/* Connection reads only in the popover, so with no rates the icon is what opens it. */}
+            {!showRates ? <Activity className="h-4 w-4" /> : measuring ? (
               <span className="text-caption">{summaryText}</span>
             ) : (
               <span className="rv-mono flex flex-col items-start text-caption leading-[14px] tabular-nums">
