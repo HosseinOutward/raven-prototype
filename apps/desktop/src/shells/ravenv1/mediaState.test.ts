@@ -5,6 +5,7 @@ import {
   isConfirmedMicrophoneActive,
   isConfirmedVideoSourceActive,
   isLocalVideoChosen,
+  joinMutedHoldsMic,
   localSharePause,
   localVideoStatus,
   microphonesToMuteBeforeJoin,
@@ -82,5 +83,14 @@ describe("what the user chose versus what is being sent", () => {
     expect(localVideoStatus(null)).toBe("off");
     expect(localVideoStatus({ ...camera, enabled: false })).toBe("off");
     expect(isLocalVideoChosen("off")).toBe(false);
+  });
+});
+
+describe("joinMutedHoldsMic", () => {
+  test("holds the mic off only outside a call, with Join muted on and the mic off", () => {
+    expect(joinMutedHoldsMic(null, false, true)).toBe(true);
+    expect(joinMutedHoldsMic("nest", false, true)).toBe(false);
+    expect(joinMutedHoldsMic(null, true, true)).toBe(false);
+    expect(joinMutedHoldsMic(null, false, false)).toBe(false);
   });
 });

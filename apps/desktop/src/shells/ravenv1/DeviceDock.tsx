@@ -58,7 +58,7 @@ import type { ChatStore } from "@/lib/chat/store";
 import { pendingTarget } from "./Inbox";
 import { useVoiceOverlayHeadsUp } from "./useVoiceOverlayHeadsUp";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
-import type { LocalVideoStatus } from "./mediaState";
+import { joinMutedHoldsMic, type LocalVideoStatus } from "./mediaState";
 import type {
   MeasuredNetworkCategory,
   NetworkActivityCategory,
@@ -133,6 +133,7 @@ export function DeviceDock({
   const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch>(null);
   const confirmLeave = useConfirmLeave();
   const mediaRef = useRef(media);
+  const alwaysJoinMutedRef = useRef(data.preferences.alwaysJoinMuted);
   const hotkeyActionRef = useRef<Set<string>>(new Set());
   const callActionRef = useRef<Set<ThumbnailToolbarAction>>(new Set());
   const [pendingCallActions, setPendingCallActions] = useState<ReadonlySet<ThumbnailToolbarAction>>(() => new Set());
@@ -141,6 +142,7 @@ export function DeviceDock({
   const setPresenceRef = useRef(data.setPresence);
   setPresenceRef.current = data.setPresence;
   mediaRef.current = media;
+  alwaysJoinMutedRef.current = data.preferences.alwaysJoinMuted;
   // The overlay's knock lines act on what the inbox holds now.
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -183,6 +185,10 @@ export function DeviceDock({
         ? current.deafenSupported && !current.busy
         : Boolean(current.activeNestId) && current.phase !== "leaving";
     if (!allowed) return;
+    if (action === "mic" && joinMutedHoldsMic(current.activeNestId, current.localMicEnabled, alwaysJoinMutedRef.current)) {
+      toast({ title: "You join muted", description: "You chose this in Settings. You can unmute once you’re in a call." });
+      return;
+    }
     void runGuardedThumbnailAction(callActionRef.current, action, () => {
       if (action === "mic") return current.toggleMic();
       if (action === "deafen") return current.toggleDeafen();
@@ -868,7 +874,9 @@ function DockDeviceControls({
         description={
           !media.audioSupported
             ? undefined
-            : media.localMicEnabled
+            : !inCall && data.preferences.alwaysJoinMuted
+              ? "You join muted. Change this in Settings."
+              : media.localMicEnabled
               ? inCall ? "People here can hear you." : `Your mic is on. You will be heard when you join a ${nest}.`
               : inCall ? "Nobody can hear you." : `You will join muted.`
         }

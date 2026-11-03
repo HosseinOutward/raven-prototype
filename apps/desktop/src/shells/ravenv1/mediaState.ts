@@ -10,6 +10,11 @@ export function isConfirmedMicrophoneActive(source: AudioSourceState) {
     && !source.channelStrip.mute.muted;
 }
 
+/** Outside a call, Join muted decides the mic: turning it on now would be undone on joining. */
+export function joinMutedHoldsMic(activeNestId: string | null | undefined, localMicEnabled: boolean, alwaysJoinMuted: boolean) {
+  return alwaysJoinMuted && activeNestId == null && !localMicEnabled;
+}
+
 export function microphonesToMuteBeforeJoin(sources: AudioSourceState[]) {
   return sources.filter((source) => source.sourceType === "microphone");
 }
