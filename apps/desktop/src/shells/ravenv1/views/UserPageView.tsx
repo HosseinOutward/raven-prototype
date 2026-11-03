@@ -166,7 +166,7 @@ export function UserPageView({
         )}
       </div>
 
-      {viewingPicture === person.id ? <ProfilePictureViewer userId={person.id} name={person.name} onClose={() => setViewingPicture(null)} /> : null}
+      {viewingPicture === person.id ? <ProfilePictureViewer src={api.userAvatarUrl(person.id)} alt={`${person.name}’s profile picture`} onClose={() => setViewingPicture(null)} /> : null}
       <ConfirmDialog
         open={confirmRemove}
         onOpenChange={setConfirmRemove}
