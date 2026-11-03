@@ -1,11 +1,11 @@
 # Releasing Raven
 
 Raven's desktop app updates itself with Tauri's signed updater. There is no update
-server and no dashboard: one file on Vala, `latest.json`, says which version is current,
+server and no dashboard: one file on the Raven host, `latest.json`, says which version is current,
 and one script, `release.ps1`, builds, signs and publishes.
 
 ```
-release.ps1 (this PC)                    Vala: ~/services/raven/releases/     a friend's Raven
+release.ps1 (this PC)                    raven: /srv/raven/releases/          a friend's Raven
   build Windows (here)                     0.1.0/Raven_0.1.0_x64-setup.exe     reads latest.json,
   build Linux (Docker in WSL)   scp ──►    0.1.0/Raven_0.1.0_amd64.AppImage    says "update available",
   sign and verify both (here)              0.1.0/latest.json                   downloads and restarts
@@ -45,7 +45,7 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
    .\release.ps1 publish -Version 0.1.1
    ```
 
-   This uploads the installers, checks their hashes on Vala, switches `latest.json`, then
+   This uploads the installers, checks their hashes on the Raven host, switches `latest.json`, then
    downloads everything back through the public address and compares it with what was
    built. Every Raven that is open notices within six hours, or at once with **Settings →
    Updates → Check now**. The same switch rewrites the download page at
@@ -97,7 +97,7 @@ The installers can also be downloaded from
 The release holds the Windows installer, the AppImage and `SHA256SUMS`, with the release
 notes and install steps as its text. The server is not attached: self-hosters use the
 Docker images, and the text links to them. Raven does not update from GitHub; it only ever
-reads `latest.json` on Vala.
+reads `latest.json` on the Raven host.
 
 This makes code public, because the repository is. The command tags the commit the
 installers were built from as `vX.Y.Z` and pushes the tag. It also moves GitHub's `main`
@@ -127,14 +127,15 @@ To stop a bad version spreading in the meantime, point `latest.json` back at an 
 
 Raven only installs versions newer than the one it is running, so this downgrades nobody.
 Someone already on the bad version reinstalls the older installer by hand; `repoint`
-prints its links. The newest five versions are kept on Vala for this.
+prints its links. The newest five versions are kept on the Raven host for this.
 
 A published version never changes. If a build was wrong, bump the version.
 
 ## Making old versions update
 
 When a server change breaks older clients, raise `RAVEN_MINIMUM_CLIENT_VERSION` in
-`/etc/vala/raven/.env` on Vala and recreate the `api` container. Older clients then get
+`/srv/raven/.env` on the Raven host and recreate the `api` container
+(`cd /srv/raven && docker compose up -d api`). Older clients then get
 a "Raven needs an update" screen with the update controls, instead of failing in odd ways.
 That is the only server-side update setting.
 
@@ -148,13 +149,13 @@ That is the only server-side update setting.
 - Installers are uploaded and hash-checked before `latest.json` moves, and `latest.json`
   is swapped by a rename, so a client never reads a half-published release.
 - The signing key (`%USERPROFILE%\.raven\updater\raven-updater.key`, password in the
-  DPAPI file beside it) never leaves this PC. Vala only stores files. If the key is lost,
+  DPAPI file beside it) never leaves this PC. The Raven host only stores files. If the key is lost,
   existing installs can no longer be updated and everyone reinstalls by hand, so keep a
   backup of that folder somewhere safe.
 
 ## One-time setup on the release PC
 
-- The usual desktop build tools (see `development.md`), and `ssh vala` working.
+- The usual desktop build tools (see `development.md`), and `ssh raven` working (root login with your key).
 - Docker inside the WSL distro (`Ubuntu` by default; `-WslDistro` picks another), with
   your user in the `docker` group:
 
@@ -184,29 +185,43 @@ bun run tauri dev
 ```
 
 Only debug builds read `RAVEN_UPDATE_ENDPOINT`. Delete
-`~/services/raven/releases/test` on Vala afterwards.
+`/srv/raven/releases/test` on the Raven host afterwards.
 
-## On Vala
+## On the Raven host
 
-- Compose service `releases` in `/srv/vala/deploy/raven/compose.yaml` serves
-  `/home/ubuntu/services/raven/releases` read-only.
-- The Vala edge configuration in `/srv/vala/deploy/edge/nginx.conf` proxies
-  `updates.rvn.bluehour.cloud` to that container.
+Production runs on its own machine, SSH host `raven` (95.38.188.65), in `/srv/raven`.
+The Compose file, edge config and firewall scripts are kept in `infra/raven/`.
+
+- Compose service `releases` serves `/srv/raven/releases` read-only. `release.ps1` writes
+  there as root over SSH.
+- The `edge` service (nginx, `/srv/raven/edge-nginx.conf`) proxies `updates.rvn.bluehour.cloud`
+  to it, and `mimir`, `admin` and `rtc` to the API, the dashboard and LiveKit.
 - `latest.json` is served with `Cache-Control: no-cache`; versioned files are cacheable.
+- Port 80 is open only to ArvanCloud's CDN ranges, and 7881/tcp and 50002-50100/udp to
+  everyone. The rules are `raven-firewall.service`; see `infra/raven/firewall/`.
+- Profile pictures and chat images are files in `/srv/raven/media` (no object store).
+- A nightly backup (04:41 UTC, 14 days) of the database and media is in `/srv/raven/backups`.
+  It is on the same machine, so it is not protection against losing the host.
+- The data as it was when Raven left Vala is in `/srv/raven/pre-migration/` (root only).
 
 ### Deploying the API and these services
 
-The deployed configuration and root-only environment files are on Vala:
+Secrets are in `/srv/raven/.env` (mode 600):
 
 ```bash
-sudo docker compose -p raven --env-file /etc/vala/raven/.env \
-  --env-file /etc/vala/raven/storage.env -f /srv/vala/deploy/raven/compose.yaml <command>
+ssh raven
+cd /srv/raven && docker compose <command>
 ```
 
 Back up the database before deploying an API image: the API applies its migrations when
-it starts, and migrations may not be reversible. The migrated deployment uses the exact
-running images, not a source checkout or a build on Vala. Build and transfer a new image
-deliberately, update the deployment definition, and verify the API and update endpoints.
-For edge changes, preserve the existing configuration and use `vala-rollout edge` after
-validating the new configuration. Raven's separate object store is configured in
-`/srv/vala/deploy/raven/storage-compose.yaml`; its credentials are under `/etc/vala/raven`.
+it starts, and migrations may not be reversible (`systemctl start raven-backup.service`).
+The images are loaded from a tarball (`docker save ... | ssh raven docker load`), not
+built on the host. Load the new image, then `docker compose up -d api admin`, and verify
+the API and update endpoints. Edge changes: edit `/srv/raven/edge-nginx.conf`, then
+`docker compose exec edge nginx -t && docker compose exec edge nginx -s reload`.
+
+## Vala
+
+Vala (`prod-core-01`) runs a separate, empty Raven server for testing, at
+`mimir.rvn.valapmis.com`, `rtc.rvn.valapmis.com` and `admin.rvn.valapmis.com`. It has no
+updates host; releases are never published there.
