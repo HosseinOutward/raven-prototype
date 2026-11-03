@@ -122,3 +122,10 @@ export function newShareKeys(previous: ReadonlySet<string> | null, current: Iter
   if (!previous) return [];
   return [...current].filter((key) => !previous.has(key));
 }
+
+/** The pause, said to the person it concerns: the sharer is told which app to restore. */
+export function sharePausedText(tile: { isLocal: boolean; displayName: string; shareAppName?: string }) {
+  return tile.isLocal
+    ? `Sharing is paused while ${tile.shareAppName || "the app"} is minimized.`
+    : `${tile.displayName} minimized the app. Sharing is paused.`;
+}

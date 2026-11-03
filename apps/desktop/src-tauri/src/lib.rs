@@ -11,6 +11,7 @@ pub mod audio;
 mod diagnostics;
 pub mod media_hotkeys;
 mod notifications;
+mod pip_window;
 pub mod overlay;
 mod thumbnail_toolbar;
 pub mod tray;
@@ -193,6 +194,8 @@ pub fn run() {
             notifications::notify_knock,
             notifications::notify_message,
             tray::tray_update,
+            tray::window_show_main,
+            pip_window::window_lock_aspect,
             tray::tray_set_unread,
             tray::tray_get_settings,
             tray::tray_update_settings,

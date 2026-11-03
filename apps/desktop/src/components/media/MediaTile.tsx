@@ -13,6 +13,7 @@ import {
   Minimize2,
   MonitorPause,
   MonitorUp,
+  PictureInPicture2,
   Pin,
   PinOff,
   WifiLow,
@@ -25,6 +26,7 @@ import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
+import { sharePausedText } from "./stageState";
 import { StreamInfo } from "./StreamInfo";
 import { WatcherStack, WatchingMark } from "./WatcherStack";
 import type { NativeMediaTile } from "./useNativeMediaTiles";
@@ -48,6 +50,9 @@ export function MediaTile({
   onTogglePin,
   onFitChange,
   onReceivingChange,
+  inPictureInPicture = false,
+  onPictureInPicture,
+  onBringBack,
   corner,
   leaving = false,
   className,
@@ -64,6 +69,11 @@ export function MediaTile({
   onFitChange: (fit: MediaFit) => void;
   /** Absent for video that cannot be turned off here (your own camera). */
   onReceivingChange?: (receiving: boolean) => void;
+  /** This video is in its own window; the tile holds its place and plays nothing. */
+  inPictureInPicture?: boolean;
+  /** Absent for video that cannot go into a window (your own screen). */
+  onPictureInPicture?: () => void;
+  onBringBack?: () => void;
   /** Drawn in the top-left corner: the person's extra audio sources. */
   corner?: React.ReactNode;
   /** The person or share has gone; the tile is only playing its exit. */
@@ -94,7 +104,9 @@ export function MediaTile({
   };
 
   const isShare = tile.source === "screenshare";
-  const fallback = reconnecting
+  const fallback = inPictureInPicture
+    ? { title: "In picture in picture", detail: "", loading: false }
+    : reconnecting
     ? { title: "Reconnecting…", detail: "Holding this spot", loading: true }
     : tile.mediaError
       ? { title: isShare ? "Screen share stopped working" : "Camera stopped working", detail: tile.mediaError, loading: false }
@@ -114,7 +126,8 @@ export function MediaTile({
     : null;
   const canShowInfo = Boolean(tile.streamId) && receiving && !tile.isLocal;
   // A filmstrip tile is too small for avatar, words and button: "Watch again" says it all.
-  const hiddenCompact = !receiving && !prominent && Boolean(receiveAction);
+  const hiddenCompact = !prominent && (inPictureInPicture || (!receiving && Boolean(receiveAction)));
+  const playing = Boolean(tile.streamUrl) && receiving && !inPictureInPicture;
   const paused = isShare && tile.sharePaused ? sharePausedText(tile) : null;
   const weak = tile.connectionQuality === "poor";
   const lost = tile.connectionQuality === "lost";
@@ -143,7 +156,7 @@ export function MediaTile({
         className,
       )}
     >
-      {tile.streamUrl && receiving ? (
+      {playing ? (
         <img
           src={tile.streamUrl}
           alt=""
@@ -166,7 +179,21 @@ export function MediaTile({
             )}
             {hiddenCompact ? null : <div className="mt-3 text-small text-muted-foreground">{fallback.title}</div>}
             {fallback.detail ? <div className="mt-0.5 text-caption text-subtle">{fallback.detail}</div> : null}
-            {!receiving && receiveAction ? (
+            {inPictureInPicture ? (
+              <Button
+                variant="secondary"
+                size="xs"
+                className={hiddenCompact ? undefined : "mt-3"}
+                aria-label={`Bring ${label} back`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onBringBack?.();
+                }}
+              >
+                <PictureInPicture2 />
+                Bring back
+              </Button>
+            ) : !receiving && receiveAction ? (
               <Button
                 variant="secondary"
                 size="xs"
@@ -184,14 +211,14 @@ export function MediaTile({
           </div>
         </div>
       )}
-      {playbackWaiting && tile.streamUrl && receiving ? (
+      {playbackWaiting && playing ? (
         <div className="absolute inset-0 flex items-center justify-center bg-black/40">
           <span className="inline-flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-caption text-white">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Video paused
           </span>
         </div>
       ) : null}
-      {paused && !playbackWaiting && tile.streamUrl && receiving ? (
+      {paused && !playbackWaiting && playing ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-4">
           <span role="status" className="inline-flex max-w-full animate-fade-in items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-caption text-white">
             <MonitorPause className="h-3.5 w-3.5 shrink-0" />
@@ -219,8 +246,9 @@ export function MediaTile({
                 <TileAction label={receiveAction.fullLabel} onClick={() => onReceivingChange?.(receiveAction.receiving)}>{receiveAction.icon}</TileAction>
               )
             ) : null}
+            {onPictureInPicture && playing ? <TileAction label="Picture in picture" onClick={onPictureInPicture}><PictureInPicture2 /></TileAction> : null}
             <TileAction label={pinned ? "Unpin" : "Pin"} onClick={onTogglePin}>{pinned ? <PinOff /> : <Pin />}</TileAction>
-        {canFullscreen ? <TileAction label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</TileAction> : null}
+        {canFullscreen && !inPictureInPicture ? <TileAction label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>{fullscreen ? <Minimize2 /> : <Maximize2 />}</TileAction> : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button ref={moreRef} type="button" className={TILE_ACTION_CLASS} aria-label={`More for ${label}`}>
@@ -252,16 +280,20 @@ export function MediaTile({
                 Stream info
               </DropdownMenuItem>
             ) : null}
-            {receiveAction || canShowInfo ? <DropdownMenuSeparator /> : null}
-            <DropdownMenuLabel>Fit</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => onFitChange("fit")}>
-              <span className="flex-1">Show the whole picture</span>
-              {fit === "fit" ? <Check /> : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onFitChange("fill")}>
-              <span className="flex-1">Fill the tile</span>
-              {fit === "fill" ? <Check /> : null}
-            </DropdownMenuItem>
+            {inPictureInPicture ? null : (
+              <>
+                {receiveAction || canShowInfo ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuLabel>Fit</DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => onFitChange("fit")}>
+                  <span className="flex-1">Show the whole picture</span>
+                  {fit === "fit" ? <Check /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onFitChange("fill")}>
+                  <span className="flex-1">Fill the tile</span>
+                  {fit === "fill" ? <Check /> : null}
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
           </div>
@@ -302,13 +334,6 @@ export function MediaTile({
       {isShare ? <WatcherStack watchers={tile.shareWatchers} onVideo className="absolute bottom-2 right-2" /> : null}
     </div>
   );
-}
-
-/** The pause, said to the person it concerns: the sharer is told which app to restore. */
-function sharePausedText(tile: NativeMediaTile) {
-  return tile.isLocal
-    ? `Sharing is paused while ${tile.shareAppName || "the app"} is minimized.`
-    : `${tile.displayName} minimized the app. Sharing is paused.`;
 }
 
 const TILE_ACTION_CLASS =

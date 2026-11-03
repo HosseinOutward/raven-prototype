@@ -26,6 +26,7 @@ import {
   voiceOverlayCommands,
   type VoiceOverlaySnapshot,
 } from "@/lib/voiceOverlay";
+import { subscribePipReturn } from "@/lib/pictureInPicture";
 import { mediaHotkeyCommands, subscribeMediaHotkeys, type MediaHotkeySettings } from "@/lib/mediaHotkeys";
 import { useTalkingWhileMuted } from "@/lib/mutedSpeech";
 import {
@@ -433,6 +434,15 @@ export function DeviceDock({
       void voiceOverlayCommands.hide().catch(() => undefined);
     }
   }, [connected]);
+
+  // "Back to the call" on a picture-in-picture window. The window has already raised Raven.
+  useEffect(() => {
+    const stop = subscribePipReturn(() => {
+      const nestId = mediaRef.current.activeNestId;
+      if (nestId) navigateRef.current({ kind: "nest", id: nestId });
+    });
+    return () => void stop.then((unlisten) => unlisten()).catch(() => undefined);
+  }, []);
 
   // The overlay's avatar URLs carry each picture's version; a change re-sends the snapshot.
   const avatarRevision = useAvatarVersions();

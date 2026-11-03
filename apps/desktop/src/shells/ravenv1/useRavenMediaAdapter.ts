@@ -17,6 +17,8 @@ import {
   WebRtcAudioProcessingSettings,
 } from "@/lib/audio";
 import { readAutoLevelPreference } from "@/lib/autoLevelPreference";
+import { pipKey, SELF_CAMERA_PIP, type PipTarget } from "@/lib/pictureInPicture";
+import { usePictureInPicture } from "./usePictureInPicture";
 import { commitOutputVolume, migrateLegacyOutputVolume, readLegacyOutputVolume } from "@/lib/outputVolume";
 import {
   CameraDevice,
@@ -236,6 +238,10 @@ export interface RavenMediaAdapterState {
   setSelfMediaPreviewMode: (mode: SelfMediaPreviewMode) => Promise<void>;
   setVideoPresentationProfile: (profile: VideoPresentationProfile) => Promise<void>;
   setLocalPreviewSurfaceVisible: (visible: boolean) => Promise<void>;
+  /** Videos in their own always-on-top window (`pipKey`). They all close when the call ends. */
+  pictureInPictureKeys: ReadonlySet<string>;
+  openPictureInPicture: (target: PipTarget) => void;
+  closePictureInPicture: (target: PipTarget) => void;
   retryIncomingAudio: () => Promise<void>;
   /** This listener's own volume for one incoming track. Nobody else hears the change. */
   setRemoteTrackVolume: (participantId: string, trackId: string, gainDb: number) => Promise<void>;
@@ -312,6 +318,7 @@ export function useRavenMediaAdapter(
   onStateChangedRef.current = onStateChanged;
   const selfMediaPreviewModeRef = useRef<SelfMediaPreviewMode>(initialSettings.selfMediaPreviewMode ?? "local");
   const localPreviewSurfaceVisibleRef = useRef(true);
+  const ownCameraInPictureInPictureRef = useRef(false);
   // What the native output currently has selected: `undefined` until the saved speaker
   // has been applied once, then the id (or null for "follow the system default").
   const appliedOutputRef = useRef<string | null | undefined>(undefined);
@@ -364,9 +371,10 @@ export function useRavenMediaAdapter(
   }, []);
 
   const syncLocalPreviewEnabled = useCallback(() => {
+    // Your own camera in its own window stays on screen with Raven hidden or the Mixer open.
     const enabled = selfMediaPreviewModeRef.current === "local"
-      && localPreviewSurfaceVisibleRef.current
-      && document.visibilityState !== "hidden";
+      && (ownCameraInPictureInPictureRef.current
+        || (localPreviewSurfaceVisibleRef.current && document.visibilityState !== "hidden"));
     return videoCommands.setLocalPreviewEnabled(enabled);
   }, []);
 
@@ -590,6 +598,12 @@ export function useRavenMediaAdapter(
     setError(message);
     setLastError({ message, kind, action });
   }, []);
+
+  const pictureInPicture = usePictureInPicture(activeNestId, setNonFatalError);
+  useEffect(() => {
+    ownCameraInPictureInPictureRef.current = pictureInPicture.keys.has(pipKey(SELF_CAMERA_PIP));
+    void syncLocalPreviewEnabled().catch(() => undefined);
+  }, [pictureInPicture.keys, syncLocalPreviewEnabled]);
 
   const clearError = useCallback(() => {
     setError("");
@@ -1533,6 +1547,9 @@ export function useRavenMediaAdapter(
     setSelfMediaPreviewMode,
     setVideoPresentationProfile,
     setLocalPreviewSurfaceVisible,
+    pictureInPictureKeys: pictureInPicture.keys,
+    openPictureInPicture: pictureInPicture.open,
+    closePictureInPicture: pictureInPicture.close,
     retryIncomingAudio,
     setRemoteTrackVolume,
     setRemoteTrackMuted,

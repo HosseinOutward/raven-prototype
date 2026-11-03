@@ -646,8 +646,8 @@ mod icon {
 #[cfg(windows)]
 mod platform {
     use super::{
-        action_for, icon, state_poisoned, IconVariant, MenuEntry, Rendered, TrayAction, TrayState,
-        ID_OPEN, ID_QUIT,
+        action_for, icon, show_main_window, state_poisoned, IconVariant, MenuEntry, Rendered,
+        TrayAction, TrayState, ID_OPEN, ID_QUIT,
     };
     use tauri::{
         image::Image,
@@ -679,15 +679,6 @@ mod platform {
             .build(app)
             .map(|_| ())
             .map_err(|error| error.to_string())
-    }
-
-    /// Bring the main window back from the tray, from minimised, or from behind.
-    pub(crate) fn show_main_window(app: &AppHandle) {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-        }
     }
 
     pub(super) fn render(
@@ -845,8 +836,20 @@ mod platform {
     }
 }
 
-#[cfg(windows)]
-pub(crate) use platform::show_main_window;
+/// Bring the main window back from the tray, from minimised, or from behind.
+pub(crate) fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// "Back to the call" on a picture-in-picture window.
+#[tauri::command]
+pub fn window_show_main(app: AppHandle) {
+    show_main_window(&app);
+}
 
 #[cfg(test)]
 mod tests {

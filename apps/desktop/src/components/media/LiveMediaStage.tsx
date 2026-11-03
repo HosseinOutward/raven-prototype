@@ -12,6 +12,7 @@ import { stripSidecarIdentity } from "@/lib/mediaIdentity";
 import { speakingGlowStyle, type ParticipantVoiceActivityMap } from "@/lib/speakingActivity";
 import { EMPTY_SATELLITES, type AudioSatellites, type SatelliteActions } from "./audioSatellites";
 import { SatelliteCluster } from "./SatelliteCluster";
+import { pipKey, pipTargetForTile, type PipTarget } from "@/lib/pictureInPicture";
 import { MediaTile, type MediaFit } from "./MediaTile";
 import { WatcherStack, WatchingMark } from "./WatcherStack";
 import { motionClass, useMotionArmed, useStageMotion, type MotionEntry } from "./stageMotion";
@@ -23,6 +24,8 @@ import { effectiveReceiving, receivingKey, useVideoReceiving } from "./useVideoR
 type StageView = "grid" | "focus";
 type StagePhase = "idle" | "joining" | "connected" | "leaving" | "error";
 type StageTile = NativeMediaTile & { watching: boolean };
+
+const NO_PICTURE_IN_PICTURE: ReadonlySet<string> = new Set();
 type StageNotice = { text: string; watch?: StageTile };
 type SatelliteProps = { satellites: AudioSatellites; actions: SatelliteActions; armed: boolean };
 
@@ -62,6 +65,9 @@ export function LiveMediaStage({
   roomLabel = "Nest",
   connectedPeerIds = null,
   callStates = null,
+  pictureInPictureKeys = NO_PICTURE_IN_PICTURE,
+  onOpenPictureInPicture,
+  onClosePictureInPicture,
   className,
 }: {
   title: string;
@@ -89,6 +95,10 @@ export function LiveMediaStage({
   connectedPeerIds?: ReadonlySet<string> | null;
   /** "Back in a bit" and deafened per person, by user id. Null while the server does not share them. */
   callStates?: ReadonlyMap<string, ParticipantCallState> | null;
+  /** Videos in their own window (`pipKey`). */
+  pictureInPictureKeys?: ReadonlySet<string>;
+  onOpenPictureInPicture?: (target: PipTarget) => void;
+  onClosePictureInPicture?: (target: PipTarget) => void;
   className?: string;
 }) {
   const stageRef = useRef<HTMLElement | null>(null);
@@ -281,6 +291,10 @@ export function LiveMediaStage({
       onTogglePin={() => togglePin(tile)}
       onFitChange={(fit) => setFitModes((current) => ({ ...current, [tile.key]: fit }))}
       onReceivingChange={receivingHandler(tile)}
+      inPictureInPicture={pictureInPictureKeys.has(pipKey(pipTargetForTile(tile)))}
+      // Your own screen in a window would only film itself.
+      onPictureInPicture={onOpenPictureInPicture && !(tile.isLocal && tile.source === "screenshare") ? () => onOpenPictureInPicture(pipTargetForTile(tile)) : undefined}
+      onBringBack={() => onClosePictureInPicture?.(pipTargetForTile(tile))}
     />
   );
 

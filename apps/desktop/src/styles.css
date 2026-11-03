@@ -116,6 +116,13 @@ body[data-raven-window="overlay"] #root {
   background: transparent;
 }
 
+body[data-raven-window="pip"] {
+  min-width: 0;
+  min-height: 0;
+  background: black;
+  overflow: hidden;
+}
+
 ::selection {
   background: hsl(var(--foreground) / 0.22);
 }

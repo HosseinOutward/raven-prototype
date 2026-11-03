@@ -1431,6 +1431,9 @@ mod screen {
         Ok(out)
     }
 
+    /// The title `lib/pictureInPicture.ts` gives these windows.
+    const PICTURE_IN_PICTURE_TITLE: &str = "Raven picture in picture";
+
     pub(super) fn list_windows() -> Result<Vec<WindowTarget>, VideoCaptureError> {
         let windows =
             Window::enumerate().map_err(|error| VideoCaptureError::DeviceUnavailable {
@@ -1440,6 +1443,12 @@ mod screen {
         for window in windows {
             let Ok(title) = window.title() else { continue };
             if title.trim().is_empty() {
+                continue;
+            }
+            // Picture-in-picture windows are hidden from capture; they would be black here.
+            if title == PICTURE_IN_PICTURE_TITLE
+                && window.process_id().ok() == Some(std::process::id())
+            {
                 continue;
             }
             let app_name = window

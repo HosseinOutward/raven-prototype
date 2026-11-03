@@ -7,8 +7,11 @@
  * same-origin Tauri webviews via `localStorage`, so these windows boot signed in.
  */
 
+import { parsePipSegments, type PipTarget } from "@/lib/pictureInPicture";
+
 export type Route =
   | { kind: "app" }
+  | { kind: "pip"; target: PipTarget }
   | { kind: "studio"; nestId: string }
   | { kind: "overlay" };
 
@@ -21,6 +24,11 @@ export function parseRoute(hash: string = window.location.hash): Route {
   }
   if (normalized === "overlay") {
     return { kind: "overlay" };
+  }
+  const pipMatch = normalized.match(/^pip\/([^/]+)\/([^/]+)$/);
+  const pipTarget = pipMatch && parsePipSegments(pipMatch[1], pipMatch[2]);
+  if (pipTarget) {
+    return { kind: "pip", target: pipTarget };
   }
   return { kind: "app" };
 }

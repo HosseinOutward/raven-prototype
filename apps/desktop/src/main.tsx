@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "@/App";
 import { StudioWindow } from "@/components/studio/StudioWindow";
 import { VoiceOverlayWindow } from "@/components/VoiceOverlayWindow";
+import { PictureInPictureWindow } from "@/components/media/PictureInPictureWindow";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AppCrashFallback } from "@/shells/ravenv1/RegionFallback";
 import { installGlobalErrorLogging, logUiError } from "@/lib/diagnostics";
@@ -29,6 +30,8 @@ ReactDOM.createRoot(document.getElementById("root")!, {
       <StudioWindow nestId={route.nestId} />
     ) : route.kind === "overlay" ? (
       <VoiceOverlayWindow />
+    ) : route.kind === "pip" ? (
+      <PictureInPictureWindow target={route.target} />
     ) : (
       <ErrorBoundary name="window" fallback={() => <AppCrashFallback />}>
         <App />

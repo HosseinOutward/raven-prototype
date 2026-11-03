@@ -90,6 +90,9 @@ export function NestView({
         roomLabel={data.labels.nestSingular}
         connectedPeerIds={connectedPeers}
         callStates={callStates}
+        pictureInPictureKeys={media.pictureInPictureKeys}
+        onOpenPictureInPicture={media.openPictureInPicture}
+        onClosePictureInPicture={media.closePictureInPicture}
       />
     );
   }
