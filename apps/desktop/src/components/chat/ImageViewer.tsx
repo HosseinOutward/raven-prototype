@@ -1,13 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ChevronLeft, ChevronRight, Copy, Download, X } from "lucide-react";
-import { useFullscreenContainer } from "@/components/ui/portal";
-import { toast } from "@/components/ui/toast";
-import { Tooltip } from "@/components/ui/tooltip";
+import { useState } from "react";
+import { ImageViewerFrame } from "@/components/ui/image-viewer";
 import { copyAttachment, listVariant, saveAttachment, viewVariant } from "@/lib/chat/imageActions";
 import { getAttachmentUrl, mediaCache, serverKey } from "@/lib/chat/media";
 import type { ChatAttachment } from "@/lib/chat/types";
-import { cn } from "@/lib/utils";
 import { placeholderUrl, useCachedUrl } from "./attachmentHooks";
 
 /** One image at full size: the list's copy (or the blur) stays until the full one is here. */
@@ -38,12 +33,7 @@ function FullImage({ conversationId, attachment, alt }: { conversationId: string
   );
 }
 
-const iconButton = "flex h-9 w-9 items-center justify-center rounded-control text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40";
-
-/**
- * A message's images, large, over the whole window. Arrows move between them; Escape
- * closes and returns focus to the image that opened it.
- */
+/** A message's images in the full-window viewer. */
 export function ImageViewer({
   conversationId,
   images,
@@ -59,106 +49,24 @@ export function ImageViewer({
   onIndexChange: (index: number) => void;
   onClose: () => void;
 }) {
-  const container = useFullscreenContainer();
-  // Radix gives focus back only to a Dialog.Trigger, and the image that opened this isn't one.
-  const opener = useRef<Element | null>(document.activeElement);
   const attachment = images[index];
+  if (!attachment) return null;
   const many = images.length > 1;
+  const alt = many ? `Image from ${senderName}, ${index + 1} of ${images.length}` : `Image from ${senderName}`;
   const go = (step: number) => {
     const next = index + step;
     if (next >= 0 && next < images.length) onIndexChange(next);
   };
 
-  useEffect(() => {
-    if (!many) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "ArrowLeft") go(-1);
-      else if (event.key === "ArrowRight") go(1);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-
-  if (!attachment) return null;
-  const alt = many ? `Image from ${senderName}, ${index + 1} of ${images.length}` : `Image from ${senderName}`;
-
-  const save = () => {
-    void saveAttachment(conversationId, attachment).then(
-      (saved) => {
-        if (saved) toast({ title: "Image saved" });
-      },
-      () => toast({ title: "Couldn’t save the image", description: "Try again in a moment.", tone: "error" }),
-    );
-  };
-  const copy = () => {
-    void copyAttachment(conversationId, attachment).then(
-      () => toast({ title: "Image copied" }),
-      () => toast({ title: "Couldn’t copy the image", description: "Save it instead, then copy the file.", tone: "error" }),
-    );
-  };
-
   return (
-    <DialogPrimitive.Root open onOpenChange={(open) => (open ? undefined : onClose())}>
-      <DialogPrimitive.Portal container={container}>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 animate-fade-in bg-black/90" />
-        <DialogPrimitive.Content
-          aria-describedby={undefined}
-          onOpenAutoFocus={(event) => {
-            // Start on the viewer itself: focusing a button would open its tooltip at once.
-            // Tab reaches the buttons; Escape and the arrows work from here.
-            event.preventDefault();
-            (event.currentTarget as HTMLElement | null)?.focus();
-          }}
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            if (opener.current instanceof HTMLElement && opener.current.isConnected) opener.current.focus();
-          }}
-          className="ravenv1-scope fixed inset-0 z-50 flex animate-fade-in flex-col outline-none"
-        >
-          <DialogPrimitive.Title className="sr-only">{alt}</DialogPrimitive.Title>
-          <div className="flex h-14 shrink-0 items-center justify-between gap-3 px-4">
-            <p className="min-w-0 truncate text-small text-muted-foreground">
-              {many ? <span className="tabular-nums">{index + 1} of {images.length}</span> : null}
-            </p>
-            <div className="flex items-center gap-1">
-              <Tooltip label="Save image…">
-                <button type="button" aria-label="Save image…" onClick={save} className={iconButton}>
-                  <Download className="h-4 w-4" />
-                </button>
-              </Tooltip>
-              <Tooltip label="Copy image">
-                <button type="button" aria-label="Copy image" onClick={copy} className={iconButton}>
-                  <Copy className="h-4 w-4" />
-                </button>
-              </Tooltip>
-              <Tooltip label="Close" shortcut="Esc">
-                <DialogPrimitive.Close aria-label="Close" className={iconButton}>
-                  <X className="h-4 w-4" />
-                </DialogPrimitive.Close>
-              </Tooltip>
-            </div>
-          </div>
-          <div
-            className="relative flex min-h-0 flex-1 items-center justify-center px-16 pb-10"
-            onClick={(event) => {
-              // A click on the dark area around the image closes, as on the backdrop.
-              if (event.target === event.currentTarget) onClose();
-            }}
-          >
-            <FullImage key={attachment.id} conversationId={conversationId} attachment={attachment} alt={alt} />
-            {many ? (
-              <>
-                <button type="button" aria-label="Previous image" disabled={index === 0} onClick={() => go(-1)} className={cn(iconButton, "absolute left-4 top-1/2 h-11 w-11 -translate-y-1/2 rounded-full")}>
-                  <ChevronLeft className="h-5 w-5" />
-                </button>
-                <button type="button" aria-label="Next image" disabled={index === images.length - 1} onClick={() => go(1)} className={cn(iconButton, "absolute right-4 top-1/2 h-11 w-11 -translate-y-1/2 rounded-full")}>
-                  <ChevronRight className="h-5 w-5" />
-                </button>
-              </>
-            ) : null}
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+    <ImageViewerFrame
+      alt={alt}
+      position={many ? { index, count: images.length, go } : undefined}
+      onSave={() => saveAttachment(conversationId, attachment)}
+      onCopy={() => copyAttachment(conversationId, attachment)}
+      onClose={onClose}
+    >
+      <FullImage key={attachment.id} conversationId={conversationId} attachment={attachment} alt={alt} />
+    </ImageViewerFrame>
   );
 }

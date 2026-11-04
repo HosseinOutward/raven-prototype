@@ -44,6 +44,9 @@
   font-size: 16px;
   color-scheme: dark;
 
+  /* The neutral tokens below are the Graphite theme; lib/theme derives the others from
+     them, so a change here belongs in its table too (theme.test.ts checks they match). */
+
   /* Canvas: window, sidebar, dock */
   --background: 30 6% 5.5%;
   --foreground: 40 16% 93%;
@@ -379,6 +382,15 @@ textarea {
 
 .raven-fader:hover::-webkit-slider-thumb {
   box-shadow: 0 0 0 4px hsl(var(--foreground) / 0.14);
+}
+
+/* A fader that picks a hue: the track shows what each position gives. */
+.raven-hue-fader::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, hsl(0 45% 55%), hsl(60 45% 55%), hsl(120 45% 55%), hsl(180 45% 55%), hsl(240 45% 55%), hsl(300 45% 55%), hsl(360 45% 55%));
+}
+
+.raven-hue-fader::-moz-range-track {
+  background: linear-gradient(to right, hsl(0 45% 55%), hsl(60 45% 55%), hsl(120 45% 55%), hsl(180 45% 55%), hsl(240 45% 55%), hsl(300 45% 55%), hsl(360 45% 55%));
 }
 
 .raven-fader:focus-visible {

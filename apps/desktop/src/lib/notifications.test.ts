@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Knock } from "./api";
-import { isProfileKnockFor, loadNotificationSettings, newProfileKnocks, saveNotificationSettings } from "./notifications";
+import { isProfileKnockFor, knockAge, loadNotificationSettings, newProfileKnocks, saveNotificationSettings } from "./notifications";
 
 const ME = "me";
 
@@ -93,5 +93,22 @@ describe("notification settings", () => {
     const storage = memory();
     storage.setItem("raven.notificationSettings", "{not json");
     expect(loadNotificationSettings(storage)).toEqual({ knocks: false, messages: false, messageText: true });
+  });
+});
+
+describe("knockAge", () => {
+  const at = Date.parse("2026-10-16T10:00:00Z");
+  const age = (ms: number) => knockAge("2026-10-16T10:00:00Z", at + ms);
+
+  it("says how long ago, the way a person would", () => {
+    expect(age(30_000)).toBe("just now");
+    expect(age(6 * 60_000)).toBe("6 min ago");
+    expect(age(60 * 60_000)).toBe("1 hr ago");
+    expect(age(26 * 60 * 60_000)).toBe("1 day ago");
+    expect(age(50 * 60 * 60_000)).toBe("2 days ago");
+  });
+
+  it("treats a clock behind the server as just now", () => {
+    expect(age(-90_000)).toBe("just now");
   });
 });

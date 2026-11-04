@@ -10,6 +10,25 @@ export function isConfirmedMicrophoneActive(source: AudioSourceState) {
     && !source.channelStrip.mute.muted;
 }
 
+/**
+ * Whether the mic reads as on. In a call that means confirmed live. Outside a call nothing is
+ * captured, so it means people will hear this mic on joining: a published, unmuted source keeps
+ * its state into the next call, and one without a track joins muted (`prepareMicrophone`).
+ */
+export function isLocalMicOn(sources: AudioSourceState[], inCall: boolean, alwaysJoinMuted: boolean) {
+  if (inCall) return sources.some(isConfirmedMicrophoneActive);
+  return !alwaysJoinMuted && sources.some((source) => source.sourceType === "microphone"
+    && source.enabled
+    && source.publishing
+    && source.publishedTrack != null
+    && !source.channelStrip.mute.muted);
+}
+
+/** Outside a call, Join muted decides the mic: turning it on now would be undone on joining. */
+export function joinMutedHoldsMic(activeNestId: string | null | undefined, localMicOn: boolean, alwaysJoinMuted: boolean) {
+  return alwaysJoinMuted && activeNestId == null && !localMicOn;
+}
+
 export function microphonesToMuteBeforeJoin(sources: AudioSourceState[]) {
   return sources.filter((source) => source.sourceType === "microphone");
 }

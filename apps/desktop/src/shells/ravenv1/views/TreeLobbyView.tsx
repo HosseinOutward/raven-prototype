@@ -13,6 +13,7 @@ import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useTreeChatSummaries } from "../useChat";
 import type { NestEntryController } from "../useNestEntry";
 import { AddTreeMemberDialog, NameDialog, TREE_ROLE_LABEL } from "./dialogs";
+import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
 import { TreeNestsSection } from "./TreeNestsSection";
 
@@ -46,6 +47,8 @@ export function TreeLobbyView({
   const canManageMembers = treeCan(details, "members.manage");
   const [createNestOpen, setCreateNestOpen] = useState(false);
   const [addMemberOpen, setAddMemberOpen] = useState(false);
+  // Whose picture is open: this view stays mounted when moving from one tree to another.
+  const [viewingPicture, setViewingPicture] = useState<string | null>(null);
   const canJoin = !entry.enteringNestId && media.phase !== "joining" && media.phase !== "leaving";
 
   // The launcher list knows who is inside; the tree's own list is the fallback.
@@ -65,8 +68,9 @@ export function TreeLobbyView({
 
   return (
     <>
+      {viewingPicture === tree.id ? <ProfilePictureViewer src={api.treeAvatarUrl(tree.id, tree.updatedAt)} alt={`${tree.name}’s picture`} onClose={() => setViewingPicture(null)} /> : null}
       <ViewHeader
-        leading={<Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-9 w-9 rounded-control" />}
+        leading={<Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-9 w-9 rounded-control" onOpen={() => setViewingPicture(tree.id)} />}
         title={tree.name}
         subtitle={
           <span className="inline-flex items-center gap-1.5">

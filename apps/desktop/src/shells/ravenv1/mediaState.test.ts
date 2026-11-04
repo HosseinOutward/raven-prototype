@@ -4,7 +4,9 @@ import type { VideoSourceState } from "@/lib/video";
 import {
   isConfirmedMicrophoneActive,
   isConfirmedVideoSourceActive,
+  isLocalMicOn,
   isLocalVideoChosen,
+  joinMutedHoldsMic,
   localSharePause,
   localVideoStatus,
   microphonesToMuteBeforeJoin,
@@ -36,6 +38,23 @@ describe("confirmed local media state", () => {
       ...microphone,
       channelStrip: { ...microphone.channelStrip, mute: { ...microphone.channelStrip.mute, muted: true } },
     })).toBe(false);
+  });
+
+  test("outside a call the mic reads on only when joining would leave it audible", () => {
+    const left = { ...microphone, runtime: { ...microphone.runtime, status: "inactive" } } as AudioSourceState;
+    const muted = { ...left, channelStrip: { ...left.channelStrip, mute: { ...left.channelStrip.mute, muted: true } } } as AudioSourceState;
+
+    expect(isLocalMicOn([left], false, false)).toBe(true);
+    expect(isLocalMicOn([muted], false, false)).toBe(false);
+    expect(isLocalMicOn([{ ...left, publishing: false, publishedTrack: null }], false, false)).toBe(false);
+    expect(isLocalMicOn([], false, false)).toBe(false);
+    expect(isLocalMicOn([left], false, true)).toBe(false);
+  });
+
+  test("in a call the mic reads on only when confirmed live", () => {
+    expect(isLocalMicOn([microphone], true, false)).toBe(true);
+    expect(isLocalMicOn([{ ...microphone, runtime: { ...microphone.runtime, status: "inactive" } }], true, false)).toBe(false);
+    expect(isLocalMicOn([microphone], true, true)).toBe(true);
   });
 
   test("requires video capture and publication", () => {
@@ -82,5 +101,14 @@ describe("what the user chose versus what is being sent", () => {
     expect(localVideoStatus(null)).toBe("off");
     expect(localVideoStatus({ ...camera, enabled: false })).toBe("off");
     expect(isLocalVideoChosen("off")).toBe(false);
+  });
+});
+
+describe("joinMutedHoldsMic", () => {
+  test("holds the mic off only outside a call, with Join muted on and the mic off", () => {
+    expect(joinMutedHoldsMic(null, false, true)).toBe(true);
+    expect(joinMutedHoldsMic("nest", false, true)).toBe(false);
+    expect(joinMutedHoldsMic(null, true, true)).toBe(false);
+    expect(joinMutedHoldsMic(null, false, false)).toBe(false);
   });
 });

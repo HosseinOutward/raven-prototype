@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::{Arc, RwLock},
+    sync::{atomic::AtomicBool, Arc, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -81,6 +81,9 @@ pub struct NativeAudioCapabilityReport {
 pub struct AudioRuntime {
     ops: AsyncMutex<AudioOps>,
     output: Arc<OutputMixer>,
+    /// Push to talk's gate: true silences microphones. Shared with capture so a key press
+    /// reaches the audio thread without a lock.
+    talk_gate: Arc<AtomicBool>,
 }
 
 pub struct AudioOps {
@@ -94,14 +97,21 @@ impl Default for AudioRuntime {
     fn default() -> Self {
         let engine = AudioEngine::default();
         let output = engine.output_mixer();
+        let talk_gate = Arc::new(AtomicBool::new(false));
         Self {
             ops: AsyncMutex::new(AudioOps {
                 engine,
-                capture: CaptureRuntimeManager::default(),
+                capture: CaptureRuntimeManager::with_talk_gate(Arc::clone(&talk_gate)),
             }),
             output,
+            talk_gate,
         }
     }
+}
+
+/// Push to talk's gate, which the key polling thread writes.
+pub fn talk_gate(state: &SharedAudioEngineState) -> Result<Arc<AtomicBool>, AudioStateError> {
+    Ok(Arc::clone(&audio_runtime(state)?.talk_gate))
 }
 
 impl std::fmt::Debug for AudioRuntime {
@@ -2609,6 +2619,8 @@ pub async fn audio_set_call_active(
     state: State<'_, SharedAudioEngineState>,
     active: bool,
 ) -> Result<AudioMixerState, AudioStateError> {
+    // Before capture can start: a push to talk user's first samples are already gated.
+    crate::push_to_talk::set_call_active(&app, active);
     mutate_audio_state(&app, &state, |engine| {
         engine.capture_demand.call_active = active;
         Ok(())

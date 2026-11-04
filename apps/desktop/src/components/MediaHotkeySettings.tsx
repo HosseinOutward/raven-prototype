@@ -10,6 +10,8 @@ import {
   type MediaHotkeySettingsPatch,
 } from "@/lib/mediaHotkeys";
 import { hotkeyDraftDirty, type HotkeyDraft } from "@/lib/hotkeyDraft";
+import { PushToTalkKeyField } from "@/components/PushToTalkKeyField";
+import { usePushToTalk, usePushToTalkPicker } from "@/shells/ravenv1/usePushToTalk";
 import {
   DEFAULT_VOICE_OVERLAY_HOTKEY,
   formatHotkeyEvent,
@@ -131,6 +133,7 @@ export function MediaHotkeySettingsPanel() {
             </div>
           </SettingsField>
         ))}
+        <PushToTalkShortcutField />
       </div>
 
       {error ? <p role="alert" className="rounded-control bg-destructive/10 px-3 py-2 text-small text-destructive">{error}</p> : null}
@@ -145,6 +148,23 @@ export function MediaHotkeySettingsPanel() {
         </div>
       </div>
     </SettingsSection>
+  );
+}
+
+/** Saved as soon as it is picked: it is one key, and Audio and video works the same way. */
+function PushToTalkShortcutField() {
+  const pushToTalk = usePushToTalk();
+  const picker = usePushToTalkPicker(pushToTalk);
+  const { settings } = pushToTalk;
+  if (!settings?.supported) return null;
+  return (
+    <SettingsField
+      label="Push to talk"
+      hint={settings.enabled ? "Hold to talk. Any key or mouse button." : "Turn it on in Audio and video."}
+    >
+      <PushToTalkKeyField value={settings.key} listening={picker.listening} onListeningChange={picker.setListening} onPick={picker.pick} />
+      {picker.error ? <p role="alert" className="mt-1 text-caption text-destructive">{picker.error}</p> : null}
+    </SettingsField>
   );
 }
 

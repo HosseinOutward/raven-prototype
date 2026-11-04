@@ -5,9 +5,16 @@ import { api, subscribeUpdateRequired, type ServerCompatibility } from "@/lib/ap
 
 export type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "ready" | "installing";
 
+export interface PastRelease {
+  version: string;
+  notes: string;
+}
+
 export interface AvailableUpdate {
   version: string;
   notes: string;
+  /** Notes of the versions before this one, for someone several versions behind. */
+  history?: PastRelease[];
   /** The signed installer itself, offered as a manual download if installing fails. */
   downloadUrl: string;
 }
@@ -24,6 +31,24 @@ export interface UpdaterSnapshot {
   /** Restarting now would interrupt something (a call, a capture). */
   busy: boolean;
   busyReason: string;
+}
+
+function compareVersions(a: string, b: string) {
+  const [left, right] = [a, b].map((version) => version.split(".").map((part) => Number.parseInt(part, 10) || 0));
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+/** The notes someone on `currentVersion` has not seen yet, newest first. */
+export function releasesSince(available: AvailableUpdate, currentVersion: string): PastRelease[] {
+  const earlier = (available.history ?? []).filter(
+    (release) => compareVersions(release.version, currentVersion) > 0 && compareVersions(release.version, available.version) < 0,
+  );
+  return [{ version: available.version, notes: available.notes }, ...earlier.sort((a, b) => compareVersions(b.version, a.version))]
+    .filter((release) => release.notes);
 }
 
 export interface RavenUpdater {

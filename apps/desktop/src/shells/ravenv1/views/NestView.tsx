@@ -1,5 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 import { AlertCircle, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
+import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
+import { usePushToTalk } from "../usePushToTalk";
 import { groupAudioSatellites, type SatelliteActions } from "@/components/media/audioSatellites";
 import { LiveMediaStage } from "@/components/media/LiveMediaStage";
 import { watchNewSharesPreference } from "@/components/media/stageState";
@@ -131,7 +133,8 @@ function NestThreshold({
 
   const joinsMuted = data.preferences.alwaysJoinMuted;
   const joinsCameraOff = data.preferences.joinWithCameraOff;
-  const micOn = media.localMicEnabled && !joinsMuted;
+  const micOn = media.localMicOn;
+  const pushToTalk = usePushToTalk().settings;
   const cameraOn = media.localCameraEnabled && !joinsCameraOff;
   const sharing = media.screenSharing && !data.preferences.joinWithoutScreenSharing;
 
@@ -188,11 +191,15 @@ function NestThreshold({
                     ? "No microphone found"
                     : joinsMuted
                       ? "You join muted. Change this in Settings."
-                      : micOn ? "On. People will hear you." : "Muted. Nobody will hear you."
+                      : !micOn
+                        ? "Muted. Nobody will hear you."
+                        : pushToTalk?.supported && pushToTalk.enabled
+                          ? `On. People hear you while you hold ${pushToTalkKeyLabel(pushToTalk.key)}.`
+                          : "On. People will hear you."
                 }
                 control={
                   media.audioSupported && !joinsMuted ? (
-                    <Switch aria-label="Microphone" checked={media.localMicEnabled} disabled={media.busy} onCheckedChange={() => void media.toggleMic().catch(() => undefined)} />
+                    <Switch aria-label="Microphone" checked={micOn} disabled={media.busy} onCheckedChange={() => void media.toggleMic().catch(() => undefined)} />
                   ) : null
                 }
               />

@@ -7,18 +7,20 @@
   .\release.ps1 publish -Version 0.1.0
   .\release.ps1 repoint -Version 0.1.0
   .\release.ps1 status
+  .\release.ps1 publish -Version 0.1.0 -Docker -GitHub   # also Docker Hub and GitHub
   .\release.ps1 images -Version 0.1.0   # server images to Docker Hub
+  .\release.ps1 github -Version 0.1.0   # installers to a GitHub release
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("help", "build", "publish", "repoint", "status", "images")]
+  [ValidateSet("help", "build", "publish", "repoint", "status", "images", "github")]
   [string]$Command = "help",
   [string]$Version,
   # Release notes shown in the app. Defaults to release-notes-<version>.md when it exists.
   [string]$NotesFile,
   # The server a fresh install signs in to (people can change it on the sign-in screen).
   [string]$ApiUrl = "https://mimir.rvn.bluehour.cloud",
-  [string]$SshTarget = "vala",
+  [string]$SshTarget = "raven",
   [string]$WslDistro = "Ubuntu",
   # Build from a tree with uncommitted changes. For rehearsals, not for real releases.
   [switch]$AllowDirty,
@@ -30,7 +32,11 @@ param(
   # images: push only the X.Y.Z tag, not :latest.
   [switch]$NoLatest,
   # images: build both platforms but push nothing.
-  [switch]$DryRun
+  [switch]$DryRun,
+  # publish: also push the server images to Docker Hub, before the update host.
+  [switch]$Docker,
+  # publish: also create the GitHub release, after the update host.
+  [switch]$GitHub
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,9 +45,10 @@ Set-StrictMode -Version Latest
 $Root = $PSScriptRoot
 $Desktop = Join-Path $Root "apps\desktop"
 $PublicBase = "https://updates.rvn.bluehour.cloud"
-$RemoteRoot = "/home/ubuntu/services/raven/releases"
+$RemoteRoot = "/srv/raven/releases"
 $PublicKey = Join-Path $Desktop "src-tauri\updater\raven-updater.key.pub"
 $KeepVersions = 5
+$GitHubRepo = "raven-collective/raven-prototype"
 
 if ($Scratch) {
   if ($Scratch -notmatch '^[a-z0-9-]+$') { throw "-Scratch must be a simple folder name such as 'test'." }
@@ -200,6 +207,19 @@ cp "`$base/out/Raven_${Version}_amd64.AppImage" "`$base/out/compatibility-linux.
   if (-not (Test-Path -LiteralPath $Destination)) { throw "The Linux build did not produce $Destination." }
 }
 
+# The notes of every version before this one, so someone several versions behind sees them all.
+function Get-NotesHistory([string]$Current) {
+  $currentCore = [version]($Current -replace '-.*$', '')
+  $entries = foreach ($file in Get-ChildItem -LiteralPath $Root -Filter "release-notes-*.md") {
+    $name = $file.BaseName -replace '^release-notes-', ''
+    $core = [version]::new()
+    if ([version]::TryParse(($name -replace '-.*$', ''), [ref]$core) -and $core -lt $currentCore) {
+      [ordered]@{ version = $name; notes = (Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName).Trim() }
+    }
+  }
+  return , @($entries)
+}
+
 function Invoke-Build {
   Assert-Version
   $dirty = @(& git -C $Root status --porcelain)
@@ -238,6 +258,7 @@ function Invoke-Build {
 
   $notesPath = if ($NotesFile) { $NotesFile } else { Join-Path $Root "release-notes-$Version.md" }
   $notes = if (Test-Path -LiteralPath $notesPath) { (Get-Content -Raw -Encoding UTF8 -LiteralPath $notesPath).Trim() } else { "" }
+  $history = Get-NotesHistory $Version
   $platforms = [ordered]@{}
   foreach ($entry in $artifacts.GetEnumerator()) {
     $platforms[$entry.Key] = [ordered]@{
@@ -248,6 +269,7 @@ function Invoke-Build {
   $manifest = [ordered]@{
     version   = $Version
     notes     = $notes
+    history   = $history
     pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     commit    = $commit
     platforms = $platforms
@@ -290,6 +312,8 @@ function Assert-PublicRelease {
 
 function Invoke-Publish {
   Assert-Version
+  if ($DryRun) { throw "-DryRun only works with the images command." }
+  if ($Scratch -and ($Docker -or $GitHub)) { throw "-Scratch publishes only to the scratch folder; leave out -Docker and -GitHub." }
   $stage = Get-Stage
   $artifacts = Get-Artifacts $stage
   $manifest = Join-Path $stage "latest.json"
@@ -301,6 +325,13 @@ function Invoke-Publish {
   if ((Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json).platforms."windows-x86_64".url -notlike "$PublicBase/*") {
     throw "This build was made for a different destination. Rebuild with the same -Scratch value you publish with."
   }
+  # Refuse early, before friends are told about a version that cannot reach GitHub.
+  if ($GitHub) {
+    Get-ReleaseCommit $stage | Out-Null
+    Assert-GitHubAccess
+  }
+  # Server images first, so they exist before any client that needs them is offered.
+  if ($Docker) { Invoke-Images }
 
   $checksums = ($files | ForEach-Object { "$(Get-Sha256 $_)  $(Split-Path -Leaf $_)" }) -join "`n"
   $incoming = "$RemoteRoot/.incoming-$Version"
@@ -336,6 +367,7 @@ mv '$incoming' '$final'
   Assert-PublicRelease $stage
   Write-Host ""
   Write-Host "Raven $Version is published. Friends will be told about it the next time their Raven checks."
+  if ($GitHub) { Invoke-GitHub }
 }
 
 # Makes <version>/latest.json the live manifest. The swap is a rename, so a client never
@@ -431,16 +463,131 @@ du -sh . | cut -f1 | sed 's/^/Disk used: /'
   catch { Write-Host "Offered to friends: nothing ($PublicBase/latest.json is not reachable)" }
 }
 
+# The commit the installers in this stage were built from. A rehearsal's throwaway
+# snapshot is not on this branch, so it never reaches Docker Hub or GitHub.
+function Get-ReleaseCommit {
+  param([string]$Stage)
+  $manifest = Join-Path $Stage "latest.json"
+  if (-not (Test-Path -LiteralPath $manifest)) { throw "$manifest is missing. Run: .\release.ps1 build -Version $Version" }
+  $commit = (Get-Content -Raw -Encoding UTF8 -LiteralPath $manifest | ConvertFrom-Json).commit
+  $ErrorActionPreference = "Continue"
+  & git -C $Root merge-base --is-ancestor $commit HEAD 2>$null
+  $onBranch = $LASTEXITCODE -eq 0
+  $ErrorActionPreference = "Stop"
+  if (-not $onBranch) { throw "Version $Version was built from $commit, which is not on this branch. Was it a rehearsal? Build it again from a commit." }
+  return $commit
+}
+
+function Assert-GitHubAccess {
+  Invoke-Native "gh" @("auth", "status") | Out-Null
+}
+
+# Compares what GitHub serves with what was built. A published version never changes.
+function Assert-GitHubRelease {
+  param([string]$Tag, [string[]]$Files)
+  Write-Host "== Checking the GitHub release"
+  $download = Join-Path (Split-Path -Parent $Files[0]) "github-check"
+  Remove-Item -Recurse -Force -LiteralPath $download -ErrorAction SilentlyContinue
+  try {
+    Invoke-Native "gh" @("release", "download", $Tag, "--repo", $GitHubRepo, "--dir", $download)
+    foreach ($file in $Files) {
+      $name = Split-Path -Leaf $file
+      $copy = Join-Path $download $name
+      if (-not (Test-Path -LiteralPath $copy)) { throw "The GitHub release $Tag has no $name." }
+      if ((Get-Sha256 $copy) -ne (Get-Sha256 $file)) { throw "$name on the GitHub release $Tag differs from this build. A published version never changes: bump the version and build again." }
+      Write-Host "  ok  $name"
+    }
+  }
+  finally { Remove-Item -Recurse -Force -LiteralPath $download -ErrorAction SilentlyContinue }
+}
+
+function Invoke-GitHub {
+  Assert-Version
+  if ($Scratch) { throw "-Scratch publishes only to the scratch folder; it does not apply to GitHub." }
+  $stage = Get-Stage
+  $commit = Get-ReleaseCommit $stage
+  $artifacts = Get-Artifacts $stage
+  foreach ($artifact in $artifacts.Values) {
+    if (-not (Test-Path -LiteralPath $artifact)) { throw "$artifact is missing. Run: .\release.ps1 build -Version $Version" }
+    Assert-Signature $artifact
+  }
+  Assert-GitHubAccess
+  $tag = "v$Version"
+
+  $ErrorActionPreference = "Continue"
+  $tagged = (& git -C $Root rev-parse --quiet --verify "refs/tags/$tag^{commit}" 2>$null)
+  $ErrorActionPreference = "Stop"
+  if ($tagged -and "$tagged".Trim() -ne $commit) { throw "Tag $tag points at $tagged, not at the release commit $commit." }
+  if (-not $tagged) { Invoke-Native "git" @("tag", "-a", $tag, "-m", "Raven $Version", $commit) }
+
+  # Publishes the release commit and its history, not whatever came after it locally.
+  # Git refuses this if GitHub's main has diverged.
+  Write-Host "== Pushing $tag to GitHub"
+  Invoke-Native "git" @("fetch", "--quiet", "origin", "main")
+  $ErrorActionPreference = "Continue"
+  & git -C $Root merge-base --is-ancestor $commit FETCH_HEAD 2>$null
+  $onMain = $LASTEXITCODE -eq 0
+  $ErrorActionPreference = "Stop"
+  $refs = @("refs/tags/$tag")
+  if (-not $onMain) { $refs += "${commit}:refs/heads/main" }
+  Invoke-Native "git" (@("push", "--atomic", "origin") + $refs)
+
+  $sums = Join-Path $stage "SHA256SUMS"
+  $names = @($artifacts.Values)
+  $text = ($names | ForEach-Object { "$(Get-Sha256 $_)  $(Split-Path -Leaf $_)" }) -join "`n"
+  [IO.File]::WriteAllText($sums, "$text`n", (New-Object Text.UTF8Encoding($false)))
+  $files = $names + @($sums)
+
+  $ErrorActionPreference = "Continue"
+  $draft = (& gh release view $tag --repo $GitHubRepo --json isDraft --jq .isDraft 2>$null)
+  $exists = $LASTEXITCODE -eq 0
+  $ErrorActionPreference = "Stop"
+  if ($exists -and "$draft".Trim() -eq "true") {
+    throw "An unfinished draft of $tag is on GitHub. Remove it, then run this again: gh release delete $tag --repo $GitHubRepo"
+  }
+  if ($exists) { Write-Host "  release $tag is already on GitHub" }
+  else {
+    $notes = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $stage "latest.json") | ConvertFrom-Json).notes
+    $body = @"
+$notes
+
+## Install
+
+- **Windows:** ``Raven_${Version}_x64-setup.exe``. Windows may say the publisher is unknown: choose "More info", then "Run anyway".
+- **Linux:** ``Raven_${Version}_amd64.AppImage``. Run ``chmod +x`` on it. On newer Ubuntu, install ``libfuse2t64`` first.
+
+Raven tells you when a newer version is out.
+
+## Your own server
+
+Server images are on Docker Hub: [soroushtaheri/raven-api](https://hub.docker.com/r/soroushtaheri/raven-api) and [soroushtaheri/raven-admin](https://hub.docker.com/r/soroushtaheri/raven-admin). See the [self-hosting guide](https://github.com/$GitHubRepo/blob/$tag/docs/self-hosting.md).
+"@
+    $bodyFile = Join-Path $stage "github-notes.md"
+    [IO.File]::WriteAllText($bodyFile, ($body -replace "`r", ""), (New-Object Text.UTF8Encoding($false)))
+    Write-Host "== Creating the GitHub release $tag"
+    Invoke-Native "gh" (@("release", "create", $tag, "--repo", $GitHubRepo, "--verify-tag", "--title", "Raven $Version", "--notes-file", $bodyFile) + $files)
+    Remove-Item -LiteralPath $bodyFile -Force
+  }
+  Assert-GitHubRelease $tag $files
+  Write-Host "https://github.com/$GitHubRepo/releases/tag/$tag"
+}
+
 function Invoke-Images {
   Assert-Version
-  $dirty = @(& git -C $Root status --porcelain)
-  if ($dirty.Count -gt 0 -and -not $AllowDirty) {
-    throw "The working tree has uncommitted changes. Commit them, or pass -AllowDirty for a rehearsal."
-  }
-  if ($dirty.Count -gt 0 -and -not $DryRun) { throw "-AllowDirty only works with -DryRun: published images must come from a commit." }
-  $commit = "HEAD"
-  if ($dirty.Count -gt 0) { Write-Warning "Building the last commit (HEAD); uncommitted changes are not in the images." }
   $stage = Get-Stage
+  if (-not $DryRun -and (Test-Path -LiteralPath (Join-Path $stage "latest.json"))) {
+    # Same commit as the installers of this version, whatever has happened on the branch since.
+    $commit = Get-ReleaseCommit $stage
+  }
+  else {
+    $dirty = @(& git -C $Root status --porcelain)
+    if ($dirty.Count -gt 0 -and -not $AllowDirty) {
+      throw "The working tree has uncommitted changes. Commit them, or pass -AllowDirty for a rehearsal."
+    }
+    if ($dirty.Count -gt 0 -and -not $DryRun) { throw "-AllowDirty only works with -DryRun: published images must come from a commit." }
+    $commit = "HEAD"
+    if ($dirty.Count -gt 0) { Write-Warning "Building the last commit (HEAD); uncommitted changes are not in the images." }
+  }
   Write-Host "== Building the server images in WSL ($WslDistro)"
   $sourceTar = Join-Path $Stage "source.tar"
   # 'git archive' gives the committed line endings (LF), which the Dockerfiles and scripts need.
@@ -486,5 +633,6 @@ switch ($Command) {
   "repoint" { Invoke-Repoint }
   "status" { Invoke-Status }
   "images" { Invoke-Images }
+  "github" { Invoke-GitHub }
   default { Get-Help $PSCommandPath -Examples }
 }

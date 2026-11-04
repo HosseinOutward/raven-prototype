@@ -1,8 +1,9 @@
-import { forwardRef, type ButtonHTMLAttributes } from "react";
+import { forwardRef, useEffect, useReducer, type ButtonHTMLAttributes } from "react";
 import { Check, Hand, Mail, MessageCircleReply, Reply, UserPlus, Users, X } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { knockAge } from "@/lib/notifications";
 import { cn } from "@/lib/utils";
 import { KnockAnswerMenu } from "./KnockAnswerMenu";
 import { answerHint } from "./knockReplies";
@@ -52,6 +53,14 @@ export function PendingList({
   // Shell data reports failures through its own error state; nothing to do here.
   const actions = usePendingActions();
   const badgeSurface = surface === "popover" ? "bg-popover" : surface === "canvas" ? "bg-background" : "bg-card";
+  // A knock's age keeps counting while it waits.
+  const [, tick] = useReducer((count: number) => count + 1, 0);
+  const hasKnock = data.pending.some((item) => item.kind === "knock");
+  useEffect(() => {
+    if (!hasKnock) return;
+    const timer = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(timer);
+  }, [hasKnock]);
 
   return (
     <ul className="space-y-px">
@@ -81,7 +90,10 @@ export function PendingList({
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-small font-medium text-foreground">{item.from}</span>
-                <span className="block truncate text-caption text-muted-foreground">{pendingSummary(item)}</span>
+                <span className="flex min-w-0 gap-1 text-caption text-muted-foreground">
+                  <span className="truncate">{pendingSummary(item)}</span>
+                  {item.kind === "knock" ? <span className="shrink-0">· {knockAge(item.knock.createdAt, Date.now())}</span> : null}
+                </span>
               </span>
             </button>
             <div className="flex shrink-0 items-center gap-0.5">

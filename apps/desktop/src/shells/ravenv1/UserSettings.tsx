@@ -13,6 +13,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { VoiceOverlaySettingsPanel } from "@/components/VoiceOverlaySettings";
 import { MediaHotkeySettingsPanel } from "@/components/MediaHotkeySettings";
+import { PushToTalkSettings } from "@/components/PushToTalkSettings";
 import { TraySettingsPanel } from "@/components/TraySettings";
 import { NotificationSettingsPanel } from "@/components/NotificationSettings";
 import { SquareImageUpload } from "@/components/SquareImageUpload";
@@ -35,6 +36,7 @@ import {
 import { InfoTooltip } from "./atoms";
 import { cn } from "@/lib/utils";
 import { SPEAKING_COLORS, useSpeakingColor, writeSpeakingColor } from "@/lib/speakingColor";
+import { THEME_COLORS, THEME_DEPTHS, THEME_STRENGTHS, useTheme, writeTheme, type ThemeColorId } from "@/lib/theme";
 import { ConfirmLeaveSection, DockOrderSection } from "./DockSettings";
 import type { RavenShellData, RavenView } from "./state";
 import type {
@@ -304,6 +306,7 @@ function AppearanceSettings({ data }: { data: RavenShellData }) {
   const [uiLabels, setUiLabels] = useAppliedPreference<UILabelPreference>(data.preferences.uiLabels, (value) => data.updatePreferences({ uiLabels: value }));
   return (
     <SettingsPage title="Appearance">
+      <ThemeSection />
       <SettingsSection title="Words" description="What Raven calls groups and the rooms inside them.">
         <SettingsRows>
           <SettingsChoice
@@ -322,44 +325,149 @@ function AppearanceSettings({ data }: { data: RavenShellData }) {
       </SettingsSection>
       <SpeakingColorSection />
       <DockOrderSection />
-      <SettingsSection title="Theme">
-        <SettingsReadOnlyRow label="Colour" value="Raven dark" />
-        <SettingsHint>Raven has one theme for now.</SettingsHint>
-      </SettingsSection>
     </SettingsPage>
+  );
+}
+
+/** A row of colour swatches, one of which is chosen, with the chosen one's name beside them. */
+function SwatchRow<Id extends string>({
+  label,
+  swatches,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  swatches: readonly { id: Id; label: string; background: string }[];
+  selected: Id;
+  onSelect: (id: Id) => void;
+}) {
+  return (
+    <div className="flex min-h-12 items-center justify-between gap-4 px-4 py-2.5">
+      <div className="text-body">{swatches.find((swatch) => swatch.id === selected)?.label}</div>
+      <div role="radiogroup" aria-label={label} className="flex items-center gap-2.5">
+        {swatches.map((swatch) => (
+          <Tooltip key={swatch.id} label={swatch.label}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={selected === swatch.id}
+              aria-label={swatch.label}
+              onClick={() => onSelect(swatch.id)}
+              className={cn(
+                "flex h-7 w-7 items-center justify-center rounded-full transition-[box-shadow] duration-150",
+                selected === swatch.id && "shadow-[0_0_0_2px_hsl(var(--card)),0_0_0_4px_hsl(var(--foreground))]",
+              )}
+              style={{ background: swatch.background }}
+            >
+              {selected === swatch.id ? <Check className="h-3.5 w-3.5 text-primary-foreground" /> : null}
+            </button>
+          </Tooltip>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Three or so short options on one track. */
+function SegmentedChoice<Id extends string>({
+  label,
+  options,
+  selected,
+  disabled = false,
+  onSelect,
+}: {
+  label: string;
+  options: readonly { id: Id; label: string }[];
+  selected: Id;
+  disabled?: boolean;
+  onSelect: (id: Id) => void;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="flex rounded-control bg-background/60 p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="radio"
+          aria-checked={selected === option.id}
+          disabled={disabled}
+          onClick={() => onSelect(option.id)}
+          className={cn(
+            "h-7 rounded-chip px-2.5 text-small transition-colors",
+            selected === option.id ? "bg-accent text-foreground" : "text-muted-foreground enabled:hover:text-foreground",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const THEME_SWATCH = (hue: number) => `hsl(${hue} 45% 55%)`;
+const THEME_SWATCHES: readonly { id: ThemeColorId; label: string; background: string }[] = THEME_COLORS.map((color) => ({
+  id: color.id,
+  label: color.label,
+  background: color.hue === null ? "hsl(30 5% 55%)" : THEME_SWATCH(color.hue),
+}));
+const CUSTOM_SWATCH_SWEEP = `conic-gradient(${[0, 60, 120, 180, 240, 300, 360].map(THEME_SWATCH).join(", ")})`;
+
+/** The colour of Raven's surfaces. Kept on this device. */
+function ThemeSection() {
+  const theme = useTheme();
+  const swatches = [
+    ...THEME_SWATCHES,
+    { id: "custom" as const, label: "Custom", background: theme.color === "custom" ? THEME_SWATCH(theme.customHue) : CUSTOM_SWATCH_SWEEP },
+  ];
+  const noColor = theme.color === "graphite";
+  return (
+    <SettingsSection title="Theme" description="The colour of the window and its panels. People, speaking and warnings keep their own colours. It is kept on this device.">
+      <SettingsRows>
+        <SwatchRow label="Theme colour" swatches={swatches} selected={theme.color} onSelect={(color) => writeTheme({ color })} />
+        {theme.color === "custom" ? (
+          <SettingsRow
+            label="Hue"
+            control={(
+              <input
+                className="raven-fader raven-hue-fader w-56"
+                type="range"
+                aria-label="Hue"
+                min={0}
+                max={360}
+                step={1}
+                value={theme.customHue}
+                onChange={(event) => writeTheme({ customHue: Number(event.target.value) })}
+              />
+            )}
+          />
+        ) : null}
+        <SettingsRow
+          label="Strength"
+          description="How much colour the surfaces carry."
+          className={cn(noColor && "opacity-55")}
+          control={<SegmentedChoice label="Strength" options={THEME_STRENGTHS} selected={theme.strength} disabled={noColor} onSelect={(strength) => writeTheme({ strength })} />}
+        />
+        <SettingsRow
+          label="Depth"
+          description="How dark the window and panels are."
+          control={<SegmentedChoice label="Depth" options={THEME_DEPTHS} selected={theme.depth} onSelect={(depth) => writeTheme({ depth })} />}
+        />
+      </SettingsRows>
+    </SettingsSection>
   );
 }
 
 /** The colour that shows who is talking. Kept on this device. */
 function SpeakingColorSection() {
-  const selected = useSpeakingColor();
-  const label = SPEAKING_COLORS.find((color) => color.id === selected)?.label ?? "";
   return (
     <SettingsSection title="Speaking colour" description="The ring around whoever is talking, and your own mic level. It is kept on this device.">
       <SettingsRows>
-        <div className="flex min-h-12 items-center justify-between gap-4 px-4 py-2.5">
-          <div className="text-body">{label}</div>
-          <div role="radiogroup" aria-label="Speaking colour" className="flex items-center gap-2.5">
-            {SPEAKING_COLORS.map((color) => (
-              <Tooltip key={color.id} label={color.label}>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={selected === color.id}
-                  aria-label={color.label}
-                  onClick={() => writeSpeakingColor(color.id)}
-                  className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-full transition-[box-shadow] duration-150",
-                    selected === color.id && "shadow-[0_0_0_2px_hsl(var(--card)),0_0_0_4px_hsl(var(--foreground))]",
-                  )}
-                  style={{ backgroundColor: `hsl(${color.hsl})` }}
-                >
-                  {selected === color.id ? <Check className="h-3.5 w-3.5 text-primary-foreground" /> : null}
-                </button>
-              </Tooltip>
-            ))}
-          </div>
-        </div>
+        <SwatchRow
+          label="Speaking colour"
+          swatches={SPEAKING_COLORS.map((color) => ({ id: color.id, label: color.label, background: `hsl(${color.hsl})` }))}
+          selected={useSpeakingColor()}
+          onSelect={writeSpeakingColor}
+        />
       </SettingsRows>
     </SettingsSection>
   );
@@ -471,6 +579,8 @@ function AudioVideoSettings({ data, media }: { data: RavenShellData; media: Rave
           <SettingsToggleRow label="Never join already sharing" description="A screen share you started earlier does not carry into the next call." checked={joinNoShare} onChange={setJoinNoShare} />
         </SettingsRows>
       </SettingsSection>
+
+      <PushToTalkSettings />
 
       <ConfirmLeaveSection />
 
@@ -703,7 +813,7 @@ const NETWORK_CATEGORIES: Array<{ id: NetworkActivityCategory; label: string; de
   { id: "video", label: "Video" },
   { id: "screenShare", label: "Screen share" },
   { id: "total", label: "Total" },
-  { id: "connection", label: "Connection", description: "Your round trip to the server and how the link is holding, like “42 ms · Good”." },
+  { id: "connection", label: "Connection", description: "Your round trip to the server and how the link is holding, like “42 ms · Good”. Shown when you open the readout." },
 ];
 
 function toggleSelection<T extends string>(values: T[], value: T, checked: boolean): T[] {

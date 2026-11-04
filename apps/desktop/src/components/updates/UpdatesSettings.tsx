@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Download, RefreshCw, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { parseInline, parseNotes, type NotesBlock } from "@/lib/releaseNotes";
-import { downloadPercent, formatUpdateBytes, updateStatusLine, type RavenUpdater } from "@/lib/updater";
+import { downloadPercent, formatUpdateBytes, releasesSince, updateStatusLine, type RavenUpdater } from "@/lib/updater";
 import {
   SettingsHint,
   SettingsReadOnlyRow,
@@ -92,12 +92,14 @@ export function UpdatesSettingsPanel({ updater }: { updater: RavenUpdater }) {
         <SettingsReadOnlyRow label="Last checked" value={formatTime(state.lastCheckedAtMs)} />
       </SettingsRows>
 
-      {available?.notes ? (
-        <div className="rounded-card bg-secondary/50 px-4 py-3">
-          <div className="text-body">What’s new in {available.version}</div>
-          <ReleaseNotes markdown={available.notes} />
-        </div>
-      ) : null}
+      {available
+        ? releasesSince(available, state.currentVersion).map((release) => (
+            <div key={release.version} className="rounded-card bg-secondary/50 px-4 py-3">
+              <div className="text-body">What’s new in {release.version}</div>
+              <ReleaseNotes markdown={release.notes} />
+            </div>
+          ))
+        : null}
     </SettingsSection>
   );
 }

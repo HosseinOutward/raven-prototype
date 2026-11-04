@@ -683,7 +683,7 @@ function ShellLogin({
                   onClick={() => onSwitchAccount(account)}
                   className="flex w-full items-center gap-2.5 rounded-control px-2.5 py-1.5 text-left transition-colors hover:bg-secondary disabled:opacity-45"
                 >
-                  <AccountSummary account={account} active={false} />
+                  <AccountSummary account={account} accounts={savedAccounts} active={false} />
                 </button>
               ))}
             </div>

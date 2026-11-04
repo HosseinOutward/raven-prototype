@@ -11,6 +11,7 @@ import type { ChatStore } from "@/lib/chat/store";
 import { GroupedList, PresenceDot, SectionLabel } from "../atoms";
 import { personStatus } from "../people";
 import { PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
+import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { namesSentence } from "./shared";
 import { useProfileKnock } from "../useProfileKnock";
 import { usePendingActions } from "../usePendingActions";
@@ -31,6 +32,8 @@ export function UserPageView({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const profileKnock = useProfileKnock(data, person.id);
   const [openingChat, setOpeningChat] = useState(false);
+  // Whose picture is open: this view stays mounted when moving from one person to another.
+  const [viewingPicture, setViewingPicture] = useState<string | null>(null);
 
   const message = () => {
     if (!chat) return;
@@ -63,7 +66,7 @@ export function UserPageView({
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-md px-6 py-12">
         <div className="text-center">
-          <Avatar name={person.name} src={api.userAvatarUrl(person.id)} className="mx-auto h-20 w-20 text-display" />
+          <Avatar name={person.name} src={api.userAvatarUrl(person.id)} className="mx-auto h-20 w-20 text-display" onOpen={() => setViewingPicture(person.id)} />
           <h1 className="mt-4 truncate text-display font-semibold">{person.name}</h1>
           {person.presenceUnknown ? null : (
             <p className="mt-1 inline-flex items-center gap-2 text-small text-muted-foreground">
@@ -163,6 +166,7 @@ export function UserPageView({
         )}
       </div>
 
+      {viewingPicture === person.id ? <ProfilePictureViewer src={api.userAvatarUrl(person.id)} alt={`${person.name}’s profile picture`} onClose={() => setViewingPicture(null)} /> : null}
       <ConfirmDialog
         open={confirmRemove}
         onOpenChange={setConfirmRemove}

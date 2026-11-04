@@ -5,7 +5,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
         mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -94,6 +94,10 @@ pub trait ProcessedSampleSink: Send + Sync {
 pub struct LiveControls {
     gain_bits: AtomicU32,
     muted: AtomicBool,
+    /// Push to talk, on microphones only: true silences the fader without being a mute,
+    /// so the track is not flagged muted and nobody sees an icon. Written by
+    /// `push_to_talk`'s polling thread.
+    talk_gate: OnceLock<Arc<AtomicBool>>,
     /// Safety-limiter ceiling in dB.
     ceiling_bits: AtomicU32,
     /// The processor chain as last edited, and a counter the capture thread compares to
@@ -221,6 +225,12 @@ impl LiveControls {
         self.muted.load(Ordering::Relaxed)
     }
 
+    fn talk_gate_closed(&self) -> bool {
+        self.talk_gate
+            .get()
+            .is_some_and(|gate| gate.load(Ordering::Relaxed))
+    }
+
     fn set_sink(&self, sink: Option<Arc<dyn ProcessedSampleSink>>) {
         *lock_recovering(&self.sink) = sink;
     }
@@ -266,6 +276,8 @@ impl CaptureDemand {
 pub struct CaptureRuntimeManager {
     runtimes: HashMap<AudioSourceId, Box<dyn AudioSourceRuntime>>,
     live: HashMap<AudioSourceId, Arc<LiveControls>>,
+    /// Handed to every microphone's [`LiveControls`].
+    talk_gate: Arc<AtomicBool>,
 }
 
 /// What a [`CaptureRuntimeManager::reconcile`] pass changed. The caller merges
@@ -278,6 +290,13 @@ pub struct CaptureReconcileOutcome {
 }
 
 impl CaptureRuntimeManager {
+    pub fn with_talk_gate(talk_gate: Arc<AtomicBool>) -> Self {
+        Self {
+            talk_gate,
+            ..Self::default()
+        }
+    }
+
     pub fn reconcile(
         &mut self,
         app: &AppHandle,
@@ -324,6 +343,9 @@ impl CaptureRuntimeManager {
                     source.channel_strip.mute.muted,
                 )
             }));
+            if source.source_type == AudioSourceType::Microphone {
+                let _ = controls.talk_gate.set(Arc::clone(&self.talk_gate));
+            }
             controls.set_gain_linear(db_to_linear(source.channel_strip.gain_db));
             controls.set_muted(source.channel_strip.mute.muted);
             controls.set_noise_suppression_depth(
@@ -1647,9 +1669,9 @@ impl SourceProcessingConfig {
     }
 }
 
-/// The gain the fader and mute currently ask for.
+/// The gain the fader, mute and push to talk currently ask for.
 fn fader_target(controls: &LiveControls) -> f32 {
-    if controls.is_muted() {
+    if controls.is_muted() || controls.talk_gate_closed() {
         0.0
     } else {
         controls.gain_linear()
@@ -4323,6 +4345,46 @@ mod tests {
         processing.apply_fader(&mut returning);
         assert!(returning[0] < 0.05);
         assert_eq!(*returning.last().expect("samples"), 0.5);
+    }
+
+    #[test]
+    fn the_talk_gate_ramps_like_a_mute_without_being_one() {
+        let source = tone_source(Vec::new());
+        let controls = LiveControls::new(1.0, false);
+        let gate = Arc::new(AtomicBool::new(false));
+        controls
+            .talk_gate
+            .set(Arc::clone(&gate))
+            .expect("first gate");
+        let mut processing = SourceProcessingConfig::from_source(
+            &source,
+            Arc::clone(&controls),
+            48_000,
+            Arc::new(RenderReference::default()),
+        )
+        .expect("build processing config");
+        steady_output(&mut processing, 0.5);
+
+        gate.store(true, Ordering::Relaxed);
+        let mut fading = vec![0.5_f32; 480];
+        processing.apply_fader(&mut fading);
+        assert!(fading[0] > 0.45, "closing the gate must not click");
+        assert_eq!(*fading.last().expect("samples"), 0.0);
+        assert!(!controls.is_muted(), "the gate is not a mute");
+
+        gate.store(false, Ordering::Relaxed);
+        let mut opening = vec![0.5_f32; 480];
+        processing.apply_fader(&mut opening);
+        assert!(opening[0] < 0.05);
+        assert_eq!(*opening.last().expect("samples"), 0.5);
+
+        // A mute outranks the key: holding it while muted stays silent.
+        controls.set_muted(true);
+        let mut settling = vec![0.5_f32; 480];
+        processing.apply_fader(&mut settling);
+        let mut muted = vec![0.5_f32; 480];
+        processing.apply_fader(&mut muted);
+        assert!(muted.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]

@@ -22,9 +22,13 @@ async function fullBlob(conversationId: string, attachment: ChatAttachment): Pro
 
 /** Asks where to save the image, then saves it. False when the person cancels. */
 export async function saveAttachment(conversationId: string, attachment: ChatAttachment): Promise<boolean> {
-  const blob = await fullBlob(conversationId, attachment);
-  const contentType = blob.type || attachment.contentType;
-  return saveImage(await blob.arrayBuffer(), saveName(attachment.name, contentType), contentType);
+  return saveImageBlob(await fullBlob(conversationId, attachment), attachment.name, attachment.contentType);
+}
+
+/** Asks where to save an image's bytes, then saves them. False when the person cancels. */
+export async function saveImageBlob(blob: Blob, name: string | undefined, fallbackType: string): Promise<boolean> {
+  const contentType = blob.type || fallbackType;
+  return saveImage(await blob.arrayBuffer(), saveName(name, contentType), contentType);
 }
 
 /** PNG bytes of an image, converting through a canvas when it is another format. */
@@ -41,6 +45,10 @@ async function asPng(blob: Blob): Promise<Blob> {
 
 /** Puts the image on the clipboard. WebView2 takes images only as PNG. */
 export async function copyAttachment(conversationId: string, attachment: ChatAttachment): Promise<void> {
-  const png = asPng(await fullBlob(conversationId, attachment));
-  await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+  await copyImageBlob(await fullBlob(conversationId, attachment));
+}
+
+/** Puts an image's bytes on the clipboard. */
+export async function copyImageBlob(blob: Blob): Promise<void> {
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": asPng(blob) })]);
 }

@@ -7,7 +7,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -45,21 +45,23 @@ import {
   previewOutputVolume,
   volumeAfterKey,
 } from "@/lib/outputVolume";
-import { hostOf, type SavedAccount } from "@/lib/accounts";
+import { accountCaption, type SavedAccount } from "@/lib/accounts";
 import { api } from "@/lib/api";
 import { useAvatarVersions } from "@/lib/avatarVersions";
 import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, Video, VideoOff, LogOut } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, Video, VideoOff, LogOut } from "lucide-react";
 import { AccountSummary, ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { ChatStore } from "@/lib/chat/store";
 import { pendingTarget } from "./Inbox";
 import { useVoiceOverlayHeadsUp } from "./useVoiceOverlayHeadsUp";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
-import type { LocalVideoStatus } from "./mediaState";
+import { joinMutedHoldsMic, type LocalVideoStatus } from "./mediaState";
+import { usePushToTalk, type PushToTalkControls } from "./usePushToTalk";
+import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
 import type {
   MeasuredNetworkCategory,
   NetworkActivityCategory,
@@ -134,6 +136,7 @@ export function DeviceDock({
   const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch>(null);
   const confirmLeave = useConfirmLeave();
   const mediaRef = useRef(media);
+  const alwaysJoinMutedRef = useRef(data.preferences.alwaysJoinMuted);
   const hotkeyActionRef = useRef<Set<string>>(new Set());
   const callActionRef = useRef<Set<ThumbnailToolbarAction>>(new Set());
   const [pendingCallActions, setPendingCallActions] = useState<ReadonlySet<ThumbnailToolbarAction>>(() => new Set());
@@ -142,6 +145,7 @@ export function DeviceDock({
   const setPresenceRef = useRef(data.setPresence);
   setPresenceRef.current = data.setPresence;
   mediaRef.current = media;
+  alwaysJoinMutedRef.current = data.preferences.alwaysJoinMuted;
   // The overlay's knock lines act on what the inbox holds now.
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -175,6 +179,12 @@ export function DeviceDock({
   );
   const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const mixerOpen = view.kind === "mixer";
+  const pushToTalk = usePushToTalk(connected && media.localMicEnabled);
+  // The mic stays silent while this is set, so it must not wait for someone to open a menu.
+  const pushToTalkError = pushToTalk.settings?.error ?? null;
+  useEffect(() => {
+    if (pushToTalkError) toast({ title: "Push to talk can’t read your key", description: `Nobody can hear you. ${pushToTalkError}`, tone: "error" });
+  }, [pushToTalkError]);
 
   const runCallAction = useCallback((action: ThumbnailToolbarAction) => {
     const current = mediaRef.current;
@@ -184,6 +194,10 @@ export function DeviceDock({
         ? current.deafenSupported && !current.busy
         : Boolean(current.activeNestId) && current.phase !== "leaving";
     if (!allowed) return;
+    if (action === "mic" && joinMutedHoldsMic(current.activeNestId, current.localMicOn, alwaysJoinMutedRef.current)) {
+      toast({ title: "You join muted", description: "You chose this in Settings. You can unmute once you’re in a call." });
+      return;
+    }
     void runGuardedThumbnailAction(callActionRef.current, action, () => {
       if (action === "mic") return current.toggleMic();
       if (action === "deafen") return current.toggleDeafen();
@@ -299,7 +313,7 @@ export function DeviceDock({
 
   const thumbnailSnapshot = useMemo(() => ({
     signedIn: signedIn && thumbnailToolbarReady,
-    micEnabled: media.localMicEnabled,
+    micEnabled: media.localMicOn,
     micSupported: media.audioSupported,
     deafened: media.localDeafened,
     deafenSupported: media.deafenSupported,
@@ -314,7 +328,7 @@ export function DeviceDock({
     media.busy,
     media.deafenSupported,
     media.localDeafened,
-    media.localMicEnabled,
+    media.localMicOn,
     media.phase,
     pendingCallActions,
     signedIn,
@@ -520,6 +534,7 @@ export function DeviceDock({
       mutedHint={mutedHint}
       dismissMutedHint={dismissMutedHint}
       hotkeys={hotkeys}
+      pushToTalk={pushToTalk}
       micLevel={micLevel}
       onScreenPicker={() => setScreenPickerOpen(true)}
       pendingActions={pendingCallActions}
@@ -582,7 +597,7 @@ export function DeviceDock({
                 </span>
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="start" className="min-w-[280px]">
+            <DropdownMenuContent side="top" align="start" className="w-[260px]">
               <DropdownMenuLabel>How you appear</DropdownMenuLabel>
               {SELECTABLE_PRESENCES.map((value) => (
                 <DropdownMenuItem key={value} onSelect={() => void data.setPresence(value).catch(() => undefined)}>
@@ -607,37 +622,44 @@ export function DeviceDock({
                 </>
               ) : null}
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>Accounts</DropdownMenuLabel>
-              {data.savedAccounts.map((account) => {
-                const active = account.serverUrl === api.getBaseUrl() && account.sessionId === api.getSessionId();
-                const name = account.displayName || account.username;
-                return (
-                  <div key={`${account.serverUrl}|${account.sessionId}`} className="group flex items-center">
-                    <DropdownMenuItem
-                      className="min-w-0 flex-1"
-                      onSelect={() => { if (!active) requestSwitch({ kind: "switch", account }); }}
-                    >
-                      <AccountSummary account={account} active={active} />
-                      {active ? <Check className="text-foreground" /> : null}
-                    </DropdownMenuItem>
-                    {active ? null : (
-                      <DropdownMenuItem
-                        className="w-8 shrink-0 justify-center px-0 text-muted-foreground opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
-                        aria-label={`Sign out of ${name} on ${account.serverName || hostOf(account.serverUrl)}`}
-                        title="Sign out"
-                        onSelect={() => void data.forgetAccount(account).catch(() => undefined)}
-                      >
-                        <LogOut />
-                      </DropdownMenuItem>
-                    )}
-                  </div>
-                );
-              })}
-              <DropdownMenuItem onSelect={() => requestSwitch({ kind: "add" })}>
-                <UserPlus className="text-muted-foreground" />
-                Add an account
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <ArrowLeftRight className="text-muted-foreground" />
+                  Switch account
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-[280px]">
+                  {data.savedAccounts.map((account) => {
+                    const active = account.serverUrl === api.getBaseUrl() && account.sessionId === api.getSessionId();
+                    const name = account.displayName || account.username;
+                    return (
+                      <div key={`${account.serverUrl}|${account.sessionId}`} className="group flex items-center">
+                        <DropdownMenuItem
+                          className="min-w-0 flex-1"
+                          onSelect={() => { if (!active) requestSwitch({ kind: "switch", account }); }}
+                        >
+                          <AccountSummary account={account} accounts={data.savedAccounts} active={active} />
+                          {active ? <Check className="text-foreground" /> : null}
+                        </DropdownMenuItem>
+                        {active ? null : (
+                          <DropdownMenuItem
+                            className="w-8 shrink-0 justify-center px-0 text-muted-foreground opacity-0 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+                            aria-label={`Sign out of ${name} on ${accountCaption(account, data.savedAccounts).server}`}
+                            title="Sign out"
+                            onSelect={() => void data.forgetAccount(account).catch(() => undefined)}
+                          >
+                            <LogOut />
+                          </DropdownMenuItem>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => requestSwitch({ kind: "add" })}>
+                    <UserPlus className="text-muted-foreground" />
+                    Add an account
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               <DropdownMenuItem onSelect={() => onNavigate({ kind: "settings" })}>
                 <Settings className="text-muted-foreground" />
                 Settings
@@ -807,6 +829,7 @@ function DockDeviceControls({
   data,
   media,
   hotkeys,
+  pushToTalk,
   micLevel,
   onScreenPicker,
   pendingActions,
@@ -822,6 +845,7 @@ function DockDeviceControls({
   mutedHint: boolean;
   dismissMutedHint: () => void;
   hotkeys: MediaHotkeySettings | null;
+  pushToTalk: PushToTalkControls;
   micLevel: number | null;
   onScreenPicker: () => void;
   pendingActions: ReadonlySet<ThumbnailToolbarAction>;
@@ -844,6 +868,9 @@ function DockDeviceControls({
   const inCall = media.phase === "connected" && media.activeNestId != null;
   const nest = data.labels.nestSingular.toLowerCase();
   const micShortcut = hotkeyLabel(hotkeys?.mic);
+  const pttSettings = pushToTalk.settings;
+  const pushToTalkOn = Boolean(pttSettings?.supported && pttSettings.enabled);
+  const pttKey = pushToTalkKeyLabel(pttSettings?.key ?? "");
   const sharePausedLine = media.screenSharePause === "minimized"
     ? `Sharing is paused while ${media.sharedAppName ?? "the app"} is minimized.`
     : null;
@@ -874,24 +901,30 @@ function DockDeviceControls({
           </div>
         ) : null}
         onCalloutDismiss={dismissMutedHint}
-        label={!media.audioSupported ? "No microphone available" : media.localMicEnabled ? "Mute" : "Unmute"}
+        label={!media.audioSupported ? "No microphone available" : media.localMicOn ? "Mute" : "Unmute"}
         description={
           !media.audioSupported
             ? undefined
-            : media.localMicEnabled
+            : !inCall && data.preferences.alwaysJoinMuted
+              ? "You join muted. Change this in Settings."
+              : pushToTalkOn && media.localMicOn
+                ? !inCall
+                  ? `In a ${nest}, hold ${pttKey} to talk.`
+                  : pttSettings?.talking ? "People here can hear you." : `Hold ${pttKey} to talk. Nobody can hear you until you do.`
+              : media.localMicOn
               ? inCall ? "People here can hear you." : `Your mic is on. You will be heard when you join a ${nest}.`
-              : inCall ? "Nobody can hear you." : `You will join muted.`
+              : inCall ? `Nobody can hear you.${pushToTalkOn ? " Unmute to use push to talk." : ""}` : `You will join muted.`
         }
         shortcut={micShortcut}
-        tone={media.localMicEnabled ? "neutral" : "cut"}
-        pressed={media.localMicEnabled}
+        tone={!media.localMicOn ? "cut" : pushToTalkOn && inCall ? (pttSettings?.talking ? "on" : "ready") : "neutral"}
+        pressed={media.localMicOn}
         disabled={!media.audioSupported || media.busy || pendingActions.has("mic")}
         onClick={() => onCallAction("mic")}
         menuLabel="Microphone settings"
         menu={<MicMenu media={media} />}
         onArrange={onArrange}
       >
-        {media.localMicEnabled ? <Mic /> : <MicOff />}
+        {media.localMicOn ? <Mic /> : <MicOff />}
         {micLevel !== null ? <LevelBars level={micLevel} /> : null}
       </DockControl>
     ),
@@ -1630,20 +1663,17 @@ function NetworkActivityIndicator({
   const sendingShareQuality = screenShareQualityNotice(activity.screenShareQuality, activity.screenShareCaptureFps);
   const receivingShareQuality = receivedScreenShareQualityNotice(activity.screenShareQuality);
   const measuring = !activity.active || !summary || activity.updatedAt == null;
-  const triggerLabel = [showConnection ? `Connection ${connectionLine}` : null, showRates ? summaryText : null].filter(Boolean).join(", ");
   return (
     <Popover onOpenChange={onOpenChange}>
       <Tooltip label="Network activity">
         <PopoverTrigger asChild>
           <button
             type="button"
-            aria-label={`Network activity: ${triggerLabel}`}
+            aria-label={showRates ? `Network activity: ${summaryText}` : "Network activity"}
             className="hidden h-9 shrink-0 items-center gap-2 rounded-control px-2 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground data-[state=open]:bg-secondary min-[1100px]:flex"
           >
-            {showConnection ? (
-              <span className={cn("rv-mono whitespace-nowrap text-caption tabular-nums", connectionWarning && "text-warning")}>{connectionLine}</span>
-            ) : null}
-            {!showRates ? null : measuring ? (
+            {/* Connection reads only in the popover, so with no rates the icon is what opens it. */}
+            {!showRates ? <Activity className="h-4 w-4" /> : measuring ? (
               <span className="text-caption">{summaryText}</span>
             ) : (
               <span className="rv-mono flex flex-col items-start text-caption leading-[14px] tabular-nums">
