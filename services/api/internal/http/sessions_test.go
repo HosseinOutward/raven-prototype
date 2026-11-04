@@ -1219,3 +1219,16 @@ func TestRejoiningStartsWithBothStatesClear(t *testing.T) {
 		t.Fatalf("rejoining should start clear: %+v", alice)
 	}
 }
+
+// A database that fails for a moment must not sign anyone out.
+func TestADatabaseErrorKeepsTheSession(t *testing.T) {
+	server, token := newTestServer(t)
+	if _, err := server.db.Exec(`ALTER TABLE auth_sessions RENAME TO auth_sessions_away`); err != nil {
+		t.Fatal(err)
+	}
+	getJSON(t, server, token, "/v1/home", http.StatusInternalServerError)
+	if _, err := server.db.Exec(`ALTER TABLE auth_sessions_away RENAME TO auth_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	getJSON(t, server, token, "/v1/home", http.StatusOK)
+}

@@ -444,9 +444,11 @@ func allowedCORSOrigin(origin string) bool {
 }
 
 func (s *Server) requireAuth(c *fiber.Ctx) error {
+	// A database error says nothing about the session. It must not sign anyone out, so
+	// only an answer that the session or its user is no longer good ends the session.
 	sess, err := s.sessions.Get(c)
 	if err != nil {
-		return fiber.NewError(fiber.StatusUnauthorized, "authentication required")
+		return err
 	}
 	sessionID := sess.ID()
 	userID, _ := sess.Get("user_id").(string)
@@ -456,11 +458,17 @@ func (s *Server) requireAuth(c *fiber.Ctx) error {
 	}
 	var expiresAt string
 	err = s.db.QueryRow(`SELECT expires_at FROM auth_sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL`, sessionID, userID).Scan(&expiresAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if err != nil || sessionExpired(expiresAt) {
 		_ = sess.Destroy()
 		return fiber.NewError(fiber.StatusUnauthorized, "authentication required")
 	}
 	user, err := s.findUserByID(userID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if err != nil || user.Status != userStatusActive {
 		_ = sess.Destroy()
 		return fiber.NewError(fiber.StatusUnauthorized, "authentication required")

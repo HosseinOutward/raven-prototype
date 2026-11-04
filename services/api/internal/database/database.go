@@ -43,12 +43,17 @@ func Open(path string) (*DB, error) {
 // and any other one then fails at once on a busy database and skips foreign keys.
 // BEGIN IMMEDIATE makes transactions take the write lock up front, so two of them queue
 // instead of deadlocking when both try to upgrade from a read.
+//
+// WAL lets reads carry on during a write. In SQLite's default journal mode a read that
+// runs a second query while its rows are open can deadlock with a writer that is waiting
+// for them to finish: the second query then fails as "database is locked" after the busy
+// timeout, and handlers such as the launcher's do exactly that.
 func sqliteDSN(path string) string {
 	separator := "?"
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	return path + separator + "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate"
+	return path + separator + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
 }
 
 func OpenFromEnv() (*DB, error) {
