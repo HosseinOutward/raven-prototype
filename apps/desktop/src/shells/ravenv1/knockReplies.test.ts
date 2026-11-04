@@ -63,7 +63,7 @@ test("each answer says what Sara sees and until when", () => {
   expect(answerHint("soon", "Sara", now)).toBe(`Sara sees you’ll come at ${clock(at(2, 14, 42))}. They can knock again then.`);
   expect(answerHint("later", "Sara", now)).toBe("Pick a time. Sara can’t knock before it, and Raven reminds them then.");
   expect(answerHint("not_today", "Sara", now)).toBe(`Sara sees you can’t today. They can knock again from ${clock(at(3, 4, 0))} tomorrow.`);
-  expect(dismissHint("Sara", at(2, 14, 47).toISOString(), now)).toBe(`Clears it for you. Sara isn’t told and sees “No answer yet” until ${clock(at(2, 14, 47))}.`);
+  expect(dismissHint("Sara", at(2, 14, 47).toISOString(), now)).toBe(`Only clears your list. Sara isn’t told, and their knock ends at ${clock(at(2, 14, 47))}.`);
   expect(answerToast("soon", "Sara", at(2, 14, 42), now)).toBe(`Told Sara you’ll come at ${clock(at(2, 14, 42))}.`);
   expect(answerToast("later", "Sara", at(2, 16, 32), now)).toBe(`Raven will remind Sara at ${clock(at(2, 16, 32))}.`);
   expect(answerToast("coming", "Sara", now, now)).toBe("Told Sara you’re coming.");
@@ -84,7 +84,7 @@ const sent: ProfileKnockState = {
 };
 
 test("a sent knock waits, ends quietly, then can be sent again without a reload", () => {
-  expect(knockerView(sent, "Sara", base)).toMatchObject({ disabled: true, label: "Knock sent", description: `No answer yet. The knock ends quietly at ${clock(at(2, 14, 15))}.` });
+  expect(knockerView(sent, "Sara", base)).toMatchObject({ disabled: true, label: "Knock sent", description: `No answer. Raven doesn’t say whether Sara saw it. The knock ends at ${clock(at(2, 14, 15))}.` });
   expect(knockerView(sent, "Sara", base + 900_000)).toMatchObject({ disabled: true, label: "Knock in 60s" });
   expect(knockerView(sent, "Sara", base + 959_999)).toMatchObject({ disabled: true, label: "Knock in 1s" });
   expect(knockerView(sent, "Sara", base + 960_000)).toMatchObject({ disabled: false, label: "Knock" });

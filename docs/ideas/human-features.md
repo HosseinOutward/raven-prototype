@@ -38,8 +38,8 @@ tree. Expires on its own.
   Ostracism research (Williams) shows silence hurts more than a polite no; a one-tap,
   kindly worded "Not today" is cheaper for both people.
 - "Later" reminds only the knocker, at a time they pick. Raven never re-knocks itself.
-- Silence stays acceptable: the knocker sees "No answer yet", never "Ignored", and the
-  knock expires quietly.
+- Silence stays acceptable: the knocker sees "No answer", is told Raven doesn't say
+  whether it was seen, and never sees "Ignored". The knock expires at a stated time.
 - These are replies, not a gate. The no-approval nest knock is unchanged.
 
 ### Say why you're knocking (S)

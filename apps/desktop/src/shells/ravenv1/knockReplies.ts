@@ -91,7 +91,12 @@ export function answerHint(reply: KnockReply, name: string, now: Date): string {
 }
 
 export function dismissHint(name: string, expiresAt: string, now: Date): string {
-  return `Clears it for you. ${name} isn’t told and sees “No answer yet” until ${formatWhen(expiresAt, now)}.`;
+  return `Only clears your list. ${name} isn’t told, and their knock ends at ${formatWhen(expiresAt, now)}.`;
+}
+
+/** The overlay's knock card has no expiry to name, so its hint leaves the time out. */
+export function overlayRemoveHint(name: string) {
+  return `Only clears your list. ${name} isn’t told.`;
 }
 
 /** The first line of the Ask me later… choices: what the pick controls. */
@@ -189,7 +194,7 @@ export function knockerView(state: ProfileKnockState | undefined, name: string, 
     return { disabled: true, label: "Not today", description: line, answerLine: line };
   }
   if (state.state === "pending" && now < Date.parse(state.expiresAt)) {
-    return { disabled: true, label: "Knock sent", description: `No answer yet. The knock ends quietly at ${formatWhen(state.expiresAt, at)}.` };
+    return { disabled: true, label: "Knock sent", description: `No answer. Raven doesn’t say whether ${name} saw it. The knock ends at ${formatWhen(state.expiresAt, at)}.` };
   }
   const seconds = Math.max(1, Math.ceil((Date.parse(state.retryAt) - now) / 1000));
   return {

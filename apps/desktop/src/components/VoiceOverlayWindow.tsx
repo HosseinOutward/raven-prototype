@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { api, type KnockReply } from "@/lib/api";
-import { overlayAnswers } from "@/shells/ravenv1/knockReplies";
+import { overlayAnswers, overlayRemoveHint } from "@/shells/ravenv1/knockReplies";
 import { cn } from "@/lib/utils";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
 import { splitWatcherStack, watchersTooltip, type WatchPerson } from "@/components/media/watchers";
@@ -922,10 +922,12 @@ function HeadsUpLine({
           <button
             type="button"
             data-heads-up-action="dismiss"
+            title={replies ? overlayRemoveHint(line.actorName) : undefined}
+            aria-label={replies ? `Remove. ${overlayRemoveHint(line.actorName)}` : undefined}
             onClick={() => onAnswer(false)}
             className="inline-flex h-6 items-center whitespace-nowrap rounded-control bg-white/10 px-2 text-caption text-muted-foreground transition-colors hover:bg-white/15 hover:text-foreground focus-visible:-outline-offset-2"
           >
-            Dismiss
+            {replies ? "Remove" : "Dismiss"}
           </button>
         </div>
       ) : null}

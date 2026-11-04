@@ -104,9 +104,10 @@ export function KnockAnswerMenu({
                 onSelect={() => setWriting(true)}
               />
               <DropdownMenuSeparator />
+              <DropdownMenuLabel>Not an answer</DropdownMenuLabel>
               <AnswerItem
                 icon={BellOff}
-                label="Dismiss quietly"
+                label="Remove from my list"
                 hint={dismissHint(name, knock.expiresAt, now)}
                 times={[formatWhen(knock.expiresAt, now), "isn’t told"]}
                 onSelect={onDismiss}
