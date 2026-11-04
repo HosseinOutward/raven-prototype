@@ -77,7 +77,9 @@ type LiveUpdate struct {
 	// delivered to a specific audience (see publishTo), never on broadcasts.
 	ActorID   string `json:"actorId,omitempty"`
 	ActorName string `json:"actorName,omitempty"`
-	At        string `json:"at"`
+	// Vote is set on "call.vote" updates, which go only to the people in that vote.
+	Vote *CallVoteUpdate `json:"vote,omitempty"`
+	At   string          `json:"at"`
 }
 
 func newEventBroker() *eventBroker {

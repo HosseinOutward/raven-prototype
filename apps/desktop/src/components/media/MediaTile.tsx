@@ -53,6 +53,7 @@ export function MediaTile({
   inPictureInPicture = false,
   onPictureInPicture,
   onBringBack,
+  onVoteToRemove,
   corner,
   leaving = false,
   className,
@@ -71,6 +72,8 @@ export function MediaTile({
   onReceivingChange?: (receiving: boolean) => void;
   /** This video is in its own window; the tile holds its place and plays nothing. */
   inPictureInPicture?: boolean;
+  /** Absent when no vote can be started about this person. */
+  onVoteToRemove?: () => void;
   /** Absent for video that cannot go into a window (your own screen). */
   onPictureInPicture?: () => void;
   onBringBack?: () => void;
@@ -294,6 +297,12 @@ export function MediaTile({
                 </DropdownMenuItem>
               </>
             )}
+            {onVoteToRemove ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onVoteToRemove}>Vote to remove from call…</DropdownMenuItem>
+              </>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
           </div>

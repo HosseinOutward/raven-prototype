@@ -92,6 +92,8 @@ export function NestView({
         roomLabel={data.labels.nestSingular}
         connectedPeerIds={connectedPeers}
         callStates={callStates}
+        callVote={media.callVote}
+        localUserId={localUserId}
         pictureInPictureKeys={media.pictureInPictureKeys}
         onOpenPictureInPicture={media.openPictureInPicture}
         onClosePictureInPicture={media.closePictureInPicture}

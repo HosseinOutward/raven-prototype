@@ -36,6 +36,7 @@ type Server struct {
 	// can see what was asked for without a LiveKit server.
 	removeParticipant func(room, identity string)
 	closeRoom         func(room string)
+	callVotes         *callVotes
 	loginThrottle     *loginThrottle
 	events            *eventBroker
 	metrics           *serverMetrics
@@ -210,6 +211,7 @@ func New(db *database.DB) *Server {
 	s.events.metrics = s.metrics
 	s.removeParticipant = s.liveKitRemoveParticipant
 	s.closeRoom = s.liveKitDeleteRoom
+	s.callVotes = newCallVotes()
 	s.loginThrottle = newLoginThrottle()
 	s.routes()
 	return s
@@ -347,6 +349,9 @@ func (s *Server) routes() {
 	service.Post("/nests/:id/presence/leave", s.leaveNestPresence)
 	service.Post("/nests/:id/session/join", s.joinCallSession)
 	service.Post("/nests/:id/session/state", s.setCallState)
+	service.Post("/nests/:id/votes", s.startCallVote)
+	service.Get("/nests/:id/votes/current", s.currentCallVote)
+	service.Post("/nests/:id/votes/:voteId/ballot", s.castCallVote)
 	service.Post("/nests/:id/session/leave", s.leaveCallSession)
 	service.Post("/nests/:id/session/disconnect", s.disconnectFromNest)
 	service.Post("/nests/:id/entry-notice", s.announceNestEntry)

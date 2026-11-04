@@ -318,7 +318,7 @@ func (s *Server) requireNestEntry(user User, nest Nest) error {
 	if level < nestAccessMember || !joined {
 		return fiber.NewError(fiber.StatusForbidden, "admission is required before LiveKit access")
 	}
-	return nil
+	return s.requireNotVotedOut(nest.ID, user.ID)
 }
 
 // nestModeratorSQL is the "runs this nest" rule of nestAccess written as SQL, for queries

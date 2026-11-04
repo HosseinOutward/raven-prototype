@@ -5,6 +5,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast, Toaster } from "@/components/ui/toast";
+import { callVoteHeadline } from "@/lib/callVote";
 import { UpdatesSettingsPanel } from "@/components/updates/UpdatesSettings";
 import { AccountSummary, Island } from "./ravenv1/atoms";
 import { DeviceDock } from "./ravenv1/DeviceDock";
@@ -118,6 +119,13 @@ export function RavenShellV1() {
   const entryToasts = useEntryToasts(activeEntryNotices, activeConnectedPeers);
   const view = history.entries[history.index] ?? { kind: "home" };
   useMessageNotifications(chat, data, view);
+  // The stage shows a vote. Looking at something else, you still have to hear of it.
+  const callVote = media.callVote.vote;
+  const callVoteElsewhere = callVote?.outcome === "open" && !(view.kind === "nest" && view.id === callVote.nestId);
+  const callVoteHeadlineText = callVote ? callVoteHeadline(callVote, data.user?.id) : "";
+  useEffect(() => {
+    if (callVoteElsewhere) toast({ title: callVoteHeadlineText, description: "Open the call to see it." });
+  }, [callVote?.id, callVoteElsewhere]); // eslint-disable-line react-hooks/exhaustive-deps
   const canGoBack = history.index > 0;
   const canGoForward = history.index < history.entries.length - 1;
 
