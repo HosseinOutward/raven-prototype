@@ -5096,6 +5096,7 @@ dependencies = [
  "windows-capture",
  "windows-core 0.58.0",
  "windows-core 0.61.2",
+ "x11-dl",
 ]
 
 [[package]]

@@ -121,6 +121,18 @@ pub fn media_hotkeys_update_settings(
     settings_view(&state, &next)
 }
 
+/// The shortcuts in use, so push to talk does not take one of them.
+pub(crate) fn bound_hotkeys(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<MediaHotkeyState>();
+    let Ok(settings) = state.settings.lock() else {
+        return Vec::new();
+    };
+    bindings(&settings)
+        .into_iter()
+        .map(|(hotkey, _)| hotkey)
+        .collect()
+}
+
 fn apply_patch(
     current: &MediaHotkeySettings,
     patch: MediaHotkeySettingsPatch,
@@ -242,7 +254,7 @@ fn save_settings_to_path(
 /// On Linux the backend grabs keys through X11, which works on X11 desktops; a Wayland
 /// compositor does not let an application listen for keys it does not have focus for, so
 /// registering there would appear to succeed and then never fire.
-fn platform_support() -> Result<(), &'static str> {
+pub(crate) fn platform_support() -> Result<(), &'static str> {
     #[cfg(windows)]
     {
         Ok(())

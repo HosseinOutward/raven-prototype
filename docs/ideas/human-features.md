@@ -161,7 +161,7 @@ Softer or no sounds, no motion, fewer toasts.
 | "You're talking while muted" hint | Hot-mic mute keeps capture, so the level can be read locally; nothing new leaves the machine | 0.1.2 |
 | Toast when Raven switches device ("Switched to your headset") | Devices are followed silently today | 0.1.2 |
 | "Others hear you choppy" instead of only a network readout | Say what the number means for other people | 0.1.2 |
-| Push-to-talk release tail (~200 ms) | Stops the last syllable being cut | idea |
+| Push-to-talk release tail (~200 ms) | Stops the last syllable being cut | done |
 | Opt-in local time on a person's page ("It's 23:40 for Mina") | Reach people at a decent hour | idea |
 | Name pronunciation and pronouns on profiles | Dignity | idea |
 

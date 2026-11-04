@@ -50,6 +50,7 @@ import {
 } from "@/lib/soundCues";
 import {
   isConfirmedMicrophoneActive,
+  isLocalMicOn,
   isLocalVideoChosen,
   localSharePause,
   localVideoStatus,
@@ -140,7 +141,10 @@ export interface RavenMediaAdapterState {
   selfMediaPreviewMode: SelfMediaPreviewMode;
   videoPresentationProfile: VideoPresentationProfile;
   videoStreamEndpoint: VideoStreamEndpoint | null;
+  /** Confirmed captured and published right now. Always false outside a call. */
   localMicEnabled: boolean;
+  /** What to tell the user: live in a call, or people will hear this mic on joining. */
+  localMicOn: boolean;
   /** The user has the camera turned on. Outside a call that means chosen, not capturing. */
   localCameraEnabled: boolean;
   /** `live` is the only status in which other people can see the camera. */
@@ -509,6 +513,7 @@ export function useRavenMediaAdapter(
   );
 
   const localMicEnabled = micSources.some(isConfirmedMicrophoneActive);
+  const localMicOn = isLocalMicOn(micSources, activeNestId != null, Boolean(options.alwaysJoinMuted));
   // "On" is the user's choice; "live" is what the engine has confirmed. The two differ
   // outside a call (chosen, nothing captured) and while a source is still starting.
   const cameraStatus = localVideoStatus(cameraSource);
@@ -1063,13 +1068,13 @@ export function useRavenMediaAdapter(
   const toggleMic = useCallback(async () => {
     // Heard at once, as the answer to the click or hotkey. Only in a call: the engine
     // drops it when no call is playing.
-    void audioCommands.playSoundCue(localMicEnabled ? "mute" : "unmute").catch(() => undefined);
-    if (localMicEnabled) {
+    void audioCommands.playSoundCue(localMicOn ? "mute" : "unmute").catch(() => undefined);
+    if (localMicOn) {
       await muteMic();
     } else {
       await publishMic();
     }
-  }, [localMicEnabled, muteMic, publishMic]);
+  }, [localMicOn, muteMic, publishMic]);
 
   const setMicDevice = useCallback(async (deviceId: string | null) => {
     setError("");
@@ -1456,6 +1461,7 @@ export function useRavenMediaAdapter(
     videoPresentationProfile,
     videoStreamEndpoint,
     localMicEnabled,
+    localMicOn,
     localCameraEnabled,
     cameraStatus,
     localDeafened: deafened,
@@ -1491,7 +1497,7 @@ export function useRavenMediaAdapter(
     outputVolumeDb,
     bitrateSupported: false,
     bitrateLabel: "Managed by the native video profile",
-    micLabel: micStateLabel(micSources, localMicEnabled),
+    micLabel: micStateLabel(micSources, localMicOn),
     cameraLabel: localCameraEnabled ? cameraSource?.displayName ?? "Camera on" : "Camera off",
     outputLabel: deafened ? "Deafened" : "Sound on",
     visibilityLabel: activeNestId ? `Visible in ${nestLabel}` : `Not in a ${nestLabel}`,

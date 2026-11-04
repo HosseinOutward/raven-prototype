@@ -106,6 +106,8 @@ windows-capture = "1.4"
 # PipeWire node through the system GStreamer PipeWire plugin.
 ashpd = "0.12.3"
 libc = "0.2"
+# Push to talk reads key and mouse state. Loaded at runtime, as global-hotkey already does.
+x11-dl = "2.21"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Native macOS display/window and system/app audio capture via ScreenCaptureKit.

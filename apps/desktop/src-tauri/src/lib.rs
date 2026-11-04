@@ -12,6 +12,7 @@ mod diagnostics;
 pub mod media_hotkeys;
 mod notifications;
 pub mod overlay;
+pub mod push_to_talk;
 mod thumbnail_toolbar;
 pub mod tray;
 pub mod updater;
@@ -79,6 +80,7 @@ pub fn run() {
         .manage(video_frames)
         .manage(new_voice_overlay_state())
         .manage(new_media_hotkey_state())
+        .manage(push_to_talk::new_push_to_talk_state())
         .manage(tray::new_tray_state())
         .invoke_handler(tauri::generate_handler![
             attachments::attachment_prepare,
@@ -188,6 +190,8 @@ pub fn run() {
             overlay_action,
             media_hotkeys_get_settings,
             media_hotkeys_update_settings,
+            push_to_talk::push_to_talk_get_settings,
+            push_to_talk::push_to_talk_update_settings,
             thumbnail_toolbar::thumbnail_toolbar_update,
             notifications::notifications_supported,
             notifications::notify_knock,
@@ -223,6 +227,7 @@ pub fn run() {
             if let Err(err) = media_hotkeys::initialize(app.handle()) {
                 eprintln!("[raven] media hotkey initialization failed: {err}");
             }
+            push_to_talk::initialize(app.handle());
             audio::devices::spawn_device_watcher(app.handle().clone());
             updater::initialize(app.handle());
             if let Err(err) = tray::initialize(app.handle()) {

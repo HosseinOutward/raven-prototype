@@ -59,6 +59,8 @@ import { pendingTarget } from "./Inbox";
 import { useVoiceOverlayHeadsUp } from "./useVoiceOverlayHeadsUp";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
 import { joinMutedHoldsMic, type LocalVideoStatus } from "./mediaState";
+import { usePushToTalk, type PushToTalkControls } from "./usePushToTalk";
+import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
 import type {
   MeasuredNetworkCategory,
   NetworkActivityCategory,
@@ -176,6 +178,12 @@ export function DeviceDock({
   );
   const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const mixerOpen = view.kind === "mixer";
+  const pushToTalk = usePushToTalk(connected && media.localMicEnabled);
+  // The mic stays silent while this is set, so it must not wait for someone to open a menu.
+  const pushToTalkError = pushToTalk.settings?.error ?? null;
+  useEffect(() => {
+    if (pushToTalkError) toast({ title: "Push to talk can’t read your key", description: `Nobody can hear you. ${pushToTalkError}`, tone: "error" });
+  }, [pushToTalkError]);
 
   const runCallAction = useCallback((action: ThumbnailToolbarAction) => {
     const current = mediaRef.current;
@@ -185,7 +193,7 @@ export function DeviceDock({
         ? current.deafenSupported && !current.busy
         : Boolean(current.activeNestId) && current.phase !== "leaving";
     if (!allowed) return;
-    if (action === "mic" && joinMutedHoldsMic(current.activeNestId, current.localMicEnabled, alwaysJoinMutedRef.current)) {
+    if (action === "mic" && joinMutedHoldsMic(current.activeNestId, current.localMicOn, alwaysJoinMutedRef.current)) {
       toast({ title: "You join muted", description: "You chose this in Settings. You can unmute once you’re in a call." });
       return;
     }
@@ -304,7 +312,7 @@ export function DeviceDock({
 
   const thumbnailSnapshot = useMemo(() => ({
     signedIn: signedIn && thumbnailToolbarReady,
-    micEnabled: media.localMicEnabled,
+    micEnabled: media.localMicOn,
     micSupported: media.audioSupported,
     deafened: media.localDeafened,
     deafenSupported: media.deafenSupported,
@@ -319,7 +327,7 @@ export function DeviceDock({
     media.busy,
     media.deafenSupported,
     media.localDeafened,
-    media.localMicEnabled,
+    media.localMicOn,
     media.phase,
     pendingCallActions,
     signedIn,
@@ -516,6 +524,7 @@ export function DeviceDock({
       mutedHint={mutedHint}
       dismissMutedHint={dismissMutedHint}
       hotkeys={hotkeys}
+      pushToTalk={pushToTalk}
       micLevel={micLevel}
       onScreenPicker={() => setScreenPickerOpen(true)}
       pendingActions={pendingCallActions}
@@ -810,6 +819,7 @@ function DockDeviceControls({
   data,
   media,
   hotkeys,
+  pushToTalk,
   micLevel,
   onScreenPicker,
   pendingActions,
@@ -825,6 +835,7 @@ function DockDeviceControls({
   mutedHint: boolean;
   dismissMutedHint: () => void;
   hotkeys: MediaHotkeySettings | null;
+  pushToTalk: PushToTalkControls;
   micLevel: number | null;
   onScreenPicker: () => void;
   pendingActions: ReadonlySet<ThumbnailToolbarAction>;
@@ -847,6 +858,9 @@ function DockDeviceControls({
   const inCall = media.phase === "connected" && media.activeNestId != null;
   const nest = data.labels.nestSingular.toLowerCase();
   const micShortcut = hotkeyLabel(hotkeys?.mic);
+  const pttSettings = pushToTalk.settings;
+  const pushToTalkOn = Boolean(pttSettings?.supported && pttSettings.enabled);
+  const pttKey = pushToTalkKeyLabel(pttSettings?.key ?? "");
   const sharePausedLine = media.screenSharePause === "minimized"
     ? `Sharing is paused while ${media.sharedAppName ?? "the app"} is minimized.`
     : null;
@@ -877,26 +891,30 @@ function DockDeviceControls({
           </div>
         ) : null}
         onCalloutDismiss={dismissMutedHint}
-        label={!media.audioSupported ? "No microphone available" : media.localMicEnabled ? "Mute" : "Unmute"}
+        label={!media.audioSupported ? "No microphone available" : media.localMicOn ? "Mute" : "Unmute"}
         description={
           !media.audioSupported
             ? undefined
             : !inCall && data.preferences.alwaysJoinMuted
               ? "You join muted. Change this in Settings."
-              : media.localMicEnabled
+              : pushToTalkOn && media.localMicOn
+                ? !inCall
+                  ? `In a ${nest}, hold ${pttKey} to talk.`
+                  : pttSettings?.talking ? "People here can hear you." : `Hold ${pttKey} to talk. Nobody can hear you until you do.`
+              : media.localMicOn
               ? inCall ? "People here can hear you." : `Your mic is on. You will be heard when you join a ${nest}.`
-              : inCall ? "Nobody can hear you." : `You will join muted.`
+              : inCall ? `Nobody can hear you.${pushToTalkOn ? " Unmute to use push to talk." : ""}` : `You will join muted.`
         }
         shortcut={micShortcut}
-        tone={media.localMicEnabled ? "neutral" : "cut"}
-        pressed={media.localMicEnabled}
+        tone={!media.localMicOn ? "cut" : pushToTalkOn && inCall ? (pttSettings?.talking ? "on" : "ready") : "neutral"}
+        pressed={media.localMicOn}
         disabled={!media.audioSupported || media.busy || pendingActions.has("mic")}
         onClick={() => onCallAction("mic")}
         menuLabel="Microphone settings"
         menu={<MicMenu media={media} />}
         onArrange={onArrange}
       >
-        {media.localMicEnabled ? <Mic /> : <MicOff />}
+        {media.localMicOn ? <Mic /> : <MicOff />}
         {micLevel !== null ? <LevelBars level={micLevel} /> : null}
       </DockControl>
     ),

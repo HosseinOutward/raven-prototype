@@ -13,6 +13,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { VoiceOverlaySettingsPanel } from "@/components/VoiceOverlaySettings";
 import { MediaHotkeySettingsPanel } from "@/components/MediaHotkeySettings";
+import { PushToTalkSettings } from "@/components/PushToTalkSettings";
 import { TraySettingsPanel } from "@/components/TraySettings";
 import { NotificationSettingsPanel } from "@/components/NotificationSettings";
 import { SquareImageUpload } from "@/components/SquareImageUpload";
@@ -578,6 +579,8 @@ function AudioVideoSettings({ data, media }: { data: RavenShellData; media: Rave
           <SettingsToggleRow label="Never join already sharing" description="A screen share you started earlier does not carry into the next call." checked={joinNoShare} onChange={setJoinNoShare} />
         </SettingsRows>
       </SettingsSection>
+
+      <PushToTalkSettings />
 
       <ConfirmLeaveSection />
 
