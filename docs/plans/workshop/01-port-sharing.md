@@ -82,6 +82,21 @@ Files to read first: `services/api/cmd/raven-api/main.go` (startup and env), `in
 - **Frames:** one small length-prefixed binary format in `relay/frames.go`, mirrored in Rust, with a version byte.
 - **Production (`infra/raven`):** open the QUIC UDP port in compose and nftables, add a DNS-only relay hostname, and add a certificate. **Deploying is Soroush's call.** Write the steps; do not run them.
 
+### Deployment steps (not run)
+
+The code is built and the API starts the relay only when `RAVEN_RELAY_QUIC_ADDR` is set, so nothing changes in production until these are done by hand.
+
+1. **DNS:** add a DNS-only (not proxied) A record `relay.<raven domain>` pointing at the host's public address. A CDN would not carry QUIC.
+2. **Certificate:** issue a publicly trusted certificate for that hostname (for example `certbot certonly --standalone -d relay.<domain>`, or a DNS-01 challenge) and put `fullchain.pem` and `privkey.pem` under `/srv/raven/relay-tls/` on the host. Renewal replaces the files; restart the `api` container afterwards, because the certificate is read once at start.
+3. **`infra/raven/compose.yaml`**, in the `api` service:
+   - `ports: ["7443:7443/udp"]`
+   - `volumes: ["/srv/raven/relay-tls:/etc/raven-relay:ro"]`
+   - `environment:` `RAVEN_WORKSHOP_PORTS: "on"`, `RAVEN_RELAY_QUIC_ADDR: ":7443"`, `RAVEN_RELAY_TLS_CERT: /etc/raven-relay/fullchain.pem`, `RAVEN_RELAY_TLS_KEY: /etc/raven-relay/privkey.pem`, `RAVEN_RELAY_ENDPOINTS: quic://relay.<domain>:7443`
+4. **`infra/raven/firewall/raven-firewall-apply`:** in the forward chain, next to the LiveKit media rule, add `meta l4proto udp ct original proto-dst 7443 accept`, update the header comment, then run the script. It checks the rules with `nft -c` before installing.
+5. **Image:** build and load a new `raven-api` image (the API now links `quic-go`), set `RAVEN_VERSION`, and `docker compose up -d api`.
+6. **Check:** `GET /v1/workshop/config` reports `enabled: true` and the endpoint, and a Raven client with the switch on can share a port.
+7. **Rollback:** unset `RAVEN_WORKSHOP_PORTS` (or the whole block) and restart `api`. Every share ends, no data is kept.
+
 ## Stage C: desktop
 
 Files to read first: `apps/desktop/src-tauri/src/lib.rs` (command registration), `Cargo.toml`, `apps/desktop/src/lib/api.ts`, `lib/eventStream.ts`, `shells/ravenv1/UserSettings.tsx`, `shells/ravenv1/SettingsScaffold.tsx`, the `raven-ui` skill, `RAVEN_UI_RULES.md`.

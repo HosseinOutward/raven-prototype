@@ -80,6 +80,34 @@ docker run --rm -v "$(basename "$PWD")_raven_media:/media:ro" -v "$PWD/backups:/
 the machine. Restore a dump with `pg_restore --clean --dbname raven` inside the `postgres`
 container, and unpack the media archive back into the volume.
 
+## Port sharing (Workshop)
+
+Port sharing lets people in a call or room share a local TCP or UDP port with each other, relayed through your server. It is off until you turn it on, and the server never dials anything itself: it only joins two Raven clients.
+
+Environment variables for the `api` service:
+
+| Variable | Default | |
+|---|---|---|
+| `RAVEN_WORKSHOP_PORTS` | off | `on` turns the feature on |
+| `RAVEN_RELAY_QUIC_ADDR` | none | UDP address of the QUIC relay, for example `:7443` |
+| `RAVEN_RELAY_TLS_CERT`, `RAVEN_RELAY_TLS_KEY` | none | PEM files for the relay hostname |
+| `RAVEN_RELAY_ENDPOINTS` | none | routes clients try, in order, for example `quic://relay.example.org:7443` |
+| `RAVEN_WORKSHOP_MAX_SHARES` | 3 | active shares per person |
+| `RAVEN_WORKSHOP_MAX_CONSUMERS` | 8 | people connected to one share |
+| `RAVEN_WORKSHOP_MAX_FLOWS` | 16 | open TCP connections plus UDP flows per person per share |
+| `RAVEN_WORKSHOP_SHARE_MBPS` | 20 | bandwidth per share, both directions together |
+| `RAVEN_WORKSHOP_DAILY_GB` | 20 | traffic per person per UTC day (kept in memory; a restart resets it) |
+| `RAVEN_WORKSHOP_MAX_MINUTES` | 720 | longest a share may last (the default is 120) |
+
+Things to know:
+
+- **Open the QUIC port.** QUIC is UDP. Open `RAVEN_RELAY_QUIC_ADDR`’s port in your firewall and map it in compose (`7443:7443/udp`).
+- **The certificate must be publicly trusted** (for example Let’s Encrypt) for the relay hostname, because clients verify it against the usual root certificates. The API reads it once at start; restart `api` after renewing.
+- **Keep the relay hostname out of a CDN.** CDNs generally don’t proxy raw QUIC, so use a DNS-only record. A CDN that did proxy it would end TLS and could read every forwarded byte, and many CDNs have idle timeouts and terms that forbid bulk traffic.
+- Until end-to-end encryption exists, you, as the operator, can read the bytes that pass through. The app tells people so.
+- A restart ends every share; clients show "The relay restarted. Share the port again."
+- The two capabilities `workshop.share_ports` and `workshop.use_ports` are allowed by default and can be changed per account in the admin dashboard.
+
 ## Troubleshooting
 
 - **"Server unreachable" on the sign-in screen**: the proxy or certificate is wrong. Open

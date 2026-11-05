@@ -458,6 +458,8 @@ export function useRavenShellData(): RavenShellData {
       }
       // Held by useCallVote. A tally changes nothing that needs fetching again.
       if (update.type === "call.vote") return;
+      // Held by lib/workshop.ts. A shared port changes nothing that needs fetching again.
+      if (update.type.startsWith("workshop.")) return;
       if (update.type === "profile.avatar") {
         // Only the picture changed. Its new version swaps it wherever it is shown.
         if (update.actorId && update.at) noteAvatarVersion(update.actorId, update.at);

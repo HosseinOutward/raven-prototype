@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { PasswordChangeForm } from "./PasswordChangeForm";
 import { InvitationsSettings } from "./InvitationsSettings";
 import { YourDataSettings } from "./YourDataSettings";
+import { WorkshopSettings } from "./WorkshopSettings";
 import { capabilitiesOf } from "@/lib/permissions";
-import { Bell, Check, Download, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video } from "lucide-react";
+import { Bell, Check, Download, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video, Wrench } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
@@ -45,7 +46,7 @@ import type {
   RavenMediaAdapterState,
 } from "./useRavenMediaAdapter";
 
-export type UserSettingsSection = "profile" | "messages" | "sessions" | "data" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "updates" | "about";
+export type UserSettingsSection = "profile" | "messages" | "sessions" | "data" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "workshop" | "updates" | "about";
 
 const GROUPS: SettingsCategoryGroup[] = [
   {
@@ -73,6 +74,7 @@ const GROUPS: SettingsCategoryGroup[] = [
     label: "System",
     categories: [
       { id: "server", label: "Server", icon: <ServerIcon /> },
+      { id: "workshop", label: "Workshop", icon: <Wrench /> },
       { id: "updates", label: "Updates", icon: <RefreshCw /> },
       { id: "about", label: "About", icon: <Info /> },
     ],
@@ -190,6 +192,8 @@ export function UserSettingsView({
       );
     case "server":
       return <ServerSettings data={data} />;
+    case "workshop":
+      return <WorkshopSettings data={data} />;
     case "updates":
       return (
         <SettingsPage title="Updates">

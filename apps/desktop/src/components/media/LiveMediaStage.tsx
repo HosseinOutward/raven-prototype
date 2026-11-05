@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, Eye, Focus, HeadphoneOff, LayoutGrid, Loader2, Maximize2, MicOff, Minimize2, MonitorUp, MoreHorizontal, WifiLow, WifiOff } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -65,6 +65,7 @@ export function LiveMediaStage({
   selfMediaPreviewMode,
   watchNewShares = false,
   onWatchNewSharesChange,
+  headerExtra,
   onStopScreenShare,
   onRetryAudio,
   satellites = EMPTY_SATELLITES,
@@ -93,6 +94,8 @@ export function LiveMediaStage({
   selfMediaPreviewMode: SelfPreviewMode;
   watchNewShares?: boolean;
   onWatchNewSharesChange?: (watch: boolean) => void;
+  /** Controls placed in the header before the layout buttons, such as the Workshop’s Ports. */
+  headerExtra?: ReactNode;
   onStopScreenShare?: () => void;
   onRetryAudio?: () => void;
   /** Extra audio sources per person (system audio, an app, a second input). */
@@ -344,6 +347,7 @@ export function LiveMediaStage({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          {headerExtra}
           {visual.length > 1 ? (
             <div className="flex rounded-control bg-background/60 p-0.5" role="group" aria-label="Layout">
               <LayoutButton active={focusTiles.length !== 1} label="Grid" onClick={returnToGrid}><LayoutGrid /></LayoutButton>

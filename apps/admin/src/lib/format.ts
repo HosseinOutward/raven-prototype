@@ -48,6 +48,8 @@ export const CAPABILITY_TEXT: Record<CapabilityName, { title: string; descriptio
   "messages.send": { title: "Send messages", description: "Write in conversations they can read. Needs Read messages." },
   "groups.create": { title: "Create group chats", description: "Start a group conversation with friends. Needs Read messages." },
   "invites.create": { title: "Invite people", description: "Make single-use invite codes for friends. Needs Invitations turned on. A limit caps open invites." },
+  "workshop.share_ports": { title: "Share ports", description: "Share a port from their computer with others in a call or room, through the relay. Also needs port sharing turned on for the server." },
+  "workshop.use_ports": { title: "Use shared ports", description: "Connect to ports others have shared in a call or room." },
 };
 
 /** The capabilities that take a limit, and what the limit counts. */

@@ -43,6 +43,8 @@ setting per account: follow the default, allow, or don't allow.
 | `messages.read` | Chat is absent: no conversations, no history, no chat events on the stream. |
 | `messages.send` | Chat is read-only. Needs `messages.read`. |
 | `groups.create` | Cannot create group chats. Needs `messages.read`. |
+| `workshop.share_ports` | Cannot publish a port in the Workshop. Allowed by default; port sharing as a whole also needs the server's `RAVEN_WORKSHOP_PORTS=on`. |
+| `workshop.use_ports` | Cannot connect to a port someone shared. Allowed by default. |
 | `invites.create` | Cannot make invite codes. Starts off. Allowed, it can carry a limit on open invites. Always off while the server's Invitations switch is off, administrators included. |
 
 Every default except `invites.create` starts as allowed with no limit, so installing this
@@ -52,6 +54,10 @@ however it was made.
 The desktop app receives the signed-in account's capabilities with `/v1/auth/me` and
 `/v1/home` (`user.capabilities`) and hides what the account cannot do. The server enforces
 them regardless (`internal/http/capabilities.go`).
+
+### Planned: a "Share ports" permission
+
+Port sharing (the Workshop) is open to every account whose `workshop.share_ports` capability is on. A later change adds a per-Tree, per-user "Share ports" permission that owners and moderators set in the Tree’s settings, so a Tree can decide who may publish a port in its Nests and rooms.
 
 ## Space roles
 

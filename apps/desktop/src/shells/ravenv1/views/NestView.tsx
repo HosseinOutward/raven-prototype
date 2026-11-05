@@ -8,6 +8,7 @@ import type { VoiceModeration } from "@/components/media/VoiceModeration";
 import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { PortsControl } from "@/components/workshop/PortsPanel";
 import { api, type LauncherNest, type Nest } from "@/lib/api";
 import { knownConnectedPeerIds } from "@/lib/callArrivals";
 import { callStatesByUser, callStateSupported, voiceModerationSupported } from "@/lib/callState";
@@ -101,6 +102,7 @@ export function NestView({
         selfMediaPreviewMode={media.selfMediaPreviewMode}
         watchNewShares={watchNewSharesPreference(data.preferences)}
         onWatchNewSharesChange={(watchNewShares) => void data.updatePreferences({ watchNewShares }).catch(() => undefined)}
+        headerExtra={<PortsControl placeKind="nest" placeId={nest.id} userId={localUserId} people={nestPeople(nest, data).filter((person) => person.id !== localUserId)} />}
         onStopScreenShare={() => void media.stopScreenShare().catch(() => undefined)}
         onRetryAudio={() => void media.retryIncomingAudio()}
         satellites={satellites}

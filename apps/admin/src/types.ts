@@ -36,7 +36,9 @@ export type CapabilityName =
   | "messages.read"
   | "messages.send"
   | "groups.create"
-  | "invites.create";
+  | "invites.create"
+  | "workshop.share_ports"
+  | "workshop.use_ports";
 
 export type CapabilityMode = "inherit" | "allow" | "deny";
 

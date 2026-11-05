@@ -8,6 +8,7 @@ import {
 } from "@/lib/accounts";
 import { avatarVersion, noteAvatarRoute } from "@/lib/avatarVersions";
 import { parseCallVote, type CallVote } from "@/lib/callVote";
+import type { WorkshopConfig, WorkshopPlaceKind, WorkshopProtocol, WorkshopShare } from "@/lib/workshopState";
 
 const DEFAULT_API_BASE_URL = normalizeApiServerUrl(import.meta.env.VITE_RAVEN_API_URL ?? "http://127.0.0.1:6977");
 const API_SERVER_URL_KEY = "raven.apiServerUrl";
@@ -87,6 +88,9 @@ export interface NestLiveUpdate {
   actorName?: string;
   /** On "call.vote" updates, which reach only the people in that vote. */
   vote?: CallVote;
+  /** On "workshop.share.*" updates: the share, and on "ended" why it ended. */
+  share?: WorkshopShare;
+  reason?: string;
   at?: string;
 }
 
@@ -127,6 +131,9 @@ export interface UserCapabilities {
   createInvites?: boolean;
   /** How many open invites the account may have; null is no limit. */
   maxOpenInvites?: number | null;
+  /** Workshop port sharing: publishing a local port, and connecting to one. */
+  sharePorts?: boolean;
+  usePorts?: boolean;
 }
 
 /** One invite code as the person who made it sees it. The code itself is shown only once. */
@@ -530,6 +537,8 @@ export function parseNestLiveUpdateData(data: string): NestLiveUpdate | null {
       actorId: typeof parsed.actorId === "string" && parsed.actorId ? parsed.actorId : undefined,
       actorName: typeof parsed.actorName === "string" && parsed.actorName ? parsed.actorName : undefined,
       vote: parseCallVote(parsed.vote),
+      share: parsed.share && typeof parsed.share === "object" ? (parsed.share as WorkshopShare) : undefined,
+      reason: typeof parsed.reason === "string" && parsed.reason ? parsed.reason : undefined,
       at: typeof parsed.at === "string" && parsed.at ? parsed.at : undefined,
     };
   } catch {
@@ -1104,6 +1113,34 @@ export class ApiClient {
 
   joinSession(nestId: string) {
     return this.request<{ session: SessionSummary }>(`/v1/nests/${nestId}/session/join`, { method: "POST" });
+  }
+
+  workshopConfig() {
+    return this.request<WorkshopConfig>("/v1/workshop/config");
+  }
+
+  workshopShares(placeKind: WorkshopPlaceKind, placeId: string) {
+    return this.request<{ shares: WorkshopShare[] }>(`/v1/workshop/places/${placeKind}/${placeId}/shares`);
+  }
+
+  createWorkshopShare(body: {
+    placeKind: WorkshopPlaceKind;
+    placeId: string;
+    name: string;
+    protocol: WorkshopProtocol;
+    port: number;
+    audience: "all" | string[];
+    minutes: number;
+  }) {
+    return this.request<{ share: WorkshopShare }>("/v1/workshop/shares", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  extendWorkshopShare(shareId: string, minutes: number) {
+    return this.request<{ share: WorkshopShare }>(`/v1/workshop/shares/${shareId}/extend`, { method: "POST", body: JSON.stringify({ minutes }) });
+  }
+
+  deleteWorkshopShare(shareId: string) {
+    return this.request<void>(`/v1/workshop/shares/${shareId}`, { method: "DELETE" });
   }
 
   currentCallVote(nestId: string) {

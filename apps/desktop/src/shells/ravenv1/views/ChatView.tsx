@@ -19,12 +19,13 @@ import type { ChatStore } from "@/lib/chat/store";
 import type { ChatAttachment, ChatMember, ChatMessage, ConversationState, PreparedAttachment } from "@/lib/chat/types";
 import { EmptyState, PersonAvatar } from "../atoms";
 import { personNestAction, personStatus } from "../people";
-import { PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
+import { displayNameFor, PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
 import type { NestEntryController } from "../useNestEntry";
 import { useProfileKnock } from "../useProfileKnock";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useChatSelector, useConversation, useImageLimits, useWindowActive } from "../useChat";
 import { ViewHeader } from "./shared";
+import { PortsControl } from "@/components/workshop/PortsPanel";
 
 type Confirmation =
   | { kind: "remove-message"; message: ChatMessage }
@@ -267,6 +268,16 @@ function OpenConversation({
         titleLink={summary.kind === "dm" && summary.peer ? { label: `Open ${name}’s profile`, onOpen: () => onNavigate({ kind: "user", id: summary.peer!.id }) } : undefined}
         actions={
           <>
+            {summary.kind === "nest" ? (
+              <PortsControl
+                placeKind="room"
+                placeId={id}
+                userId={data.user?.id}
+                people={(summary.treeId ? data.getTreeDetails(summary.treeId)?.members ?? [] : [])
+                  .filter((member) => member.userId !== data.user?.id && member.state === "joined")
+                  .map((member) => ({ id: member.userId, name: displayNameFor(member) }))}
+              />
+            ) : null}
             {peer ? <PersonActions person={peer} data={data} media={media} entry={entry} onNavigate={onNavigate} /> : null}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
