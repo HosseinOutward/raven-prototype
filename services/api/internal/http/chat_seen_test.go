@@ -8,6 +8,7 @@ import (
 type seenPayload struct {
 	Seq     int64            `json:"seq"`
 	Readers []chatSeenReader `json:"readers"`
+	ReadSeq int64            `json:"readSeq"`
 }
 
 func chatSeen(t *testing.T, server *Server, token, conversationID string) seenPayload {
@@ -243,4 +244,31 @@ func TestChatSettingsKeepTheOldNameAndTellEveryoneWhenASwitchMoves(t *testing.T)
 		t.Fatalf("switches are independent and sticky: %+v", got)
 	}
 	chatDo(t, server, http.MethodPost, alice.token, "/v1/chat/settings", map[string]bool{}, http.StatusBadRequest)
+}
+
+func TestChatSeenReportsHowFarTheFurthestReaderRead(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	alice := chatAlice(t, server, aliceToken)
+	bob, carol := chatNewPerson(t, server, "bob"), chatNewPerson(t, server, "carol")
+	chatBefriend(t, server, alice, bob)
+	chatBefriend(t, server, alice, carol)
+	group := chatNewGroup(t, server, alice, "crew", bob, carol)
+	one := chatSend(t, server, alice.token, group.ID, "one").Seq
+	chatSend(t, server, alice.token, group.ID, "two")
+
+	if seen := chatSeen(t, server, alice.token, group.ID); seen.ReadSeq != 0 {
+		t.Fatalf("nobody has read yet: %+v", seen)
+	}
+	// Bob read only the first: no one has seen the last, but the first is seen.
+	chatRead(t, server, bob.token, group.ID, one)
+	seen := chatSeen(t, server, alice.token, group.ID)
+	expectSeen(t, "only the first read", seen)
+	if seen.ReadSeq != one {
+		t.Fatalf("readSeq %d, want %d", seen.ReadSeq, one)
+	}
+	// A reader whose switch is off does not count.
+	chatSwitch(t, server, bob.token, map[string]bool{"readGroup": false})
+	if seen := chatSeen(t, server, alice.token, group.ID); seen.ReadSeq != 0 {
+		t.Fatalf("a hidden reader must not count: %+v", seen)
+	}
 }

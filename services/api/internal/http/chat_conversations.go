@@ -1179,7 +1179,12 @@ func (s *Server) getChatSeen(c *fiber.Ctx) error {
 		return err
 	}
 	readers := []chatSeenReader{}
-	respond := func() error { return c.JSON(fiber.Map{"seq": access.LastSeq, "readers": readers}) }
+	// readSeq is how far the furthest other reader has read, so that every message up to
+	// it can show as seen by someone, not only the last one.
+	var readSeq int64
+	respond := func() error {
+		return c.JSON(fiber.Map{"seq": access.LastSeq, "readers": readers, "readSeq": readSeq})
+	}
 	if access.LastSeq == 0 {
 		return respond()
 	}
@@ -1206,6 +1211,17 @@ func (s *Server) getChatSeen(c *fiber.Ctx) error {
 		membership = `EXISTS (SELECT 1 FROM tree_members tm WHERE tm.tree_id = ? AND tm.user_id = cm.user_id AND tm.state = 'joined')`
 		args = append(args, access.TreeID)
 	}
+	furthestArgs := append(append([]any{}, args...), access.ConversationID, user.ID)
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(cm.shared_read_seq), 0)
+		 FROM chat_members cm
+		 LEFT JOIN chat_user_settings s ON s.user_id = cm.user_id
+		 WHERE `+membership+` AND cm.conversation_id = ? AND cm.user_id <> ? AND `+chatReadSwitchSQL(category, "s"),
+		furthestArgs...,
+	).Scan(&readSeq); err != nil {
+		return err
+	}
+	readSeq = min(readSeq, access.LastSeq)
 	args = append(args, access.ConversationID, access.LastSeq, user.ID, senderID)
 	rows, err := s.db.Query(
 		`SELECT cm.user_id, u.username, COALESCE(NULLIF(TRIM(p.display_name), ''), u.username), COALESCE(cm.shared_read_at, '')

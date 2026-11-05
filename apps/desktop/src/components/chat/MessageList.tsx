@@ -267,7 +267,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
           const { message } = row;
           const mine = message.senderId === me;
           const status: DeliveryStatus | undefined = mine
-            ? summary.kind === "dm" && summary.peerReadSeq !== undefined && message.seq <= summary.peerReadSeq ? "read" : "sent"
+            ? message.seq <= (summary.kind === "dm" ? (summary.peerReadSeq ?? 0) : (conversation.seen?.readSeq ?? 0)) ? "read" : "sent"
             : undefined;
           const editable = mine && summary.canSend && Date.now() - Date.parse(message.createdAt) < EDIT_WINDOW_MS;
           return (

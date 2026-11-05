@@ -319,7 +319,7 @@ export function applyEvent(state: ChatState, event: ChatEvent, now: number, atBo
         }
       }
       if (created && seq > (conversation.seen?.seq ?? 0)) {
-        conversation = { ...conversation, seen: { seq, readers: [] } };
+        conversation = { ...conversation, seen: { seq, readers: [], readSeq: conversation.seen?.readSeq } };
       }
       if (created) {
         const pending = message.senderId === state.me ? withoutPending(conversation.pending, [message.clientMessageId]) : conversation.pending;
@@ -370,7 +370,11 @@ export function applyEvent(state: ChatState, event: ChatEvent, now: number, atBo
       if (existing.summary.kind === "dm" && readSeq > (existing.summary.peerReadSeq ?? 0)) {
         conversation = { ...conversation, summary: { ...existing.summary, peerReadSeq: readSeq, peerReadAt: event.readAt ?? existing.summary.peerReadAt } };
       }
-      const seen = existing.seen;
+      let seen = existing.seen;
+      if (seen && event.userId && readSeq > (seen.readSeq ?? 0)) {
+        seen = { ...seen, readSeq: Math.min(readSeq, seen.seq) };
+        conversation = { ...conversation, seen };
+      }
       if (seen && event.userId && readSeq >= seen.seq) {
         const known = seen.readers.find((reader) => reader.userId === event.userId);
         const member = existing.members.find((candidate) => candidate.id === event.userId);

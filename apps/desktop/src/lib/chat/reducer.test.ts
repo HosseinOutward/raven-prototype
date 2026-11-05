@@ -415,15 +415,24 @@ describe("who has seen the last message", () => {
     expect(applyEvent(group(), read(ME, 3), NOW).state.conversations[C].seen?.readers).toEqual([]);
   });
 
+  test("a group read short of the last message still moves how far someone has read, and a new message keeps it", () => {
+    const state = applyEvent(group(), read(AVA, 2), NOW).state;
+    expect(state.conversations[C].seen?.readSeq).toBe(2);
+    expect(applyEvent(state, read(BEA, 1), NOW).state.conversations[C].seen?.readSeq).toBe(2);
+    expect(applyEvent(group(), read(ME, 3), NOW).state.conversations[C].seen?.readSeq).toBeUndefined();
+    const after = applyEvent(state, created(4, { senderId: ME }), NOW).state;
+    expect(after.conversations[C].seen).toMatchObject({ seq: 4, readers: [], readSeq: 2 });
+  });
+
   test("a reader who is not a known member is fetched instead of guessed", () => {
     const { effects } = applyEvent(group(), read("zed", 3), NOW);
     expect(effects).toEqual([{ type: "fetchSeen", conversationId: C }]);
   });
 
-  test("a new message clears the readers", () => {
+  test("a new message clears the readers but keeps how far they read", () => {
     const seen = applyEvent(group(), read(AVA, 3, "2026-10-11T10:05:00Z"), NOW).state;
     const next = applyEvent(seen, created(4, { senderId: ME }), NOW).state;
-    expect(next.conversations[C].seen).toEqual({ seq: 4, readers: [] });
+    expect(next.conversations[C].seen).toEqual({ seq: 4, readers: [], readSeq: 3 });
   });
 
   test("conversation.seen asks for the list again", () => {

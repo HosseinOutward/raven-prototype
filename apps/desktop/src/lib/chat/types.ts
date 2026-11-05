@@ -165,6 +165,8 @@ export interface ChatSeenReader {
 export interface ChatSeen {
   seq: number;
   readers: ChatSeenReader[];
+  /** How far the furthest other reader has read: every message up to it is seen by someone. */
+  readSeq?: number;
 }
 
 export interface ChatPage {
