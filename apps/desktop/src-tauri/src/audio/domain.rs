@@ -1090,6 +1090,10 @@ pub struct AudioSessionHealth {
     /// Set when the sidecar lost the room for good: whether rejoining can fix it. A
     /// duplicate sign-in or a removal must not be retried automatically.
     pub connection_lost: Option<AudioConnectionLoss>,
+    /// LiveKit will not take audio from this connection: a moderator muted or deafened them.
+    pub publish_revoked: bool,
+    /// LiveKit will not send audio to this connection: a moderator deafened them.
+    pub subscribe_revoked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

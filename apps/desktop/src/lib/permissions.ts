@@ -10,6 +10,7 @@ export type TreePermission =
   | "members.manage"
   | "members.remove"
   | "messages.moderate"
+  | "voice.moderate"
   | "settings.edit"
   | "roles.assign"
   | "ownership.transfer"
@@ -52,4 +53,20 @@ const EVERYTHING: UserCapabilities = {
  */
 export function capabilitiesOf(user: User | null | undefined): UserCapabilities {
   return user?.capabilities ?? EVERYTHING;
+}
+
+/**
+ * Whether you may mute or deafen someone in this room, so the menu is only offered when the
+ * server would accept it. A space goes by rank; a temporary call belongs to whoever started it.
+ */
+export function canModerateVoice(
+  nest: { creatorUserId: string; treeId?: string | null; type: string },
+  details: TreeDetails | undefined,
+  viewerId: string,
+  targetId: string,
+): boolean {
+  if (viewerId === targetId) return false;
+  if (!nest.treeId || nest.type !== "persistent") return nest.creatorUserId === viewerId;
+  const target = details?.members.find((member) => member.userId === targetId);
+  return Boolean(target) && treeCan(details, "voice.moderate") && treeOutranks(details, target!.role);
 }

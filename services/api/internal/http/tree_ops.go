@@ -237,7 +237,8 @@ func (s *Server) transferTreeOwnershipCore(treeID, newOwnerID string) (string, e
 			return "", err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE tree_members SET role = 'owner', updated_at = ? WHERE tree_id = ? AND user_id = ?`, now, treeID, newOwnerID); err != nil {
+	// Nobody outranks an owner, so a mute kept here could never be lifted.
+	if _, err := tx.Exec(`UPDATE tree_members SET role = 'owner', server_muted = FALSE, server_deafened = FALSE, updated_at = ? WHERE tree_id = ? AND user_id = ?`, now, treeID, newOwnerID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {
@@ -453,6 +454,17 @@ func (s *Server) liveKitRemoveParticipant(room, identity string) {
 		_, err := s.liveKitRooms.RemoveParticipant(ctx, &livekit.RoomParticipantIdentity{Room: room, Identity: identity})
 		if err != nil && !liveKitNotFound(err) {
 			log.Printf("livekit: remove participant from %s: %v", room, err)
+		}
+	}()
+}
+
+func (s *Server) liveKitSetParticipantPermission(room, identity string, permission *livekit.ParticipantPermission) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), liveKitCallTimeout)
+		defer cancel()
+		_, err := s.liveKitRooms.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{Room: room, Identity: identity, Permission: permission})
+		if err != nil && !liveKitNotFound(err) {
+			log.Printf("livekit: set permission in %s: %v", room, err)
 		}
 	}()
 }

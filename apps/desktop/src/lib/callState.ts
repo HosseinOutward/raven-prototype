@@ -10,17 +10,36 @@ export function callStateSupported(session: Pick<SessionSummary, "participants">
   return (session?.participants ?? []).some((participant) => typeof participant.away === "boolean");
 }
 
-export interface ParticipantCallState {
+/** A server that sends these also has the route to change them. */
+export function voiceModerationSupported(session: Pick<SessionSummary, "participants"> | null | undefined) {
+  return (session?.participants ?? []).some((participant) => typeof participant.serverMuted === "boolean");
+}
+
+/** The markers a person sets for themselves. */
+export interface CallMarkers {
   away: boolean;
   deafened: boolean;
+}
+
+export interface ParticipantCallState extends CallMarkers {
+  serverMuted: boolean;
+  serverDeafened: boolean;
+}
+
+function callStateOf(participant: ParticipantSummary | undefined): ParticipantCallState {
+  return {
+    away: participant?.away === true,
+    deafened: participant?.deafened === true,
+    serverMuted: participant?.serverMuted === true,
+    serverDeafened: participant?.serverDeafened === true,
+  };
 }
 
 export function participantCallState(
   participants: ParticipantSummary[] | undefined,
   userId: string,
 ): ParticipantCallState {
-  const participant = (participants ?? []).find((candidate) => candidate.userId === userId);
-  return { away: participant?.away === true, deafened: participant?.deafened === true };
+  return callStateOf((participants ?? []).find((candidate) => candidate.userId === userId));
 }
 
 /**
@@ -29,13 +48,13 @@ export function participantCallState(
  */
 export function callStatesByUser(
   participants: ParticipantSummary[] | undefined,
-  local?: { userId: string } & ParticipantCallState,
+  local?: { userId: string } & CallMarkers,
 ): ReadonlyMap<string, ParticipantCallState> {
   const states = new Map<string, ParticipantCallState>();
   for (const participant of participants ?? []) {
-    states.set(participant.userId, { away: participant.away === true, deafened: participant.deafened === true });
+    states.set(participant.userId, callStateOf(participant));
   }
-  if (local) states.set(local.userId, { away: local.away, deafened: local.deafened });
+  if (local) states.set(local.userId, { ...callStateOf(undefined), ...states.get(local.userId), away: local.away, deafened: local.deafened });
   return states;
 }
 
@@ -44,7 +63,7 @@ export function callStatesByUser(
  * participation starts clear, but someone who rejoins after a dropped connection is still
  * deafened or away. Null when they already agree.
  */
-export function callStateCatchUp(server: ParticipantCallState, want: ParticipantCallState): CallStatePatch | null {
+export function callStateCatchUp(server: CallMarkers, want: CallMarkers): CallStatePatch | null {
   const patch: CallStatePatch = {};
   if (want.deafened !== server.deafened) patch.deafened = want.deafened;
   if (want.away !== server.away) patch.away = want.away;

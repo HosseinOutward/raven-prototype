@@ -5,7 +5,71 @@ import (
 	"time"
 
 	livekitauth "github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
 )
+
+// IdentityKind says which of a person's up to three LiveKit participants a token or
+// permission is for.
+type IdentityKind int
+
+const (
+	IdentityViewer IdentityKind = iota
+	IdentityAudio
+	IdentityVideo
+)
+
+// VoiceLimits are server mute and server deafen. A deafened person is also muted.
+type VoiceLimits struct {
+	Muted    bool
+	Deafened bool
+}
+
+// Any reports whether either limit is set.
+func (l VoiceLimits) Any() bool {
+	return l.Muted || l.Deafened
+}
+
+// CallGrants is what one LiveKit participant may do. A token and a live permission change
+// both come from here, so they cannot disagree.
+type CallGrants struct {
+	CanPublish bool
+	// PublishSources narrows CanPublish to these sources. Empty means every source.
+	PublishSources []livekit.TrackSource
+	CanSubscribe   bool
+}
+
+// CallGrantsFor works out the grants of one identity under some limits.
+//
+// All of a person's audio goes through their audio identity, so taking its publishing away
+// silences the microphone and every extra source and leaves video alone. The other two lose
+// audio sources as well, because peers accept a Raven audio track from any identity with
+// the person's base id, and a modified client could otherwise send its microphone there.
+// Deafen stops only the audio identity receiving: the viewer still needs it for video.
+func CallGrantsFor(kind IdentityKind, limits VoiceLimits) CallGrants {
+	grants := CallGrants{CanPublish: true, CanSubscribe: true}
+	if !limits.Any() {
+		return grants
+	}
+	if kind == IdentityAudio {
+		grants.CanPublish = false
+		grants.CanSubscribe = !limits.Deafened
+		return grants
+	}
+	grants.PublishSources = []livekit.TrackSource{livekit.TrackSource_CAMERA, livekit.TrackSource_SCREEN_SHARE}
+	return grants
+}
+
+// Permission is the same grants as LiveKit's live update takes. That update replaces the
+// whole set, so it carries the data and metadata rights every Raven token has too.
+func (g CallGrants) Permission() *livekit.ParticipantPermission {
+	return &livekit.ParticipantPermission{
+		CanPublish:        g.CanPublish,
+		CanPublishSources: g.PublishSources,
+		CanSubscribe:      g.CanSubscribe,
+		CanPublishData:    true,
+		CanUpdateMetadata: true,
+	}
+}
 
 type LiveKitTokenInput struct {
 	APIKey    string
@@ -14,6 +78,7 @@ type LiveKitTokenInput struct {
 	Identity  string
 	Name      string
 	Role      string
+	Grants    CallGrants
 	ValidFor  time.Duration
 }
 
@@ -22,8 +87,8 @@ func SignLiveKitToken(input LiveKitTokenInput) (string, error) {
 		input.ValidFor = 2 * time.Hour
 	}
 
-	canPublish := true
-	canSubscribe := true
+	canPublish := input.Grants.CanPublish
+	canSubscribe := input.Grants.CanSubscribe
 	canPublishData := true
 	canUpdateOwnMetadata := true
 	metadata, err := json.Marshal(map[string]string{
@@ -34,15 +99,20 @@ func SignLiveKitToken(input LiveKitTokenInput) (string, error) {
 		return "", err
 	}
 
-	token := livekitauth.NewAccessToken(input.APIKey, input.APISecret)
-	token.AddGrant(&livekitauth.VideoGrant{
+	grant := &livekitauth.VideoGrant{
 		RoomJoin:             true,
 		Room:                 input.Session,
 		CanPublish:           &canPublish,
 		CanSubscribe:         &canSubscribe,
 		CanPublishData:       &canPublishData,
 		CanUpdateOwnMetadata: &canUpdateOwnMetadata,
-	}).
+	}
+	if len(input.Grants.PublishSources) > 0 {
+		grant.SetCanPublishSources(input.Grants.PublishSources)
+	}
+
+	token := livekitauth.NewAccessToken(input.APIKey, input.APISecret)
+	token.AddGrant(grant).
 		SetIdentity(input.Identity).
 		SetName(input.Name).
 		SetMetadata(string(metadata)).

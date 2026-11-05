@@ -14,6 +14,7 @@ import { EMPTY_SATELLITES, type AudioSatellites, type SatelliteActions } from ".
 import { SatelliteCluster } from "./SatelliteCluster";
 import { pipKey, pipTargetForTile, type PipTarget } from "@/lib/pictureInPicture";
 import { MediaTile, type MediaFit } from "./MediaTile";
+import { ServerVoiceMark, VoiceModerationMenu, type VoiceModeration } from "./VoiceModeration";
 import { WatcherStack, WatchingMark } from "./WatcherStack";
 import { motionClass, useMotionArmed, useStageMotion, type MotionEntry } from "./stageMotion";
 import { bestGridColumns, newestScreenShareKey, newShareKeys, partitionStageTiles, resolveStageFocusKeys } from "./stageState";
@@ -65,6 +66,7 @@ export function LiveMediaStage({
   roomLabel = "Nest",
   connectedPeerIds = null,
   callStates = null,
+  voiceModeration,
   pictureInPictureKeys = NO_PICTURE_IN_PICTURE,
   onOpenPictureInPicture,
   onClosePictureInPicture,
@@ -73,6 +75,7 @@ export function LiveMediaStage({
   title: string;
   subtitle?: string;
   connected: boolean;
+  voiceModeration?: VoiceModeration;
   phase?: StagePhase;
   audioNotice?: string;
   audioNoticeKind?: "recovering" | "error" | null;
@@ -138,7 +141,7 @@ export function LiveMediaStage({
     const present = isConnecting(nativeTile.participantId, nativeTile.isLocal, connectedPeerIds)
       ? { ...nativeTile, connecting: true }
       : nativeTile;
-    const tile = callState ? { ...present, away: callState.away, deafened: callState.deafened } : present;
+    const tile = callState ? { ...present, away: callState.away, deafened: callState.deafened, serverMuted: callState.serverMuted, serverDeafened: callState.serverDeafened } : present;
     if (tile.isLocal) {
       // Your own share is a card unless you ask for a preview. Without an <img> nothing
       // subscribes to its frames, so no JPEGs are made for it.
@@ -282,6 +285,7 @@ export function LiveMediaStage({
         />
       ) : null}
       tile={tile}
+      moderation={voiceModeration}
       prominent={prominent}
       pinned={manualPinKey === tile.key}
       reconnecting={reconnecting}
@@ -369,7 +373,7 @@ export function LiveMediaStage({
                 {phase === "leaving" ? "Leaving…" : "Getting the room ready…"}
               </div>
             ) : !visual.length ? (
-              <VoiceRoom people={motion.voice} sharers={sharers} onWatch={watchShare} satellites={satelliteProps} />
+              <VoiceRoom people={motion.voice} sharers={sharers} onWatch={watchShare} satellites={satelliteProps} moderation={voiceModeration} />
             ) : focusTiles.length ? (
               <div className={cn("relative flex h-full min-h-0 gap-2", narrowFocus && "flex-col")}>
                 <div
@@ -421,7 +425,7 @@ export function LiveMediaStage({
             ))}
           </div>
         ) : null}
-        {visual.length && motion.voice.length ? <VoiceStrip people={motion.voice} sharers={sharers} onWatch={watchShare} satellites={satelliteProps} /> : null}
+        {visual.length && motion.voice.length ? <VoiceStrip people={motion.voice} sharers={sharers} onWatch={watchShare} satellites={satelliteProps} moderation={voiceModeration} /> : null}
       </div>
 
       {notice ? (
@@ -561,7 +565,7 @@ function SharingMark({ person, share, onWatch, className }: { person: NativeMedi
 }
 
 /** Everyone is here by voice: show people, give them room, ring whoever speaks. */
-function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEntry<StageTile>[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void; satellites: SatelliteProps }) {
+function VoiceRoom({ people, sharers, onWatch, satellites, moderation }: { people: MotionEntry<StageTile>[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void; satellites: SatelliteProps; moderation?: VoiceModeration }) {
   const size = people.length <= 4 ? "h-24 w-24 text-display" : people.length <= 9 ? "h-20 w-20 text-title" : "h-16 w-16 text-body";
   return (
     <div className="flex h-full flex-wrap content-center items-start justify-center gap-x-8 gap-y-8 overflow-y-auto p-6">
@@ -570,7 +574,7 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
         return (
           <div
             key={person.key}
-            className={cn("flex w-32 flex-col items-center text-center", motionClass(phase, "animate-pop-in"))}
+            className={cn("group/person flex w-32 flex-col items-center text-center", motionClass(phase, "animate-pop-in"))}
             aria-hidden={phase === "leave" || undefined}
           >
             <span className="relative">
@@ -582,7 +586,10 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
                 <Avatar name={person.displayName} src={api.userAvatarUrl(person.participantId)} className={size} />
               </span>
               {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="absolute -bottom-0.5 -left-0.5 h-6 w-6 rounded-full bg-card" /> : null}
-              {person.deafened && !person.connecting ? (
+              {phase !== "leave" ? <VoiceModerationMenu person={person} moderation={moderation} className="absolute -right-0.5 -top-0.5 h-6 w-6 bg-card" /> : null}
+              {(person.serverMuted || person.serverDeafened) && !person.connecting ? (
+                <ServerVoiceMark person={person} className="absolute -bottom-0.5 -right-0.5 h-6 w-6" />
+              ) : person.deafened && !person.connecting ? (
                 <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-card text-destructive" title="Deafened" aria-label="Deafened" role="img">
                   <HeadphoneOff className="h-3.5 w-3.5" />
                 </span>
@@ -614,7 +621,7 @@ function VoiceRoom({ people, sharers, onWatch, satellites }: { people: MotionEnt
 }
 
 /** Voice-only people while video is on the stage. */
-function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEntry<StageTile>[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void; satellites: SatelliteProps }) {
+function VoiceStrip({ people, sharers, onWatch, satellites, moderation }: { people: MotionEntry<StageTile>[]; sharers: Map<string, StageTile>; onWatch: (share: StageTile) => void; satellites: SatelliteProps; moderation?: VoiceModeration }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-1.5 overflow-x-auto" aria-label="Here by voice">
       {people.map(({ item: person, phase }) => {
@@ -622,7 +629,7 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
         return (
           <span
             key={person.key}
-            className={cn("flex h-9 shrink-0 items-center gap-2 rounded-full bg-secondary pl-1 pr-3", motionClass(phase, "animate-pop-in"))}
+            className={cn("group/person flex h-9 shrink-0 items-center gap-2 rounded-full bg-secondary pl-1 pr-3", motionClass(phase, "animate-pop-in"))}
             aria-hidden={phase === "leave" || undefined}
           >
             <span
@@ -638,6 +645,8 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
             {share ? <SharingMark person={person} share={share} onWatch={onWatch} className="-mr-1.5 h-6 w-6 shrink-0 rounded-full" /> : null}
             {person.connecting ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="Connecting" />
+            ) : person.serverMuted || person.serverDeafened ? (
+              <ServerVoiceMark person={person} className="h-5 w-5 shrink-0" />
             ) : person.deafened ? (
               <HeadphoneOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Deafened" role="img" />
             ) : person.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
@@ -649,6 +658,7 @@ function VoiceStrip({ people, sharers, onWatch, satellites }: { people: MotionEn
               actions={satellites.actions}
               className="-mr-1.5"
             />
+            {phase !== "leave" ? <VoiceModerationMenu person={person} moderation={moderation} className="-mr-1.5 h-6 w-6 shrink-0" /> : null}
           </span>
         );
       })}

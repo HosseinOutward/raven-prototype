@@ -195,6 +195,9 @@ export interface ParticipantSummary {
   /** "Back in a bit". Absent on a server that predates the call-state route. */
   away?: boolean;
   deafened?: boolean;
+  /** Set by a moderator, and the person can't undo them. Absent on an older server. */
+  serverMuted?: boolean;
+  serverDeafened?: boolean;
 }
 
 export interface CallStatePatch {
@@ -1101,6 +1104,13 @@ export class ApiClient {
 
   setCallState(nestId: string, patch: CallStatePatch) {
     return this.request<{ session: SessionSummary }>(`/v1/nests/${nestId}/session/state`, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  moderateVoice(nestId: string, userId: string, patch: { muted?: boolean; deafened?: boolean }) {
+    return this.request<{ serverMuted: boolean; serverDeafened: boolean }>(`/v1/nests/${nestId}/participants/${userId}/voice`, {
       method: "POST",
       body: JSON.stringify(patch),
     });

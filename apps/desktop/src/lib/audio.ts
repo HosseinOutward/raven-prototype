@@ -361,6 +361,10 @@ export interface AudioSessionHealth {
   outputMeter: MeterState;
   /** Set when the sidecar lost the room for good, with whether rejoining can fix it. */
   connectionLost: AudioConnectionLoss | null;
+  /** LiveKit will not take audio from this connection: a moderator muted or deafened them. */
+  publishRevoked: boolean;
+  /** LiveKit will not send audio to this connection: a moderator deafened them. */
+  subscribeRevoked: boolean;
 }
 
 export interface AudioConnectionLoss {

@@ -27,7 +27,8 @@ use crate::audio::domain::{
     RemoteParticipantAudioState, TrackLifecycleEvent, WebRtcAudioProcessingSettings,
 };
 use crate::audio::engine::{
-    measure_audio_network_totals, AudioEngine, AudioNetworkTotals, OutputMixer,
+    measure_audio_network_totals, server_voice_limits, AudioEngine, AudioNetworkTotals,
+    OutputMixer, ServerVoiceLimits,
 };
 use crate::audio::leveler::{AutoLeveler, LevelObservation};
 use crate::audio::processor::{
@@ -909,13 +910,40 @@ impl AudioEngineState {
         self.clear_remote_tracks();
         let output_volume_db = self.mixer.session.output_volume_db;
         let output_volume_saved = self.mixer.session.output_volume_saved;
+        let publish_revoked = self.mixer.session.publish_revoked;
+        let subscribe_revoked = self.mixer.session.subscribe_revoked;
         self.mixer.session = AudioSessionHealth {
             // Deafen and the volume are user choices that outlive the room.
             output_muted,
             output_volume_db,
             output_volume_saved,
+            // A moderator's limits hold across the reconnect cycle, like capture demand.
+            publish_revoked,
+            subscribe_revoked,
             ..Default::default()
         };
+    }
+
+    /// Record what LiveKit has taken away. The mic is switched off at both edges: nothing can
+    /// be heard while limited, and lifting a mute must not open someone's microphone for them.
+    fn set_server_voice_limits(&mut self, limits: ServerVoiceLimits) {
+        let changed = self.capture_demand.publish_revoked != limits.publish_revoked;
+        self.capture_demand.publish_revoked = limits.publish_revoked;
+        self.mixer.session.publish_revoked = limits.publish_revoked;
+        self.mixer.session.subscribe_revoked = limits.subscribe_revoked;
+        if !changed {
+            return;
+        }
+        let microphones: Vec<AudioSourceId> = self
+            .mixer
+            .local_sources
+            .iter()
+            .filter(|source| source.source_type == AudioSourceType::Microphone)
+            .map(|source| source.id)
+            .collect();
+        for id in microphones {
+            let _ = self.set_local_channel_mute(id, true);
+        }
     }
 
     pub fn clear_remote_tracks(&mut self) {
@@ -2568,6 +2596,13 @@ pub async fn audio_connect_room(
     update_session(&shared, |session| {
         session.connection_status = AudioConnectionStatus::Connected;
     })?;
+    // Before the first publish: LiveKit would leave a refused one hanging.
+    let limits = ops
+        .engine
+        .connected_room()
+        .map(|room| server_voice_limits(&room.local_participant()))
+        .unwrap_or_default();
+    record_server_voice_limits(&shared, &mut ops, limits)?;
 
     let media_error = reconcile_media(&app, &shared, &mut ops).await?;
     drop(ops);
@@ -2623,6 +2658,12 @@ pub async fn audio_set_call_active(
     crate::push_to_talk::set_call_active(&app, active);
     mutate_audio_state(&app, &state, |engine| {
         engine.capture_demand.call_active = active;
+        if !active {
+            // The next call reads its own limits when it connects.
+            engine.capture_demand.publish_revoked = false;
+            engine.mixer.session.publish_revoked = false;
+            engine.mixer.session.subscribe_revoked = false;
+        }
         Ok(())
     })
     .await
@@ -2946,6 +2987,46 @@ pub async fn audio_update_processor_parameter(
 /// Re-run the publication / capture reconcile outside any user action. The engine calls
 /// this after LiveKit reports a reconnect so tracks the SDK failed to restore are
 /// published again.
+fn record_server_voice_limits(
+    state: &SharedAudioEngineState,
+    ops: &mut AudioOps,
+    limits: ServerVoiceLimits,
+) -> Result<(), AudioStateError> {
+    {
+        let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
+        guard.set_server_voice_limits(limits);
+        if limits.subscribe_revoked {
+            guard.mixer.session.eligible_remote_track_count = 0;
+            guard.mixer.session.active_remote_track_count = 0;
+        }
+    }
+    ops.engine.set_subscribe_revoked(limits.subscribe_revoked);
+    Ok(())
+}
+
+/// A moderator muted, deafened or lifted it while connected. Runs the normal reconcile:
+/// publications go or come back and the device follows.
+pub(crate) async fn apply_server_voice_limits(
+    app: &AppHandle,
+    state: &SharedAudioEngineState,
+    limits: ServerVoiceLimits,
+) {
+    let Ok(runtime) = audio_runtime(state) else {
+        return;
+    };
+    let mut ops = runtime.ops.lock().await;
+    if record_server_voice_limits(state, &mut ops, limits).is_err() {
+        return;
+    }
+    if let Ok(Some(message)) = &reconcile_media(app, state, &mut ops).await {
+        eprintln!("[audio-engine] media reconcile after a voice limit failed: {message}");
+    }
+    drop(ops);
+    if let Ok(snapshot) = snapshot_audio_state(state) {
+        let _ = emit_audio_state_changed(app, &snapshot);
+    }
+}
+
 pub(crate) async fn resync_media(app: &AppHandle, state: &SharedAudioEngineState) {
     let Ok(runtime) = audio_runtime(state) else {
         return;
@@ -2998,7 +3079,13 @@ async fn reconcile_media(
     };
     // Reconcile published LiveKit tracks first so the capture manager can attach the
     // matching publish sinks to the (possibly already running) capture threads.
-    let publication_error = ops.engine.reconcile_publications(&sources).await.err();
+    // LiveKit refuses a limited connection's audio, and leaves the attempt hanging.
+    let publishable: &[AudioSourceState] = if demand.publish_revoked {
+        &[]
+    } else {
+        &sources
+    };
+    let publication_error = ops.engine.reconcile_publications(publishable).await.err();
     let sinks = ops.engine.sink_map();
     let render_reference = ops.engine.render_reference();
     let capture = &mut ops.capture;
@@ -3801,6 +3888,49 @@ mod tests {
     use crate::audio::domain::{
         AudioProcessorKind, AudioProcessorState, AutoLevelState, AutoLevelStatus, MeterState,
     };
+
+    #[test]
+    fn a_server_mute_keeps_the_mic_off_at_both_edges_and_across_reconnects() {
+        let mut engine = AudioEngineState::default();
+        let mic = engine.add_local_source(AudioSourceType::Microphone, "Mic").id;
+        let system = engine.add_local_source(AudioSourceType::SystemAudio, "System").id;
+        engine.capture_demand.call_active = true;
+        let muted_now = |engine: &AudioEngineState, id| {
+            engine
+                .mixer
+                .local_sources
+                .iter()
+                .find(|source| source.id == id)
+                .unwrap()
+                .channel_strip
+                .mute
+                .muted
+        };
+
+        let limited = ServerVoiceLimits {
+            publish_revoked: true,
+            subscribe_revoked: false,
+        };
+        engine.set_server_voice_limits(limited);
+        assert!(muted_now(&engine, mic));
+        assert!(!engine.capture_demand.wants_capture());
+
+        engine.reset_after_disconnect(false);
+        assert!(engine.mixer.session.publish_revoked);
+        assert!(!engine.capture_demand.wants_capture());
+
+        // Unmuted some other way while limited: lifting still leaves it off.
+        engine.set_local_channel_mute(mic, false).unwrap();
+        engine.set_server_voice_limits(ServerVoiceLimits::default());
+        assert!(muted_now(&engine, mic));
+        assert!(engine.capture_demand.wants_capture());
+        assert!(!muted_now(&engine, system), "satellites resume as they were");
+
+        // Only a change moves the mic: repeated reads leave the person's own choice alone.
+        engine.set_local_channel_mute(mic, false).unwrap();
+        engine.set_server_voice_limits(ServerVoiceLimits::default());
+        assert!(!muted_now(&engine, mic));
+    }
 
     #[test]
     fn a_room_disconnect_keeps_the_call_holding_capture() {

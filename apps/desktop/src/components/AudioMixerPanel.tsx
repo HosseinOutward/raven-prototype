@@ -131,6 +131,8 @@ const emptyMixerState: AudioMixerState = {
     outputVolumeSaved: false,
     outputMeter: { peakDb: -90, rmsDb: -90, clipping: false },
     connectionLost: null,
+    publishRevoked: false,
+    subscribeRevoked: false,
   },
   autoLevel: { enabled: false },
 };

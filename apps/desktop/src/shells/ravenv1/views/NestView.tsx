@@ -4,12 +4,15 @@ import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
 import { usePushToTalk } from "../usePushToTalk";
 import { groupAudioSatellites, type SatelliteActions } from "@/components/media/audioSatellites";
 import { LiveMediaStage } from "@/components/media/LiveMediaStage";
+import type { VoiceModeration } from "@/components/media/VoiceModeration";
 import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import type { LauncherNest, Nest } from "@/lib/api";
+import { api, type LauncherNest, type Nest } from "@/lib/api";
 import { knownConnectedPeerIds } from "@/lib/callArrivals";
-import { callStatesByUser, callStateSupported } from "@/lib/callState";
+import { callStatesByUser, callStateSupported, voiceModerationSupported } from "@/lib/callState";
+import { canModerateVoice } from "@/lib/permissions";
+import { toast } from "@/components/ui/toast";
 import { AvatarStack, GroupedList, LiveDot } from "../atoms";
 import { formatRelativeTime, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
@@ -58,6 +61,19 @@ export function NestView({
       : null),
     [activeSession, inside, localAway, localDeafened, localUserId],
   );
+  const treeDetails = nest.treeId ? data.getTreeDetails(nest.treeId) : undefined;
+  const canOfferModeration = inside && voiceModerationSupported(activeSession);
+  const voiceModeration = useMemo<VoiceModeration | undefined>(() => {
+    if (!canOfferModeration || !localUserId) return undefined;
+    return {
+      canModerate: (userId) => canModerateVoice(nest, treeDetails, localUserId, userId),
+      setLimit: (userId, patch) => {
+        void api.moderateVoice(nest.id, userId, patch).catch((err: unknown) => {
+          toast({ title: "That didn’t go through", description: err instanceof Error ? err.message : "Try again in a moment.", tone: "error" });
+        });
+      },
+    };
+  }, [canOfferModeration, localUserId, nest, treeDetails]);
   const { setRemoteTrackVolume, setRemoteTrackMuted, stopScreenShare } = media;
   const satelliteActions = useMemo<SatelliteActions>(() => ({
     setVolume: async (satellite, gainDb) => {
@@ -92,6 +108,7 @@ export function NestView({
         roomLabel={data.labels.nestSingular}
         connectedPeerIds={connectedPeers}
         callStates={callStates}
+        voiceModeration={voiceModeration}
         pictureInPictureKeys={media.pictureInPictureKeys}
         onOpenPictureInPicture={media.openPictureInPicture}
         onClosePictureInPicture={media.closePictureInPicture}

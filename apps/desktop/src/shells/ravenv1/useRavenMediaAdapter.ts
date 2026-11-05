@@ -152,6 +152,10 @@ export interface RavenMediaAdapterState {
   /** `live` is the only status in which other people can see the camera. */
   cameraStatus: LocalVideoStatus;
   localDeafened: boolean;
+  /** A moderator muted you, or deafened you, which also mutes. LiveKit enforces it. */
+  localServerMuted: boolean;
+  /** A moderator deafened you. Kept apart from your own deafen, which it returns to. */
+  localServerDeafened: boolean;
   /** Whether you are marked "Back in a bit" for everyone in the call. */
   localAway: boolean;
   /** False against a server that predates the shared call state. */
@@ -1079,7 +1083,11 @@ export function useRavenMediaAdapter(
     }
   }, [micSources, setSafeError]);
 
+  const serverMuted = audioState?.session.publishRevoked === true;
+  const serverDeafened = audioState?.session.subscribeRevoked === true;
+
   const toggleMic = useCallback(async () => {
+    if (serverMuted) return;
     // Heard at once, as the answer to the click or hotkey. Only in a call: the engine
     // drops it when no call is playing.
     void audioCommands.playSoundCue(localMicOn ? "mute" : "unmute").catch(() => undefined);
@@ -1088,7 +1096,7 @@ export function useRavenMediaAdapter(
     } else {
       await publishMic();
     }
-  }, [localMicOn, muteMic, publishMic]);
+  }, [localMicOn, muteMic, publishMic, serverMuted]);
 
   const setMicDevice = useCallback(async (deviceId: string | null) => {
     setError("");
@@ -1201,6 +1209,7 @@ export function useRavenMediaAdapter(
   }, [setRemoteAudioReceiving]);
 
   const toggleDeafen = useCallback(async () => {
+    if (serverDeafened) return;
     const nextDeafened = !deafened;
     setError("");
     setLastError(null);
@@ -1479,6 +1488,8 @@ export function useRavenMediaAdapter(
     localCameraEnabled,
     cameraStatus,
     localDeafened: deafened,
+    localServerMuted: serverMuted,
+    localServerDeafened: serverDeafened,
     localAway: away,
     awaySupported,
     deafenMode,

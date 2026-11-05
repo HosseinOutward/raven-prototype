@@ -65,6 +65,7 @@ at a person is allowed only against someone below you.
 | Create, rename, arrange and end rooms, text rooms and categories | | yes | yes |
 | Add members, answer join requests, invite into rooms | | yes | yes |
 | Remove someone, delete their messages | | members only | anyone else |
+| Server mute and server deafen someone | | members only | anyone else |
 | Name, description, picture, visibility, join policy | | | yes |
 | Make someone a moderator or a member | | | yes |
 | Transfer ownership, delete the space | | | yes |
@@ -85,6 +86,22 @@ with each space as `viewer: { role, permissions }`, which is what the desktop ap
 
 Someone outside a space gets `404` for it, the same as for a space that does not exist.
 Someone inside it without the role gets `403`.
+
+### Server mute and server deafen
+
+A moderator can stop someone being heard (mute), or stop them hearing and being heard
+(deafen), in every room of a space. It is stored on the membership, so leaving the call or
+the space does not clear it; only someone who outranks them can lift it. Ownership transfer
+clears it for the new owner. In a temporary room the person who started the call can do it,
+and it is stored on the seat. There is no audit trail or notice to other members.
+
+LiveKit enforces it, not the client: `POST /v1/nests/:id/participants/:userId/voice` takes
+publishing away from `<userId>#audio`, and deafen also takes subscribing away from it. The
+other two identities keep video but may no longer publish audio sources. Tokens are issued
+with the same grants, and each heartbeat sends them again to heal a token issued before the
+change. Lifting a mute leaves the person's microphone off until they turn it on. A modified
+client could still listen through its viewer identity while deafened, because that identity
+has to subscribe for video.
 
 ### Losing access takes effect at once
 

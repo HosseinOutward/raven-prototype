@@ -17,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/session"
+	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 )
 
@@ -36,6 +37,10 @@ type Server struct {
 	// can see what was asked for without a LiveKit server.
 	removeParticipant func(room, identity string)
 	closeRoom         func(room string)
+	// setParticipantPermission changes what a connected LiveKit participant may do. Also a
+	// field for tests.
+	setParticipantPermission func(room, identity string, permission *livekit.ParticipantPermission)
+	voiceLimitsSeen          *voiceLimitTracker
 	loginThrottle     *loginThrottle
 	events            *eventBroker
 	metrics           *serverMetrics
@@ -210,6 +215,8 @@ func New(db *database.DB) *Server {
 	s.events.metrics = s.metrics
 	s.removeParticipant = s.liveKitRemoveParticipant
 	s.closeRoom = s.liveKitDeleteRoom
+	s.setParticipantPermission = s.liveKitSetParticipantPermission
+	s.voiceLimitsSeen = newVoiceLimitTracker()
 	s.loginThrottle = newLoginThrottle()
 	s.routes()
 	return s
@@ -347,6 +354,7 @@ func (s *Server) routes() {
 	service.Post("/nests/:id/presence/leave", s.leaveNestPresence)
 	service.Post("/nests/:id/session/join", s.joinCallSession)
 	service.Post("/nests/:id/session/state", s.setCallState)
+	service.Post("/nests/:id/participants/:userId/voice", s.moderateVoice)
 	service.Post("/nests/:id/session/leave", s.leaveCallSession)
 	service.Post("/nests/:id/session/disconnect", s.disconnectFromNest)
 	service.Post("/nests/:id/entry-notice", s.announceNestEntry)
@@ -909,6 +917,10 @@ func (s *Server) liveKitToken(c *fiber.Ctx) error {
 		}
 	}
 	session := liveKitSessionName(nest.ID)
+	limits, err := s.voiceLimitsOf(nest, user.ID)
+	if err != nil {
+		return err
+	}
 
 	// Each desktop client joins the room as up to three participants. `?identity=audio`
 	// mints the token for the Rust audio sidecar ("<userId>#audio"); `?identity=video`
@@ -916,13 +928,16 @@ func (s *Server) liveKitToken(c *fiber.Ctx) error {
 	// main presence participant. All share the same room and grants.
 	identity := user.ID
 	tokenRole := role
+	identityKind := auth.IdentityViewer
 	switch c.Query("identity") {
 	case "audio":
 		identity = audioParticipantIdentity(user.ID)
 		tokenRole = "audio"
+		identityKind = auth.IdentityAudio
 	case "video":
 		identity = videoParticipantIdentity(user.ID)
 		tokenRole = "video"
+		identityKind = auth.IdentityVideo
 	}
 
 	token, err := auth.SignLiveKitToken(auth.LiveKitTokenInput{
@@ -932,6 +947,7 @@ func (s *Server) liveKitToken(c *fiber.Ctx) error {
 		Identity:  identity,
 		Name:      user.DisplayName,
 		Role:      tokenRole,
+		Grants:    auth.CallGrantsFor(identityKind, limits),
 	})
 	if err != nil {
 		return err

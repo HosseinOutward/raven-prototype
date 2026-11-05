@@ -55,6 +55,9 @@ export type NativeMediaTile = {
   away?: boolean;
   /** They turned their sound off. Set by the stage, like `away`. */
   deafened?: boolean;
+  /** A moderator muted or deafened them. Set by the stage, like `away`. */
+  serverMuted?: boolean;
+  serverDeafened?: boolean;
 };
 
 export function useNativeMediaTiles(

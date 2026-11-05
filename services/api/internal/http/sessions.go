@@ -20,6 +20,9 @@ type ParticipantSummary struct {
 	// Away is "Back in a bit": a marker with no time or duration, by design.
 	Away     bool `json:"away"`
 	Deafened bool `json:"deafened"`
+	// ServerMuted and ServerDeafened were set by a moderator, and the person cannot undo them.
+	ServerMuted    bool `json:"serverMuted"`
+	ServerDeafened bool `json:"serverDeafened"`
 }
 
 type SessionSummary struct {
@@ -342,7 +345,11 @@ func (s *Server) heartbeatNestActivity(userID, nestID string) error {
 		`UPDATE session_participants SET last_seen_at = ?, updated_at = ? WHERE user_id = ? AND nest_id = ? AND left_at IS NULL`,
 		now, now, userID, nestID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	s.reapplyVoiceLimits(nestID, userID)
+	return nil
 }
 
 // hasOpenNestActivity reports whether the user is still recorded as a live participant
@@ -665,9 +672,15 @@ func (s *Server) sessionsForNest(nestID string) ([]SessionSummary, error) {
 
 func (s *Server) activeParticipants(sessionID string) ([]ParticipantSummary, error) {
 	rows, err := s.db.Query(
-		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), sp.joined_at, sp.away, sp.deafened
+		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), sp.joined_at, sp.away, sp.deafened,
+		        COALESCE(CASE WHEN n.tree_id IS NOT NULL AND n.type = 'persistent' THEN tm.server_muted ELSE nm.server_muted END, FALSE),
+		        COALESCE(CASE WHEN n.tree_id IS NOT NULL AND n.type = 'persistent' THEN tm.server_deafened ELSE nm.server_deafened END, FALSE)
 		 FROM session_participants sp
 		 JOIN users u ON u.id = sp.user_id
+		 JOIN nest_sessions ns ON ns.id = sp.session_id
+		 JOIN nests n ON n.id = ns.nest_id
+		 LEFT JOIN tree_members tm ON tm.tree_id = n.tree_id AND tm.user_id = sp.user_id
+		 LEFT JOIN nest_members nm ON nm.nest_id = n.id AND nm.user_id = sp.user_id
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
 		 WHERE sp.session_id = ? AND sp.left_at IS NULL
 		 ORDER BY sp.joined_at, u.username`,
@@ -680,7 +693,7 @@ func (s *Server) activeParticipants(sessionID string) ([]ParticipantSummary, err
 	participants := []ParticipantSummary{}
 	for rows.Next() {
 		var participant ParticipantSummary
-		if err := rows.Scan(&participant.UserID, &participant.Username, &participant.DisplayName, &participant.JoinedAt, &participant.Away, &participant.Deafened); err != nil {
+		if err := rows.Scan(&participant.UserID, &participant.Username, &participant.DisplayName, &participant.JoinedAt, &participant.Away, &participant.Deafened, &participant.ServerMuted, &participant.ServerDeafened); err != nil {
 			return nil, err
 		}
 		participants = append(participants, participant)

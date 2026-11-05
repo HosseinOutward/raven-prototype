@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
 use livekit::prelude::{
-    ConnectionQuality, LocalAudioTrack, LocalTrack, Participant, RemoteParticipant, RemoteTrack,
+    ConnectionQuality, LocalAudioTrack, LocalParticipant, LocalTrack, Participant,
+    RemoteParticipant, RemoteTrack,
     RemoteTrackPublication, Room, RoomEvent, RoomOptions, TrackKind, TrackPublication, TrackSid,
     TrackSource,
 };
@@ -625,7 +626,10 @@ pub struct AudioEngine {
     connection: Option<RoomConnection>,
     publications: HashMap<AudioSourceId, PublishEntry>,
     output: Arc<OutputMixer>,
+    /// Whether remote audio is received: the user's choice, unless a moderator deafened them.
     receive_remote_audio: Arc<AtomicBool>,
+    receive_wanted: bool,
+    subscribe_revoked: bool,
     /// Last participant-metadata JSON we pushed, so we only re-send on change.
     published_meta: String,
 }
@@ -647,6 +651,8 @@ impl Default for AudioEngine {
             publications: HashMap::new(),
             output: OutputMixer::new(),
             receive_remote_audio: Arc::new(AtomicBool::new(true)),
+            receive_wanted: true,
+            subscribe_revoked: false,
             published_meta: String::new(),
         }
     }
@@ -804,6 +810,18 @@ impl AudioEngine {
     }
 
     pub fn set_remote_audio_receiving(&mut self, enabled: bool) {
+        self.receive_wanted = enabled;
+        self.apply_remote_receiving();
+    }
+
+    /// A moderator's deafen. Kept apart from the user's own choice, which it returns to.
+    pub fn set_subscribe_revoked(&mut self, revoked: bool) {
+        self.subscribe_revoked = revoked;
+        self.apply_remote_receiving();
+    }
+
+    fn apply_remote_receiving(&mut self) {
+        let enabled = self.receive_wanted && !self.subscribe_revoked;
         self.receive_remote_audio.store(enabled, Ordering::SeqCst);
         let subscription_updates = if let Some(connection) = self.connection.as_ref() {
             let local_identity =
@@ -1621,14 +1639,45 @@ impl AudioEngine {
                         // of that failed, a reconcile pass publishes the missing ones.
                         let resync_app = app.clone();
                         let resync_shared = Arc::clone(&shared);
+                        // A full reconnect joins again, so what LiveKit allows may have changed.
+                        let limits = server_voice_limits(&room.local_participant());
                         runtime_handle.spawn(async move {
+                            crate::audio::state::apply_server_voice_limits(
+                                &resync_app,
+                                &resync_shared,
+                                limits,
+                            )
+                            .await;
                             crate::audio::state::resync_media(&resync_app, &resync_shared).await;
                         });
-                        reconcile_room_subscriptions(
-                            &room,
-                            &local_identity,
-                            receive_remote_audio.load(Ordering::SeqCst),
-                        );
+                        // A full reconnect rebuilds the peers from the join response, and the
+                        // SDK sends their subscribe requests down the old session, which drops
+                        // them. Each then reads as wanted with no track, so a reconcile alone
+                        // would send nothing: ask again for those.
+                        let receiving = receive_remote_audio.load(Ordering::SeqCst);
+                        for participant in room.remote_participants().values() {
+                            for publication in participant.track_publications().values() {
+                                let wanted = reconcile_remote_publication(
+                                    publication,
+                                    participant,
+                                    &local_identity,
+                                    receiving,
+                                );
+                                if wanted && !publication.is_subscribed() {
+                                    schedule_subscription_retry(
+                                        &app,
+                                        &shared,
+                                        publication.clone(),
+                                        participant.clone(),
+                                        &retrying_subscriptions,
+                                        Arc::clone(&receive_remote_audio),
+                                        Arc::clone(&active),
+                                        local_identity.clone(),
+                                        "Restoring incoming audio after reconnecting.".to_string(),
+                                    );
+                                }
+                            }
+                        }
                         update_connection_health(
                             &app,
                             &shared,
@@ -1660,6 +1709,22 @@ impl AudioEngine {
                         }
                         report_connection_lost(&app, &shared, reason);
                         break;
+                    }
+                    RoomEvent::ParticipantPermissionChanged {
+                        participant: Participant::Local(local),
+                        ..
+                    } => {
+                        let limits_app = app.clone();
+                        let limits_shared = Arc::clone(&shared);
+                        let limits = server_voice_limits(&local);
+                        runtime_handle.spawn(async move {
+                            crate::audio::state::apply_server_voice_limits(
+                                &limits_app,
+                                &limits_shared,
+                                limits,
+                            )
+                            .await;
+                        });
                     }
                     RoomEvent::ParticipantMetadataChanged {
                         participant,
@@ -1763,6 +1828,32 @@ fn desired_remote_audio_subscription(
         && base_participant_identity(remote_identity) != local_identity
 }
 
+/// What LiveKit has taken from this connection. LiveKit is the authority: this holds however
+/// the limit arrived, in the token or as a live change. An unknown permission limits nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ServerVoiceLimits {
+    pub publish_revoked: bool,
+    pub subscribe_revoked: bool,
+}
+
+impl ServerVoiceLimits {
+    fn from_grants(can_publish: bool, can_subscribe: bool) -> Self {
+        Self {
+            publish_revoked: !can_publish,
+            subscribe_revoked: !can_subscribe,
+        }
+    }
+}
+
+pub(crate) fn server_voice_limits(local: &LocalParticipant) -> ServerVoiceLimits {
+    local
+        .permission()
+        .map(|permission| {
+            ServerVoiceLimits::from_grants(permission.can_publish, permission.can_subscribe)
+        })
+        .unwrap_or_default()
+}
+
 fn reconcile_remote_publication(
     publication: &RemoteTrackPublication,
     participant: &RemoteParticipant,
@@ -1775,19 +1866,6 @@ fn reconcile_remote_publication(
         publication.set_subscribed(should_subscribe);
     }
     should_subscribe
-}
-
-fn reconcile_room_subscriptions(room: &Room, local_identity: &str, receive_remote_audio: bool) {
-    for participant in room.remote_participants().values() {
-        for publication in participant.track_publications().values() {
-            reconcile_remote_publication(
-                publication,
-                participant,
-                local_identity,
-                receive_remote_audio,
-            );
-        }
-    }
 }
 
 fn remote_publication_ids(
@@ -2453,6 +2531,18 @@ mod shared_meta_tests {
 mod round_trip_tests {
     use super::*;
     use livekit::webrtc::stats::CandidatePairStats;
+
+    #[test]
+    fn server_limits_follow_the_grants() {
+        assert_eq!(
+            ServerVoiceLimits::from_grants(true, true),
+            ServerVoiceLimits::default()
+        );
+        let muted = ServerVoiceLimits::from_grants(false, true);
+        assert!(muted.publish_revoked && !muted.subscribe_revoked);
+        let deafened = ServerVoiceLimits::from_grants(false, false);
+        assert!(deafened.publish_revoked && deafened.subscribe_revoked);
+    }
 
     fn pair(nominated: bool, state: IceCandidatePairState, seconds: f64) -> RtcStats {
         let mut stats = CandidatePairStats::default();

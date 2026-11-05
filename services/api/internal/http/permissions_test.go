@@ -126,6 +126,7 @@ func TestTreeRolesFormAStrictOrder(t *testing.T) {
 		{treeActionManageMembers, false, true, true},
 		{treeActionRemoveMember, false, true, true},
 		{treeActionModerateMessages, false, true, true},
+		{treeActionModerateVoice, false, true, true},
 		{treeActionEditSettings, false, false, true},
 		{treeActionAssignRoles, false, false, true},
 		{treeActionTransfer, false, false, true},
@@ -205,7 +206,7 @@ func TestModeratorsCannotActOnTheirEqualsOrTheOwner(t *testing.T) {
 			t.Fatal("a removed member is still listed")
 		}
 	}
-	if details.Viewer.Role != treeRoleModerator || strings.Join(details.Viewer.Permissions, ",") != "rooms.manage,members.manage,members.remove,messages.moderate,leave" {
+	if details.Viewer.Role != treeRoleModerator || strings.Join(details.Viewer.Permissions, ",") != "rooms.manage,members.manage,members.remove,messages.moderate,voice.moderate,leave" {
 		t.Fatalf("unexpected moderator viewer: %+v", details.Viewer)
 	}
 }

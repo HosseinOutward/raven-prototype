@@ -175,7 +175,7 @@ export function DeviceDock({
   // "You're muted" once per mute: the dock callout and the voice overlay show the same signal.
   const talkingWhileMuted = useTalkingWhileMuted(
     media.audioState,
-    connected && media.audioSupported && !media.localMicEnabled && !media.localDeafened,
+    connected && media.audioSupported && !media.localMicEnabled && !media.localDeafened && !media.localServerMuted,
   );
   const [mutedHint, dismissMutedHint] = useMutedHint(talkingWhileMuted, media.localMicEnabled);
   const mixerOpen = view.kind === "mixer";
@@ -186,8 +186,34 @@ export function DeviceDock({
     if (pushToTalkError) toast({ title: "Push to talk can’t read your key", description: `Nobody can hear you. ${pushToTalkError}`, tone: "error" });
   }, [pushToTalkError]);
 
+  // Told once, when it changes. Joining while already limited shows in the dock instead.
+  const { localServerMuted, localServerDeafened } = media;
+  const lastServerLimits = useRef({ muted: localServerMuted, deafened: localServerDeafened });
+  useEffect(() => {
+    const was = lastServerLimits.current;
+    lastServerLimits.current = { muted: localServerMuted, deafened: localServerDeafened };
+    if (!connected) return;
+    if (localServerDeafened && !was.deafened) {
+      toast({ title: "A moderator deafened you", description: "You can’t hear anyone, and they can’t hear you." });
+    } else if (localServerMuted && !was.muted) {
+      toast({ title: "A moderator muted you", description: "People here can’t hear you." });
+    } else if (!localServerMuted && was.muted) {
+      toast({ title: "You can talk again", description: "Your mic stays off until you turn it on." });
+    } else if (!localServerDeafened && was.deafened) {
+      toast({ title: "You can hear people again" });
+    }
+  }, [connected, localServerDeafened, localServerMuted]);
+
   const runCallAction = useCallback((action: ThumbnailToolbarAction) => {
     const current = mediaRef.current;
+    if (action === "mic" && current.localServerMuted) {
+      toast({ title: "A moderator muted you", description: "You can’t unmute until they lift it." });
+      return;
+    }
+    if (action === "deafen" && current.localServerDeafened) {
+      toast({ title: "A moderator deafened you", description: "You can’t hear people until they lift it." });
+      return;
+    }
     const allowed = action === "mic"
       ? current.audioSupported && !current.busy
       : action === "deafen"
@@ -901,9 +927,11 @@ function DockDeviceControls({
           </div>
         ) : null}
         onCalloutDismiss={dismissMutedHint}
-        label={!media.audioSupported ? "No microphone available" : media.localMicOn ? "Mute" : "Unmute"}
+        label={media.localServerMuted ? "Muted by a moderator" : !media.audioSupported ? "No microphone available" : media.localMicOn ? "Mute" : "Unmute"}
         description={
-          !media.audioSupported
+          media.localServerMuted
+            ? "Nobody can hear you, and you can’t unmute until they lift it."
+            : !media.audioSupported
             ? undefined
             : !inCall && data.preferences.alwaysJoinMuted
               ? "You join muted. Change this in Settings."
@@ -916,16 +944,16 @@ function DockDeviceControls({
               : inCall ? `Nobody can hear you.${pushToTalkOn ? " Unmute to use push to talk." : ""}` : `You will join muted.`
         }
         shortcut={micShortcut}
-        tone={!media.localMicOn ? "cut" : pushToTalkOn && inCall ? (pttSettings?.talking ? "on" : "ready") : "neutral"}
-        pressed={media.localMicOn}
-        disabled={!media.audioSupported || media.busy || pendingActions.has("mic")}
+        tone={media.localServerMuted || !media.localMicOn ? "cut" : pushToTalkOn && inCall ? (pttSettings?.talking ? "on" : "ready") : "neutral"}
+        pressed={media.localMicOn && !media.localServerMuted}
+        disabled={media.localServerMuted || !media.audioSupported || media.busy || pendingActions.has("mic")}
         onClick={() => onCallAction("mic")}
         menuLabel="Microphone settings"
         menu={<MicMenu media={media} />}
         onArrange={onArrange}
       >
-        {media.localMicOn ? <Mic /> : <MicOff />}
-        {micLevel !== null ? <LevelBars level={micLevel} /> : null}
+        {media.localMicOn && !media.localServerMuted ? <Mic /> : <MicOff />}
+        {micLevel !== null && !media.localServerMuted ? <LevelBars level={micLevel} /> : null}
       </DockControl>
     ),
     camera: (
@@ -973,18 +1001,18 @@ function DockDeviceControls({
     ),
     hear: (
       <DockControl
-        label={media.localDeafened ? "Hear people again" : "Stop hearing people"}
-        description={media.localDeafened ? "Incoming sound is off. You cannot hear anyone." : undefined}
+        label={media.localServerDeafened ? "Deafened by a moderator" : media.localDeafened ? "Hear people again" : "Stop hearing people"}
+        description={media.localServerDeafened ? "You can’t hear anyone until they lift it." : media.localDeafened ? "Incoming sound is off. You cannot hear anyone." : undefined}
         shortcut={hotkeyLabel(hotkeys?.deafen)}
-        tone={media.localDeafened ? "cut" : "neutral"}
-        pressed={!media.localDeafened}
-        disabled={media.busy || !media.deafenSupported || pendingActions.has("deafen")}
+        tone={media.localDeafened || media.localServerDeafened ? "cut" : "neutral"}
+        pressed={!media.localDeafened && !media.localServerDeafened}
+        disabled={media.localServerDeafened || media.busy || !media.deafenSupported || pendingActions.has("deafen")}
         onClick={() => onCallAction("deafen")}
         menuLabel="Speaker settings"
         menu={<OutputMenu media={media} />}
         onArrange={onArrange}
       >
-        {media.localDeafened ? <HeadphoneOff /> : <Headphones />}
+        {media.localDeafened || media.localServerDeafened ? <HeadphoneOff /> : <Headphones />}
       </DockControl>
     ),
   };

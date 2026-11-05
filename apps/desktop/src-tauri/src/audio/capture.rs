@@ -264,11 +264,14 @@ fn lock_recovering<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub struct CaptureDemand {
     pub call_active: bool,
     pub monitoring: bool,
+    /// A moderator took audio publishing away. Nothing can be sent, so the call is no reason
+    /// to hold the device; the Mixer's own meters still are.
+    pub publish_revoked: bool,
 }
 
 impl CaptureDemand {
     pub fn wants_capture(self) -> bool {
-        self.call_active || self.monitoring
+        (self.call_active && !self.publish_revoked) || self.monitoring
     }
 }
 
@@ -4818,15 +4821,32 @@ mod tests {
     const IDLE: CaptureDemand = CaptureDemand {
         call_active: false,
         monitoring: false,
+        publish_revoked: false,
     };
     const IN_CALL: CaptureDemand = CaptureDemand {
         call_active: true,
         monitoring: false,
+        publish_revoked: false,
     };
     const MONITORING: CaptureDemand = CaptureDemand {
         call_active: false,
         monitoring: true,
+        publish_revoked: false,
     };
+
+    #[test]
+    fn a_server_mute_releases_the_device_but_not_the_mixer_meters() {
+        let revoked_in_call = CaptureDemand {
+            publish_revoked: true,
+            ..IN_CALL
+        };
+        assert!(!revoked_in_call.wants_capture());
+        assert!(CaptureDemand {
+            monitoring: true,
+            ..revoked_in_call
+        }
+        .wants_capture());
+    }
 
     #[test]
     fn captures_only_an_enabled_source_with_a_reason_to() {
@@ -4839,6 +4859,7 @@ mod tests {
         let both = CaptureDemand {
             call_active: true,
             monitoring: true,
+            publish_revoked: false,
         };
 
         for demand in [IDLE, IN_CALL, MONITORING, both] {

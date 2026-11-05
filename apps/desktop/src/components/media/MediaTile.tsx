@@ -28,6 +28,8 @@ import { api } from "@/lib/api";
 import { speakingGlowStyle } from "@/lib/speakingActivity";
 import { sharePausedText } from "./stageState";
 import { StreamInfo } from "./StreamInfo";
+import { stripSidecarIdentity } from "@/lib/mediaIdentity";
+import { ServerVoiceMark, VoiceModerationItems, type VoiceModeration } from "./VoiceModeration";
 import { WatcherStack, WatchingMark } from "./WatcherStack";
 import type { NativeMediaTile } from "./useNativeMediaTiles";
 
@@ -41,6 +43,7 @@ export type MediaFit = "fit" | "fill";
  */
 export function MediaTile({
   tile,
+  moderation,
   prominent = false,
   pinned = false,
   reconnecting = false,
@@ -58,6 +61,7 @@ export function MediaTile({
   className,
 }: {
   tile: NativeMediaTile;
+  moderation?: VoiceModeration;
   prominent?: boolean;
   pinned?: boolean;
   reconnecting?: boolean;
@@ -294,6 +298,12 @@ export function MediaTile({
                 </DropdownMenuItem>
               </>
             )}
+            {moderation && !isShare && !tile.isLocal && moderation.canModerate(stripSidecarIdentity(tile.participantId)) ? (
+              <>
+                <DropdownMenuSeparator />
+                <VoiceModerationItems person={tile} moderation={moderation} />
+              </>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
           </div>
@@ -323,7 +333,9 @@ export function MediaTile({
       <div className="pointer-events-none absolute bottom-2 left-2 flex max-w-[calc(100%-16px)] items-center gap-1.5 rounded-chip bg-black/65 px-2 py-1 text-caption font-medium text-white backdrop-blur-md">
         {isShare ? <MonitorUp className="h-3.5 w-3.5 shrink-0" /> : null}
         <span className="min-w-0 truncate">{label}</span>
-        {!isShare && tile.deafened ? (
+        {!isShare && (tile.serverMuted || tile.serverDeafened) ? (
+          <ServerVoiceMark person={tile} className="h-4 w-4 shrink-0" />
+        ) : !isShare && tile.deafened ? (
           <HeadphoneOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Deafened" role="img" />
         ) : !isShare && tile.audioMuted ? <MicOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Muted" /> : null}
         {!isShare && tile.away ? <span className="shrink-0 font-normal">Back in a bit</span> : null}

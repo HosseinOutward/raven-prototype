@@ -32,6 +32,8 @@ const (
 	// need the actor to outrank them.
 	treeActionRemoveMember     treeAction = "members.remove"
 	treeActionModerateMessages treeAction = "messages.moderate"
+	// treeActionModerateVoice is server mute and server deafen. It is aimed at a person too.
+	treeActionModerateVoice treeAction = "voice.moderate"
 	treeActionEditSettings     treeAction = "settings.edit"
 	treeActionAssignRoles      treeAction = "roles.assign"
 	treeActionTransfer         treeAction = "ownership.transfer"
@@ -75,6 +77,7 @@ var treeActionMinimumRole = map[treeAction]string{
 	treeActionManageMembers:    treeRoleModerator,
 	treeActionRemoveMember:     treeRoleModerator,
 	treeActionModerateMessages: treeRoleModerator,
+	treeActionModerateVoice:    treeRoleModerator,
 	treeActionEditSettings:     treeRoleOwner,
 	treeActionAssignRoles:      treeRoleOwner,
 	treeActionTransfer:         treeRoleOwner,
@@ -88,6 +91,7 @@ var treeViewerActions = []treeAction{
 	treeActionManageMembers,
 	treeActionRemoveMember,
 	treeActionModerateMessages,
+	treeActionModerateVoice,
 	treeActionEditSettings,
 	treeActionAssignRoles,
 	treeActionTransfer,
