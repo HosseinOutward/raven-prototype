@@ -222,6 +222,8 @@ func (s *Server) leaveCallSession(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// Port shares in the call end with the person who shared or used them.
+	s.revalidateWorkshop()
 	return c.JSON(fiber.Map{"session": summary})
 }
 
@@ -308,6 +310,7 @@ func (s *Server) disconnectUserFromNest(nestID, userID, status string, leaveMemb
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	s.revalidateWorkshop()
 
 	now := database.Now()
 	if leaveMembership {

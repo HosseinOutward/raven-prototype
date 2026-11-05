@@ -9,6 +9,9 @@ const (
 	CapabilityMessagesSend    = "messages.send"
 	CapabilityGroupsCreate    = "groups.create"
 	CapabilityInvitesCreate   = "invites.create"
+
+	CapabilityWorkshopSharePorts = "workshop.share_ports"
+	CapabilityWorkshopUsePorts   = "workshop.use_ports"
 )
 
 // Capabilities lists every capability in the order they are shown.
@@ -20,6 +23,8 @@ var Capabilities = []string{
 	CapabilityMessagesSend,
 	CapabilityGroupsCreate,
 	CapabilityInvitesCreate,
+	CapabilityWorkshopSharePorts,
+	CapabilityWorkshopUsePorts,
 }
 
 // permissionsCapabilities are the capabilities that existed when permissionsStatements

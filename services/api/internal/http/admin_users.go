@@ -237,6 +237,8 @@ func (s *Server) adminUserCapabilities(userID, role string) ([]AdminCapability, 
 		database.CapabilityMessagesSend:    effective.SendMessages,
 		database.CapabilityGroupsCreate:    effective.CreateGroups,
 		database.CapabilityInvitesCreate:   effective.CreateInvites,
+		database.CapabilityWorkshopSharePorts: effective.SharePorts,
+		database.CapabilityWorkshopUsePorts:   effective.UsePorts,
 	}
 	capabilities := make([]AdminCapability, 0, len(database.Capabilities))
 	for _, name := range database.Capabilities {

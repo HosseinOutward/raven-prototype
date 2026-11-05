@@ -13,6 +13,7 @@ import (
 	"raven/services/api/internal/auth"
 	"raven/services/api/internal/database"
 	profilemedia "raven/services/api/internal/media"
+	"raven/services/api/internal/relay"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -48,6 +49,8 @@ type Server struct {
 	chatLocks                *keyedMutex
 	// inviteLocks keeps one account's invite count and insert together.
 	inviteLocks *keyedMutex
+	// workshop is the Workshop's port sharing: every active share, in memory.
+	workshop *relay.Registry
 	// What the compatibility gate compares clients against (see compat.go).
 	serverVersion    string
 	minClientVersion string
@@ -219,6 +222,8 @@ func New(db *database.DB) *Server {
 	s.setParticipantPermission = s.liveKitSetParticipantPermission
 	s.voiceLimitsSeen = newVoiceLimitTracker()
 	s.callVotes = newCallVotes()
+	s.workshop = relay.NewRegistry(relay.LimitsFromEnv())
+	s.workshop.OnEvent = s.publishWorkshopEvent
 	s.loginThrottle = newLoginThrottle()
 	s.routes()
 	return s
@@ -256,6 +261,7 @@ func (s *Server) Listen(addr string) error {
 // never finish on their own, so they are ended first; their clients reconnect to
 // whatever comes up next and catch up from there.
 func (s *Server) Shutdown(timeout time.Duration) error {
+	s.workshop.EndAll(relay.ReasonRelayRestarted)
 	s.events.closeAll()
 	return s.app.ShutdownWithTimeout(timeout)
 }
@@ -300,6 +306,7 @@ func (s *Server) routes() {
 	s.registerAdminRoutes(authenticated)
 	service := authenticated.Use(s.requireCompatibleClient)
 	s.registerChatRoutes(service)
+	s.registerWorkshopRoutes(service)
 	service.Get("/invites", s.listInvites)
 	service.Post("/invites", s.createInvite)
 	service.Delete("/invites/:id", s.revokeInvite)

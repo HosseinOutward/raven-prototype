@@ -29,6 +29,11 @@ type UserCapabilities struct {
 	// MaxOpenInvites is how many unused invites the account may have at once. Nil means
 	// no limit.
 	MaxOpenInvites *int `json:"maxOpenInvites"`
+	// SharePorts and UsePorts are the Workshop's port sharing: publishing a local port to
+	// a Nest or room, and connecting to a port someone else published. They only matter
+	// when the server's RAVEN_WORKSHOP_PORTS switch is on.
+	SharePorts bool `json:"sharePorts"`
+	UsePorts   bool `json:"usePorts"`
 }
 
 var (
@@ -52,6 +57,8 @@ func allCapabilities() UserCapabilities {
 		SendMessages:  true,
 		CreateGroups:  true,
 		CreateInvites: true,
+		SharePorts:    true,
+		UsePorts:      true,
 	}
 }
 
@@ -73,6 +80,10 @@ func (caps *UserCapabilities) set(capability string, allowed bool, limit *int) {
 	case database.CapabilityInvitesCreate:
 		caps.CreateInvites = allowed
 		caps.MaxOpenInvites = limit
+	case database.CapabilityWorkshopSharePorts:
+		caps.SharePorts = allowed
+	case database.CapabilityWorkshopUsePorts:
+		caps.UsePorts = allowed
 	}
 }
 

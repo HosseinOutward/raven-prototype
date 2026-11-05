@@ -11,6 +11,7 @@ import (
 
 	"raven/services/api/internal/auth"
 	"raven/services/api/internal/database"
+	"raven/services/api/internal/relay"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -79,6 +80,10 @@ type LiveUpdate struct {
 	ActorName string `json:"actorName,omitempty"`
 	// Vote is set on "call.vote" updates, which go only to the people in that vote.
 	Vote *CallVoteUpdate `json:"vote,omitempty"`
+	// Share and Reason are set on "workshop.share.*" updates, which go only to the people
+	// who may see that share.
+	Share  *relay.ShareInfo `json:"share,omitempty"`
+	Reason string           `json:"reason,omitempty"`
 	At   string          `json:"at"`
 }
 

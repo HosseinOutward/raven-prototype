@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -21,6 +22,7 @@ const nestEntryDelaySeconds = 3
 // connection stays "online" and "in the room" for everyone else until an unrelated
 // request triggers the cleanup.
 func (s *Server) startMaintenance() {
+	go s.workshop.Run(context.Background())
 	go func() {
 		ticker := time.NewTicker(maintenanceInterval)
 		defer ticker.Stop()
@@ -46,6 +48,7 @@ func (s *Server) runMaintenance(now time.Time) {
 	if err := s.expireEmptyTemporaryNests(); err != nil {
 		log.Printf("maintenance: expire empty temporary nests: %v", err)
 	}
+	s.revalidateWorkshop()
 	lapsed, err := s.sweepPresence(now)
 	if err != nil {
 		log.Printf("maintenance: sweep presence: %v", err)
