@@ -157,6 +157,9 @@ function OpenConversation({
   }, [chat, id, needsMembers]);
 
   const peer = summary.kind === "dm" && summary.peer ? data.getPerson(summary.peer.id) : undefined;
+  // A direct message is titled with who they are now; the name saved with the
+  // conversation can be older than a display-name change.
+  const name = peer?.name ?? summary.name;
   const tree = summary.treeId ? data.getTree(summary.treeId) : undefined;
   const friends = useMemo(() => data.friends.map((friend) => ({ id: friend.userId, name: friend.displayName || friend.username })), [data.friends]);
 
@@ -242,32 +245,32 @@ function OpenConversation({
         : [tree?.name, summary.topic].filter(Boolean).join(" · ") || undefined;
 
   const intro = summary.kind === "dm"
-    ? `Messages here are between you and ${summary.name}.${summary.peerReadSeq !== undefined && sharesReadStatus && !summary.peerDeleted ?" You can each see when the other has read them; Settings › Messages turns that off." : ""}`
+    ? `Messages here are between you and ${name}.${summary.peerReadSeq !== undefined && sharesReadStatus && !summary.peerDeleted ?" You can each see when the other has read them; Settings › Messages turns that off." : ""}`
     : summary.kind === "group"
       ? "Only people in this group can read it. Anyone added later sees messages from then on."
       : `Everyone in ${tree?.name ?? "this place"} can read and write here.`;
 
-  const confirmation = confirming ? describeConfirmation(confirming, summary.name, summary.kind) : null;
+  const confirmation = confirming ? describeConfirmation(confirming, name, summary.kind) : null;
 
   return (
     <>
       <ViewHeader
         leading={
           peer && summary.peer ? (
-            <PersonAvatar id={summary.peer.id} name={summary.name} presence={peer.presence} className="h-9 w-9" />
+            <PersonAvatar id={summary.peer.id} name={name} presence={peer.presence} className="h-9 w-9" />
           ) : (
             <ConversationAvatar conversation={summary} className="h-9 w-9" />
           )
         }
-        title={summary.name}
+        title={name}
         subtitle={subtitle}
-        titleLink={summary.kind === "dm" && summary.peer ? { label: `Open ${summary.name}’s profile`, onOpen: () => onNavigate({ kind: "user", id: summary.peer!.id }) } : undefined}
+        titleLink={summary.kind === "dm" && summary.peer ? { label: `Open ${name}’s profile`, onOpen: () => onNavigate({ kind: "user", id: summary.peer!.id }) } : undefined}
         actions={
           <>
             {peer ? <PersonActions person={peer} data={data} media={media} entry={entry} onNavigate={onNavigate} /> : null}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="icon-sm" variant="ghost" aria-label={`More for ${summary.name}`}>
+                <Button size="icon-sm" variant="ghost" aria-label={`More for ${name}`}>
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -338,7 +341,7 @@ function OpenConversation({
         {summary.canSend ? (
           <Composer
             conversationId={id}
-            name={summary.name}
+            name={name}
             replyingTo={replyingTo}
             editing={editing}
             onCancelReply={() => setReplyingTo(null)}
@@ -358,7 +361,7 @@ function OpenConversation({
           <p className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-5 text-center text-small text-muted-foreground">
             {summary.peerDeleted
               ? "This account was deleted. You can still read your conversation."
-              : `You and ${summary.name} are not friends at the moment. What was said stays here, but new messages can’t be sent.`}
+              : `You and ${name} are not friends at the moment. What was said stays here, but new messages can’t be sent.`}
           </p>
         )}
         {dropping && takesImages ? (
