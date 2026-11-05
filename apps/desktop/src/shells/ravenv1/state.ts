@@ -65,6 +65,8 @@ export type RavenView =
 export interface ShellPerson {
   id: string;
   name: string;
+  /** Their handle, when this client has been told it. */
+  username?: string;
   presence: Presence;
   /**
    * Nothing tells this client where the person is (a search result, or someone known

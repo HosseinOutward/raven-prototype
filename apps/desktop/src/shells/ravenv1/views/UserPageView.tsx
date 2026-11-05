@@ -68,6 +68,7 @@ export function UserPageView({
         <div className="text-center">
           <Avatar name={person.name} src={api.userAvatarUrl(person.id)} className="mx-auto h-20 w-20 text-display" onOpen={() => setViewingPicture(person.id)} />
           <h1 className="mt-4 truncate text-display font-semibold">{person.name}</h1>
+          {person.username ? <p className="mt-0.5 truncate text-small text-muted-foreground">@<bdi>{person.username}</bdi></p> : null}
           {person.presenceUnknown ? null : (
             <p className="mt-1 inline-flex items-center gap-2 text-small text-muted-foreground">
               <PresenceDot presence={person.presence} />

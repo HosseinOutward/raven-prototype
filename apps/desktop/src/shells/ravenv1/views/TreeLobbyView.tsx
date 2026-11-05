@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowUpDown, ChevronRight, FolderPlus, Globe2, Hand, Hash, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,7 @@ export function TreeLobbyView({
   // The launcher list knows who is inside; the tree's own list is the fallback.
   const liveNests: Nest[] = details.activeNests.map((nest) => data.activeNests.find((candidate) => candidate.id === nest.id) ?? nest);
   const quietNests = details.inactiveNests;
+  const memberIds = useMemo(() => new Set(details.members.filter((member) => member.state === "joined").map((member) => member.userId)), [details.members]);
   const members = [...details.members].sort((a, b) => memberRank(a) - memberRank(b) || displayNameFor(a).localeCompare(displayNameFor(b)));
 
   const join = (nestId: string) => {
@@ -289,6 +290,8 @@ export function TreeLobbyView({
         onOpenChange={setAddMemberOpen}
         title={`Add a person to ${tree.name}`}
         canAssignRoles={treeCan(details, "roles.assign")}
+        friends={data.friends}
+        memberIds={memberIds}
         onAdd={async (username, role) => {
           await data.addTreeMember(tree.id, username, role);
           setAddMemberOpen(false);
