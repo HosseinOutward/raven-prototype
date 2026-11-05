@@ -1,4 +1,4 @@
-import type { LauncherNest, Nest, UserRelationship } from "@/lib/api";
+import type { Friend, LauncherNest, Nest, UserRelationship } from "@/lib/api";
 import { PRESENCE, type RavenShellData, type ShellPerson } from "./state";
 
 export const OFFLINE_RANK = 5;
@@ -41,8 +41,8 @@ export function friendStanding(
 }
 
 /** Someone Raven can name but knows nothing else about: no shared tree, no friendship. */
-export function strangerNamed(id: string, name: string): ShellPerson {
-  return { id, name, presence: "offline", presenceUnknown: true, treeIds: [], activeNestIds: [], relationship: "context" };
+export function strangerNamed(id: string, name: string, username?: string): ShellPerson {
+  return { id, name, username, presence: "offline", presenceUnknown: true, treeIds: [], activeNestIds: [], relationship: "context" };
 }
 
 export interface PersonNestAction {
@@ -66,4 +66,14 @@ export function personNestAction(
   if (call.activeNestId === nest.id) return { nest, action: "here" };
   const joinable = nest.lifecycleState === "active" && !call.activeNestId && !call.entering;
   return { nest, action: joinable ? "join" : "open" };
+}
+
+/** Friends whose username contains the query, minus the ones to leave out. */
+export function friendsMatching(friends: readonly Friend[], query: string, excludeIds: ReadonlySet<string>, limit = 6) {
+  const needle = query.trim().replace(/^@/, "").toLocaleLowerCase();
+  if (!needle) return [];
+  return friends
+    .filter((friend) => !excludeIds.has(friend.userId) && friend.username.toLocaleLowerCase().includes(needle))
+    .sort((a, b) => Number(!a.username.toLocaleLowerCase().startsWith(needle)) - Number(!b.username.toLocaleLowerCase().startsWith(needle)) || a.username.localeCompare(b.username))
+    .slice(0, limit);
 }

@@ -384,7 +384,7 @@ function GlobalSearch({ data, onNavigate }: { data: RavenShellData; onNavigate: 
         kind: "user",
         id: user.id,
         // Search says who someone is, not where they are.
-        person: strangerNamed(user.id, displayNameFor(user)),
+        person: strangerNamed(user.id, displayNameFor(user), user.username),
       });
     } else {
       const result = entry.result;

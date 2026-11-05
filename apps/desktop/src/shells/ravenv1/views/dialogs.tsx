@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { TreeRole } from "@/lib/api";
+import { api, type Friend, type TreeRole } from "@/lib/api";
+import { friendsMatching } from "../people";
+
 
 /** Ask for one name and create something with it. */
 export function NameDialog({
@@ -70,6 +73,8 @@ export function AddTreeMemberDialog({
   onOpenChange,
   title,
   canAssignRoles,
+  friends,
+  memberIds,
   onAdd,
 }: {
   open: boolean;
@@ -77,9 +82,15 @@ export function AddTreeMemberDialog({
   title: string;
   /** Adding someone as a moderator is giving out a role, which is the owner's to do. */
   canAssignRoles: boolean;
+  /** Suggestions come only from your friends, never from everyone on the server. */
+  friends: readonly Friend[];
+  /** People already in, left out of the suggestions. */
+  memberIds: ReadonlySet<string>;
   onAdd: (username: string, role: TreeRole) => Promise<void>;
 }) {
   const [username, setUsername] = useState("");
+  const matches = useMemo(() => friendsMatching(friends, username, memberIds), [friends, username, memberIds]);
+  const picked = matches.length === 1 && matches[0].username.toLocaleLowerCase() === username.trim().replace(/^@/, "").toLocaleLowerCase();
   const [role, setRole] = useState<TreeRole>("member");
   const [working, setWorking] = useState(false);
 
@@ -105,8 +116,30 @@ export function AddTreeMemberDialog({
       >
         <label className="block space-y-1.5 text-small text-muted-foreground">
           Username
-          <Input value={username} onChange={(event) => setUsername(event.currentTarget.value)} placeholder="mina" autoFocus />
+          <Input value={username} onChange={(event) => setUsername(event.currentTarget.value)} placeholder="mina" autoFocus autoComplete="off" />
         </label>
+        {username.trim() && !picked ? (
+          matches.length > 0 ? (
+            <div className="-mt-2 space-y-px" role="listbox" aria-label="Friends">
+              {matches.map((friend) => (
+                <button
+                  key={friend.userId}
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  onClick={() => setUsername(friend.username)}
+                  className="flex h-10 w-full items-center gap-2.5 rounded-control px-2 text-left transition-colors hover:bg-secondary/60"
+                >
+                  <Avatar name={friend.displayName || friend.username} src={api.userAvatarUrl(friend.userId)} className="h-7 w-7" />
+                  <span className="min-w-0 flex-1 truncate text-body"><bdi>{friend.displayName || friend.username}</bdi></span>
+                  <span className="shrink-0 truncate text-small text-muted-foreground">@<bdi>{friend.username}</bdi></span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="-mt-2 px-2 text-small text-muted-foreground">No friend with that username.</p>
+          )
+        ) : null}
         {canAssignRoles ? (
           <div className="space-y-1.5 text-small text-muted-foreground">
             Role

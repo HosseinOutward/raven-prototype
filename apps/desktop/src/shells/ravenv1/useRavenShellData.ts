@@ -942,10 +942,13 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
   if (!home) return [];
   const people = new Map<string, ShellPerson>();
 
-  const ensure = (userId: string, name: string): ShellPerson => {
+  const ensure = (userId: string, name: string, username?: string | null): ShellPerson => {
     const current = people.get(userId);
-    if (current) return current;
-    const next: ShellPerson = { id: userId, name, presence: "offline", treeIds: [], activeNestIds: [], relationship: "context" };
+    if (current) {
+      if (!current.username && username) current.username = username;
+      return current;
+    }
+    const next: ShellPerson = { id: userId, name, username: username || undefined, presence: "offline", treeIds: [], activeNestIds: [], relationship: "context" };
     people.set(userId, next);
     return next;
   };
@@ -954,7 +957,7 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
   const located = new Set<string>();
 
   for (const friend of home.friends) {
-    const person = ensure(friend.userId, displayNameFor(friend));
+    const person = ensure(friend.userId, displayNameFor(friend), friend.username);
     person.relationship = "friend";
     located.add(person.id);
     person.presence = presenceFromApi({ state: friend.presenceState, reachability: friend.reachability });
@@ -964,7 +967,7 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
   for (const details of Object.values(treeDetails)) {
     for (const member of details.members) {
       if (member.userId === home.user.id) continue;
-      const person = ensure(member.userId, displayNameFor(member));
+      const person = ensure(member.userId, displayNameFor(member), member.username);
       located.add(person.id);
       if (person.relationship !== "friend") {
         person.presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
@@ -976,7 +979,7 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
   for (const nest of home.activeNests) {
     for (const participant of nest.currentParticipants) {
       if (participant.userId === home.user.id) continue;
-      const person = ensure(participant.userId, displayNameFor(participant));
+      const person = ensure(participant.userId, displayNameFor(participant), participant.username);
       located.add(person.id);
       if (person.relationship !== "friend" && person.presence === "offline") person.presence = "open";
       if (!person.activeNestIds.includes(nest.id)) person.activeNestIds.push(nest.id);
@@ -985,7 +988,7 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
 
   for (const knock of home.pendingKnocks) {
     if (knock.fromUserId === home.user.id) continue;
-    const person = ensure(knock.fromUserId, knock.fromDisplayName || knock.fromUsername);
+    const person = ensure(knock.fromUserId, knock.fromDisplayName || knock.fromUsername, knock.fromUsername);
     located.add(person.id);
     if (person.relationship !== "friend" && person.presence === "offline") person.presence = "open";
   }
@@ -993,7 +996,8 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
   for (const request of [...home.incomingFriendRequests, ...home.outgoingFriendRequests]) {
     const userId = request.fromUserId === home.user.id ? request.toUserId : request.fromUserId;
     const name = request.fromUserId === home.user.id ? request.toDisplayName || request.toUsername : request.fromDisplayName || request.fromUsername;
-    ensure(userId, name);
+    const username = request.fromUserId === home.user.id ? request.toUsername : request.fromUsername;
+    ensure(userId, name, username);
   }
   for (const person of people.values()) {
     if (!located.has(person.id)) person.presenceUnknown = true;
