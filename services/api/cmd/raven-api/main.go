@@ -50,6 +50,13 @@ func main() {
 		}
 	}()
 
+	if relayAddr := os.Getenv("RAVEN_RELAY_QUIC_ADDR"); relayAddr != "" {
+		if err := server.StartRelay(relayAddr, os.Getenv("RAVEN_RELAY_TLS_CERT"), os.Getenv("RAVEN_RELAY_TLS_KEY")); err != nil {
+			log.Fatalf("relay: %v", err)
+		}
+		log.Printf("Raven relay listening on udp %s (port sharing is %s)", relayAddr, map[bool]string{true: "on", false: "off"}[server.WorkshopEnabled()])
+	}
+
 	log.Printf("Raven API listening on http://%s", addr)
 	if err := server.Listen(addr); err != nil {
 		log.Fatal(err)

@@ -50,7 +50,8 @@ type Server struct {
 	// inviteLocks keeps one account's invite count and insert together.
 	inviteLocks *keyedMutex
 	// workshop is the Workshop's port sharing: every active share, in memory.
-	workshop *relay.Registry
+	workshop    *relay.Registry
+	relayServer *relay.Server
 	// What the compatibility gate compares clients against (see compat.go).
 	serverVersion    string
 	minClientVersion string
@@ -262,6 +263,9 @@ func (s *Server) Listen(addr string) error {
 // whatever comes up next and catch up from there.
 func (s *Server) Shutdown(timeout time.Duration) error {
 	s.workshop.EndAll(relay.ReasonRelayRestarted)
+	if s.relayServer != nil {
+		s.relayServer.Close()
+	}
 	s.events.closeAll()
 	return s.app.ShutdownWithTimeout(timeout)
 }

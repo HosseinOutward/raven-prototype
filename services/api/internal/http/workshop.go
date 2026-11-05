@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"unicode"
@@ -449,3 +450,45 @@ func (s *Server) publishWorkshopEvent(kind string, info relay.ShareInfo, reason 
 	}
 	s.events.publishTo(update, recipients)
 }
+
+// relayPolicy is what the QUIC relay asks the API.
+type relayPolicy struct{ s *Server }
+
+// relayError keeps a database failure out of what a client is told.
+func relayError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		return err
+	}
+	log.Printf("workshop: %v", err)
+	return errors.New("Port sharing isn’t available right now.")
+}
+
+func (p relayPolicy) Authenticate(token string) (string, error) {
+	user, err := p.s.workshopAuthenticate(token)
+	if err != nil {
+		return "", relayError(err)
+	}
+	return user.ID, nil
+}
+
+func (p relayPolicy) MayPublish(userID string, share relay.ShareInfo) error {
+	return relayError(p.s.workshopMayPublish(userID, share.PlaceKind, share.PlaceID))
+}
+
+func (p relayPolicy) MayConsume(userID string, share relay.ShareInfo) error {
+	return relayError(p.s.workshopMayConsume(userID, share.PlaceKind, share.PlaceID))
+}
+
+// StartRelay opens the QUIC listener for port sharing. addr is a UDP address such as
+// ":7443"; the certificate must be publicly trusted because clients verify it.
+func (s *Server) StartRelay(addr, certFile, keyFile string) error {
+	s.relayServer = relay.NewServer(s.workshop, relayPolicy{s})
+	return s.relayServer.Listen(addr, certFile, keyFile)
+}
+
+// WorkshopEnabled reports the server's port sharing switch, for the startup log.
+func (s *Server) WorkshopEnabled() bool { return s.workshop.Limits().Enabled }
