@@ -13,6 +13,9 @@ pub mod frames;
 pub mod link;
 pub mod publisher;
 
+#[cfg(test)]
+mod live;
+
 use std::{collections::HashMap, sync::{atomic::Ordering, Arc, Mutex}, time::Duration};
 
 use serde::{Deserialize, Serialize};

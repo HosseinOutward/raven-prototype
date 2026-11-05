@@ -133,3 +133,15 @@ Files to read first: `apps/desktop/src-tauri/src/lib.rs` (command registration),
   - Wait for expiry, and check the share ends.
   - Close the publisher's app, and check the share ends with `publisher_offline`.
 - **One `/code-review low` at the end.**
+
+## Live check, as run on 2026-11-06
+
+`apps/desktop/src-tauri/src/workshop/live.rs` is an ignored test that drives the real Rust publisher and consumer against a real API and relay. To run it:
+
+1. Make a self-signed certificate for `127.0.0.1` with `openssl req -x509 -newkey ec ... -addext subjectAltName=DNS:localhost,IP:127.0.0.1`.
+2. Start the API with a scratch SQLite file and `RAVEN_WORKSHOP_PORTS=on`, `RAVEN_RELAY_QUIC_ADDR=127.0.0.1:7443`, the certificate and key, and `RAVEN_RELAY_ENDPOINTS=quic://127.0.0.1:7443`.
+3. Create two accounts (`raven-api user create`), sign both in, put them in one tree, join one nest's call, and send `POST /v1/presence/heartbeat {"nestId": ...}` for both every few seconds, as the app does. Without that the call membership lapses.
+4. Start `python -m http.server 47001 --bind 127.0.0.1`.
+5. Set `LIVE_ENDPOINT`, `LIVE_API`, `LIVE_PUB_TOKEN`, `LIVE_CON_TOKEN`, `LIVE_NEST`, `LIVE_TCP_PORT=47001`, `LIVE_UDP_PORT=47002` and `RAVEN_RELAY_INSECURE=1`, then `cargo test --lib workshop::live -- --ignored --nocapture`.
+
+It checks TCP through the relay, `publisher_offline` when the publisher closes, UDP echo, Stop closing the consumer’s port, and expiry of a one-minute share.
