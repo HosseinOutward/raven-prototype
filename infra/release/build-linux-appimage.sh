@@ -33,6 +33,7 @@ docker run --rm \
   --user "$(id -u):$(id -g)" \
   --env HOME=/tmp/raven-home \
   --env CARGO_HOME=/cargo-cache \
+  --env XDG_CACHE_HOME=/cargo-cache/xdg \
   --env CARGO_TARGET_DIR=/cargo-target \
   --env APPIMAGE_EXTRACT_AND_RUN=1 \
   --volume "$root:/workspace" \
