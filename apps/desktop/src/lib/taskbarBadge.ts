@@ -31,21 +31,39 @@ function dotPixels(): Uint8Array {
   return pixels;
 }
 
+let wanted = false;
 let shown: boolean | null = null;
+let applying: Promise<void> | null = null;
 
-/** Shows or clears the unread dot. Safe to call often; it only acts on a change. */
-export async function setTaskbarUnread(unread: boolean): Promise<void> {
-  if (shown === unread) return;
-  shown = unread;
-  try {
-    const appWindow = getCurrentWindow();
-    if (!unread) {
-      await appWindow.setOverlayIcon(undefined);
-      return;
+/**
+ * Shows or clears the unread dot. Safe to call often; it only acts on a change.
+ *
+ * Changes are applied one at a time, always to the latest wanted state. Showing the dot
+ * takes two round trips (make the image, then set it), so without this a quick
+ * show-then-clear could finish in the wrong order and leave the dot up with nothing unread.
+ */
+export function setTaskbarUnread(unread: boolean): Promise<void> {
+  wanted = unread;
+  if (!applying && shown === wanted) return Promise.resolve();
+  applying ??= apply();
+  return applying;
+}
+
+async function apply(): Promise<void> {
+  while (shown !== wanted) {
+    const unread = wanted;
+    try {
+      const appWindow = getCurrentWindow();
+      if (unread) {
+        await appWindow.setOverlayIcon(await Image.new(dotPixels(), SIZE, SIZE));
+      } else {
+        await appWindow.setOverlayIcon(undefined);
+      }
+    } catch {
+      // Not Windows, or not running inside the desktop app.
     }
-    const icon = await Image.new(dotPixels(), SIZE, SIZE);
-    await appWindow.setOverlayIcon(icon);
-  } catch {
-    // Not Windows, or not running inside the desktop app.
+    shown = unread;
   }
+  // Cleared in the same tick as the last check, so a call made after it starts a new run.
+  applying = null;
 }
