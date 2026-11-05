@@ -10,6 +10,7 @@ pub mod attachments;
 pub mod audio;
 mod diagnostics;
 pub mod media_hotkeys;
+mod fullscreen_window;
 mod notifications;
 mod pip_window;
 pub mod overlay;
@@ -276,7 +277,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Raven desktop")
         .run(|app_handle, event| match event {
-            RunEvent::Ready => thumbnail_toolbar::install(app_handle),
+            RunEvent::Ready => {
+                fullscreen_window::install(app_handle);
+                thumbnail_toolbar::install(app_handle);
+            }
             RunEvent::ExitRequested { .. } => stop_api_sidecar(app_handle),
             RunEvent::Exit => {
                 leave_rooms_before_exit(app_handle);
