@@ -105,11 +105,32 @@ has to subscribe for video.
 
 ### Losing access takes effect at once
 
-Being removed from a space, leaving it, being suspended, losing `rooms.join`, a room being
-ended and a space being deleted all end the call as well as the access: the server closes
+Being removed from a space, leaving it, being suspended, losing `rooms.join`, being voted
+out of a call, a room being ended and a space being deleted all end the call as well as
+the access: the server closes
 the person's place in the call and asks LiveKit to disconnect them, because a media token
 already issued would otherwise keep working for hours. Tokens, sessions and presence are
 re-checked against membership every time.
+
+## Voting someone out of a call
+
+Nobody can take one person out of one call alone. The people in the call can, together.
+
+- Anyone connected can start a vote about anyone else connected, in a call of at least three.
+  Owners and moderators can be voted out, and their votes count the same.
+- Everyone connected at the start, except the person it is about, may vote for 30 seconds.
+  It passes with more than half of them. Not voting counts as no, and people who join
+  later have no vote.
+- The person it is about sees the vote as it runs. Everyone in it sees who started it and
+  the tally, never who voted how. Ballots are kept only in memory and never logged.
+- If it passes, they are out of the call and cannot come back to that room, or knock on it,
+  for 15 minutes. The time keeps running if the call empties, and nobody can lift it.
+  They stay in the space and their messages stay.
+- One vote per call at a time. The same person cannot be voted on again for 5 minutes, and
+  someone whose vote failed waits 3 minutes to start another in that room.
+
+This lives in `internal/http/call_votes.go`. The only stored trace is
+`nest_members.removed_until`, checked in `requireNestEntry`.
 
 ## Sign-up and invitations
 

@@ -7,6 +7,7 @@ import {
   type SavedAccount,
 } from "@/lib/accounts";
 import { avatarVersion, noteAvatarRoute } from "@/lib/avatarVersions";
+import { parseCallVote, type CallVote } from "@/lib/callVote";
 
 const DEFAULT_API_BASE_URL = normalizeApiServerUrl(import.meta.env.VITE_RAVEN_API_URL ?? "http://127.0.0.1:6977");
 const API_SERVER_URL_KEY = "raven.apiServerUrl";
@@ -84,6 +85,8 @@ export interface NestLiveUpdate {
   /** Who the update is about. Only present on updates addressed to specific people. */
   actorId?: string;
   actorName?: string;
+  /** On "call.vote" updates, which reach only the people in that vote. */
+  vote?: CallVote;
   at?: string;
 }
 
@@ -526,6 +529,7 @@ export function parseNestLiveUpdateData(data: string): NestLiveUpdate | null {
       sessionId: typeof parsed.sessionId === "string" && parsed.sessionId ? parsed.sessionId : undefined,
       actorId: typeof parsed.actorId === "string" && parsed.actorId ? parsed.actorId : undefined,
       actorName: typeof parsed.actorName === "string" && parsed.actorName ? parsed.actorName : undefined,
+      vote: parseCallVote(parsed.vote),
       at: typeof parsed.at === "string" && parsed.at ? parsed.at : undefined,
     };
   } catch {
@@ -1100,6 +1104,24 @@ export class ApiClient {
 
   joinSession(nestId: string) {
     return this.request<{ session: SessionSummary }>(`/v1/nests/${nestId}/session/join`, { method: "POST" });
+  }
+
+  currentCallVote(nestId: string) {
+    return this.request<{ vote: CallVote | null }>(`/v1/nests/${nestId}/votes/current`);
+  }
+
+  startCallVote(nestId: string, targetUserId: string) {
+    return this.request<{ vote: CallVote }>(`/v1/nests/${nestId}/votes`, {
+      method: "POST",
+      body: JSON.stringify({ targetUserId }),
+    });
+  }
+
+  castCallVoteBallot(nestId: string, voteId: string, yes: boolean) {
+    return this.request<{ vote: CallVote }>(`/v1/nests/${nestId}/votes/${voteId}/ballot`, {
+      method: "POST",
+      body: JSON.stringify({ yes }),
+    });
   }
 
   setCallState(nestId: string, patch: CallStatePatch) {

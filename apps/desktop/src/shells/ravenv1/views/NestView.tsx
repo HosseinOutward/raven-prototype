@@ -109,6 +109,8 @@ export function NestView({
         connectedPeerIds={connectedPeers}
         callStates={callStates}
         voiceModeration={voiceModeration}
+        callVote={media.callVote}
+        localUserId={localUserId}
         pictureInPictureKeys={media.pictureInPictureKeys}
         onOpenPictureInPicture={media.openPictureInPicture}
         onClosePictureInPicture={media.closePictureInPicture}
@@ -147,6 +149,8 @@ function NestThreshold({
   const otherNest = media.activeNestId && media.activeNestId !== nest.id ? data.getNest(media.activeNestId) : undefined;
   const closed = nest.lifecycleState === "expired" || nest.lifecycleState === "closed" || nest.status === "ended";
   const failed = !enteringHere && media.phase === "error" && Boolean(media.error);
+  // The API refuses a voted-out person with "You were voted out of this call. You can come back in N minutes."
+  const votedOut = failed ? /^You were voted out of this call\.\s*(.*)$/.exec(media.error ?? "")?.[1] || null : null;
 
   const joinsMuted = data.preferences.alwaysJoinMuted;
   const joinsCameraOff = data.preferences.joinWithCameraOff;
@@ -265,8 +269,17 @@ function NestThreshold({
               <div role="alert" className="mt-4 flex items-start gap-2.5 rounded-card bg-destructive/10 px-3.5 py-3 text-small">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
                 <div className="min-w-0">
-                  <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
-                  <p className="mt-0.5 text-muted-foreground">{media.error}{media.lastError?.action ? ` ${media.lastError.action}` : ""}</p>
+                  {votedOut ? (
+                    <>
+                      <div className="font-medium">You were voted out of this call.</div>
+                      <p className="mt-0.5 text-muted-foreground">{votedOut}</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
+                      <p className="mt-0.5 text-muted-foreground">{media.error}{media.lastError?.action ? ` ${media.lastError.action}` : ""}</p>
+                    </>
+                  )}
                 </div>
               </div>
             ) : null}

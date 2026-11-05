@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type UserPresenceState, type UserReachability } from "@/lib/api";
+import { ApiError, api, type UserPresenceState, type UserReachability } from "@/lib/api";
 import {
   AppAudioSource,
   audioCommands,
@@ -19,6 +19,7 @@ import {
 import { readAutoLevelPreference } from "@/lib/autoLevelPreference";
 import { pipKey, SELF_CAMERA_PIP, type PipTarget } from "@/lib/pictureInPicture";
 import { usePictureInPicture } from "./usePictureInPicture";
+import { useCallVote, type CallVoteState } from "./useCallVote";
 import { commitOutputVolume, migrateLegacyOutputVolume, readLegacyOutputVolume } from "@/lib/outputVolume";
 import {
   CameraDevice,
@@ -158,6 +159,8 @@ export interface RavenMediaAdapterState {
   localServerDeafened: boolean;
   /** Whether you are marked "Back in a bit" for everyone in the call. */
   localAway: boolean;
+  /** The vote to remove someone in this call, if you are part of one. */
+  callVote: CallVoteState;
   /** False against a server that predates the shared call state. */
   awaySupported: boolean;
   deafenMode: DeafenMode;
@@ -907,11 +910,19 @@ export function useRavenMediaAdapter(
             await onStateChanged?.();
             throw new NestEntryCancelled();
           }
-          setSafeError(
-            messageFromError(err, `Could not join media for this ${nestLabel}`),
-            "rtc_failure",
-            "Check the realtime server connection, then try joining media again.",
-          );
+          if (err instanceof ApiError && err.status === 403) {
+            // The server said no, for example after a vote. Nothing is wrong with the
+            // connection or a device, so only the reason is shown.
+            setError(err.message);
+            setLastError(null);
+            setPhase("error");
+          } else {
+            setSafeError(
+              messageFromError(err, `Could not join media for this ${nestLabel}`),
+              "rtc_failure",
+              "Check the realtime server connection, then try joining media again.",
+            );
+          }
           await onStateChanged?.();
           throw err;
         } finally {
@@ -941,6 +952,11 @@ export function useRavenMediaAdapter(
   const audioLoss = audioState?.session.connectionLost ?? null;
   const videoLost = Boolean(videoState?.sessionLost);
   mediaLossRef.current = Boolean(audioLoss?.recoverable) || (videoLost && !audioLoss);
+
+  const callVote = useCallVote(activeNestId, options.localUserId, () => {
+    void leaveMediaSession().catch(() => undefined);
+    toast({ title: "You were voted out of this call.", description: "You can come back in 15 minutes." });
+  });
 
   useEffect(() => {
     if (phase !== "connected" || !activeNestId) return;
@@ -1491,6 +1507,7 @@ export function useRavenMediaAdapter(
     localServerMuted: serverMuted,
     localServerDeafened: serverDeafened,
     localAway: away,
+    callVote,
     awaySupported,
     deafenMode,
     deafenSupported: true,

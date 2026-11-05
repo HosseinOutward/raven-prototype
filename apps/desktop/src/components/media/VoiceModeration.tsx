@@ -1,5 +1,5 @@
 import { HeadphoneOff, Headphones, Mic, MicOff, MoreHorizontal } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { stripSidecarIdentity } from "@/lib/mediaIdentity";
 import { cn } from "@/lib/utils";
 import type { NativeMediaTile } from "./useNativeMediaTiles";
@@ -38,8 +38,9 @@ export function VoiceModerationItems({ person, moderation }: { person: NativeMed
 }
 
 /** The "…" beside someone who is only talking. Nothing is drawn if you can't act on them. */
-export function VoiceModerationMenu({ person, moderation, className }: { person: NativeMediaTile; moderation?: VoiceModeration; className?: string }) {
-  if (!moderation || person.isLocal || !moderation.canModerate(stripSidecarIdentity(person.participantId))) return null;
+export function VoiceModerationMenu({ person, moderation, onVoteToRemove, className }: { person: NativeMediaTile; moderation?: VoiceModeration; onVoteToRemove?: () => void; className?: string }) {
+  const canModerate = Boolean(moderation) && !person.isLocal && moderation!.canModerate(stripSidecarIdentity(person.participantId));
+  if (!canModerate && !onVoteToRemove) return null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -55,7 +56,9 @@ export function VoiceModerationMenu({ person, moderation, className }: { person:
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
-        <VoiceModerationItems person={person} moderation={moderation} />
+        {canModerate ? <VoiceModerationItems person={person} moderation={moderation!} /> : null}
+        {canModerate && onVoteToRemove ? <DropdownMenuSeparator /> : null}
+        {onVoteToRemove ? <DropdownMenuItem onSelect={onVoteToRemove}>Vote to remove from call…</DropdownMenuItem> : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

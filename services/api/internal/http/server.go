@@ -41,10 +41,11 @@ type Server struct {
 	// field for tests.
 	setParticipantPermission func(room, identity string, permission *livekit.ParticipantPermission)
 	voiceLimitsSeen          *voiceLimitTracker
-	loginThrottle     *loginThrottle
-	events            *eventBroker
-	metrics           *serverMetrics
-	chatLocks         *keyedMutex
+	callVotes                *callVotes
+	loginThrottle            *loginThrottle
+	events                   *eventBroker
+	metrics                  *serverMetrics
+	chatLocks                *keyedMutex
 	// inviteLocks keeps one account's invite count and insert together.
 	inviteLocks *keyedMutex
 	// What the compatibility gate compares clients against (see compat.go).
@@ -217,6 +218,7 @@ func New(db *database.DB) *Server {
 	s.closeRoom = s.liveKitDeleteRoom
 	s.setParticipantPermission = s.liveKitSetParticipantPermission
 	s.voiceLimitsSeen = newVoiceLimitTracker()
+	s.callVotes = newCallVotes()
 	s.loginThrottle = newLoginThrottle()
 	s.routes()
 	return s
@@ -355,6 +357,9 @@ func (s *Server) routes() {
 	service.Post("/nests/:id/session/join", s.joinCallSession)
 	service.Post("/nests/:id/session/state", s.setCallState)
 	service.Post("/nests/:id/participants/:userId/voice", s.moderateVoice)
+	service.Post("/nests/:id/votes", s.startCallVote)
+	service.Get("/nests/:id/votes/current", s.currentCallVote)
+	service.Post("/nests/:id/votes/:voteId/ballot", s.castCallVote)
 	service.Post("/nests/:id/session/leave", s.leaveCallSession)
 	service.Post("/nests/:id/session/disconnect", s.disconnectFromNest)
 	service.Post("/nests/:id/entry-notice", s.announceNestEntry)

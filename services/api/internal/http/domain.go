@@ -1113,6 +1113,10 @@ func (s *Server) createKnock(c *fiber.Ctx) error {
 			}
 			return fiber.NewError(fiber.StatusForbidden, "not allowed to knock this Nest")
 		}
+		// Someone voted out cannot keep ringing the people who voted.
+		if err := s.requireNotVotedOut(nest.ID, actor.ID); err != nil {
+			return err
+		}
 		nestID = &nest.ID
 	}
 	if toUserID == nil && nestID == nil {
