@@ -44,6 +44,13 @@ use crate::video::domain::{
 use crate::video::state::{SharedVideoEngineState, VIDEO_STATE_CHANGED_EVENT};
 use crate::video::stream::{PresentationCounters, VideoFrameHub, VideoFramePublisher};
 
+/// How long to wait after each repeat of a subscribe request lost in a full reconnect.
+const SUBSCRIPTION_RESEND_DELAYS: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+];
+
 fn lk_track_source(source: VideoTrackSource) -> TrackSource {
     match source {
         VideoTrackSource::Camera => TrackSource::Camera,
@@ -158,6 +165,28 @@ impl WatchingSync {
         Arc::new(Self {
             sent: tokio::sync::Mutex::new(Some(String::new())),
         })
+    }
+}
+
+/// A full reconnect rebuilds the peers from the join response, and the SDK sends their
+/// subscribe requests down the old session, which drops them. Each then reads as wanted with
+/// no track, so comparing against `is_desired` would send nothing: ask again for those.
+fn resend_lost_subscriptions(handle: &Handle, room: &Room) {
+    for participant in room.remote_participants().values() {
+        for publication in participant.track_publications().into_values() {
+            if !publication.is_desired() || publication.is_subscribed() {
+                continue;
+            }
+            handle.spawn(async move {
+                for delay in SUBSCRIPTION_RESEND_DELAYS {
+                    if !publication.is_desired() || publication.is_subscribed() {
+                        return;
+                    }
+                    publication.set_subscribed(true);
+                    tokio::time::sleep(delay).await;
+                }
+            });
+        }
     }
 }
 
@@ -1265,6 +1294,7 @@ impl VideoEngine {
                         connected.store(true, Ordering::Release);
                         // A full reconnect is a new participant with no attributes.
                         *watching.sent.lock().await = None;
+                        resend_lost_subscriptions(&runtime, &room);
                     }
                     RoomEvent::Disconnected { reason } => {
                         connected.store(false, Ordering::Release);
