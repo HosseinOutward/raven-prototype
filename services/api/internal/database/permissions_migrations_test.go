@@ -93,9 +93,10 @@ func TestCapabilityDefaultsStartOpen(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*), SUM(CASE WHEN allowed AND limit_value IS NULL THEN 1 ELSE 0 END) FROM server_capability_defaults`).Scan(&total, &allowed); err != nil {
 		t.Fatal(err)
 	}
-	// Inviting people starts off; everything from before it starts on.
-	if total != len(Capabilities) || allowed != len(permissionsCapabilities) {
-		t.Fatalf("%d of %d capabilities start allowed without a limit, want %d", allowed, total, len(permissionsCapabilities))
+	// Inviting people starts off; everything else starts on, including the two Workshop ones.
+	wantAllowed := len(permissionsCapabilities) + 2
+	if total != len(Capabilities) || allowed != wantAllowed {
+		t.Fatalf("%d of %d capabilities start allowed without a limit, want %d", allowed, total, wantAllowed)
 	}
 	// A CHECK failure is not a duplicate.
 	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES ('x', 'x', 'x', 'superuser', 'now', 'now')`)
