@@ -19,6 +19,7 @@ mod thumbnail_toolbar;
 pub mod tray;
 pub mod updater;
 pub mod video;
+pub mod workshop;
 
 use audio::state::{
     audio_add_local_source, audio_add_or_update_remote_track, audio_add_processor_to_local_channel,
@@ -84,6 +85,7 @@ pub fn run() {
         .manage(new_media_hotkey_state())
         .manage(push_to_talk::new_push_to_talk_state())
         .manage(tray::new_tray_state())
+        .manage(workshop::new_workshop_state())
         .invoke_handler(tauri::generate_handler![
             attachments::attachment_prepare,
             attachments::attachment_read,
@@ -209,7 +211,11 @@ pub fn run() {
             updater::updater_download,
             updater::updater_install,
             updater::updater_set_busy,
-            diagnostics::diagnostics_log_ui_error
+            diagnostics::diagnostics_log_ui_error,
+            workshop::workshop_publish,
+            workshop::workshop_stop,
+            workshop::workshop_connect,
+            workshop::workshop_disconnect
         ])
         .setup(|app| {
             attachments::initialize(app.handle());

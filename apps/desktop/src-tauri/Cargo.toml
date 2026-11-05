@@ -44,7 +44,11 @@ img-parts = "0.4"
 fast_image_resize = "5"
 thumbhash = "0.1"
 livekit = { version = "0.7", features = ["rustls-tls-webpki-roots"] }
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros", "net", "time", "io-util"] }
+# The Workshop's port sharing talks to the server's relay over QUIC. Same versions livekit already
+# builds; roots are the webpki ones, so the relay needs a publicly trusted certificate.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+webpki-roots = "1"
 ringbuf = "0.4"
 futures-util = "0.3"
 sonora = "0.1"
