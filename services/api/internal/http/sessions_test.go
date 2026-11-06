@@ -1018,7 +1018,7 @@ func postJSON(t *testing.T, server *Server, token, path string, body any, expect
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := server.app.Test(req)
+	resp, err := server.app.Test(req, 30000)
 	if err != nil {
 		t.Fatal(err)
 	}

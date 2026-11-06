@@ -144,3 +144,31 @@ async fn port_sharing_end_to_end() {
     assert_eq!(reason, "expired");
     println!("expiry ok");
 }
+
+/// Publishes a working TCP share and one with nothing behind it, then holds them open so
+/// a person can try them from the app. `LIVE_HOLD_SECS` (default 600) says how long.
+#[tokio::test]
+#[ignore]
+async fn hold_shares_for_the_app() {
+    let token = env("LIVE_PUB_TOKEN");
+    let port: u16 = env("LIVE_TCP_PORT").parse().unwrap();
+    let hold: u64 = std::env::var("LIVE_HOLD_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(600);
+    let mut tasks = Vec::new();
+    for (name, share_port) in [("web", port), ("ghost", 47099)] {
+        let share = create_share(name, "tcp", share_port, 120);
+        println!("shared {name} on {share_port}: {share}");
+        tasks.push(publish(connect(ROLE_PUBLISHER, &token, &share).await, share_port));
+    }
+    tokio::time::sleep(Duration::from_secs(hold)).await;
+}
+
+/// Opens one TCP connection to a share as the consumer, to make the sharer's app report
+/// what it finds. `LIVE_SHARE` names the share; `LIVE_CON_TOKEN` is the consumer's session.
+#[tokio::test]
+#[ignore]
+async fn poke_share() {
+    let share = env("LIVE_SHARE");
+    let (local, _task) = consume(&share, "tcp", 0).await;
+    let _ = http_get(local).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+}

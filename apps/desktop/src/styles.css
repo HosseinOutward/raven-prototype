@@ -330,7 +330,7 @@ textarea {
 
 /* Monospace is for hotkeys, addresses and numeric readouts only. */
 .rv-mono {
-  font-family: "Geist Mono Variable", "Twemoji", "Cascadia Mono", "Consolas", ui-monospace, monospace, "Segoe UI Emoji", "Noto Color Emoji";
+  font-family: "Geist Mono Variable", "Cascadia Mono", "Consolas", "Twemoji", ui-monospace, monospace, "Segoe UI Emoji", "Noto Color Emoji";
 }
 
 /* Horizontal parameter slider. Styled explicitly rather than left to

@@ -1,11 +1,12 @@
 import { setPortSharingEnabled, usePortSharingEnabled, useWorkshopConfig } from "@/lib/workshop";
 import { capabilitiesOf } from "@/lib/permissions";
+import type { WorkshopConfig } from "@/lib/workshopState";
 import { SettingsHint, SettingsPage, SettingsRows, SettingsSection, SettingsToggleRow } from "./SettingsScaffold";
 import type { RavenShellData } from "./state";
 
 /**
- * The Workshop: features for people who want to do more than talk, each off until chosen
- * and each explained in full whether it is on or off.
+ * The Workshop: power-user features, each off until chosen. Under each switch, on or off,
+ * the facts: what it does, the protocol, the encryption, the route and who can read it.
  */
 export function WorkshopSettings({ data }: { data: RavenShellData }) {
   const on = usePortSharingEnabled();
@@ -13,36 +14,56 @@ export function WorkshopSettings({ data }: { data: RavenShellData }) {
   const capabilities = capabilitiesOf(data.user);
   const blocked = capabilities.sharePorts === false && capabilities.usePorts === false;
   return (
-    <SettingsPage
-      title="Workshop"
-      description="Features for people who want to do more than talk. Each one is off until you turn it on, and each says exactly how it works."
-    >
+    <SettingsPage title="Workshop" description="Power tools for tinkerers. Everything here is off until you turn it on.">
       <SettingsSection title="Port sharing">
         <SettingsRows>
           <SettingsToggleRow
             label="Port sharing"
-            description="Lets you share a program on this computer, such as a game server or a terminal, with people in the same call or room, and connect to ports they share. Kept on this device."
+            description="Share a local TCP or UDP port, like a game server or a shell, with people in the same call or room. Adds Ports to the call and room header."
             checked={on}
             disabled={blocked}
             onChange={setPortSharingEnabled}
           />
+          <Fact label="Route">Your computer → relay on this server → their computer. Never direct.</Fact>
+          <Fact label="Transport">QUIC with TLS 1.3 on each leg</Fact>
+          <Fact label="End to end">
+            <span className="text-warning">Not yet.</span> The relay and any CDN that ends TLS can read forwarded traffic.
+          </Fact>
+          <Fact label="Reachable">
+            Only <Mono>127.0.0.1</Mono> and <Mono>::1</Mono> on your side. Others get it on their <Mono>127.0.0.1</Mono>.
+          </Fact>
+          <Fact label="Lifetime">Until you stop it, leave, close Raven, or time runs out (default 2 h)</Fact>
+          {on && config?.enabled ? <Limits config={config} /> : null}
         </SettingsRows>
-        <SettingsHint>
-          Traffic goes from your computer to this server’s relay and from the relay to the person connecting, never directly between computers. Raven reaches the relay over QUIC with TLS 1.3, so the connection is encrypted on the way to and from it. Raven does not yet encrypt the traffic end to end, so the relay’s operator, and any CDN on the route that ends TLS, can read the bytes you forward. Do not share anything you would not want them to read.
-        </SettingsHint>
-        <SettingsHint>
-          A shared port is a TCP or UDP port on your own computer that a program is listening on (127.0.0.1 or ::1). Nothing else on your computer or network is reachable through it. People who connect get the same port number on their own computer, on 127.0.0.1 only. A share ends when you stop it, leave the call or room, close Raven, or reach its time limit, which is 2 hours unless you choose otherwise and at most 12 hours.
-        </SettingsHint>
-        {blocked ? <SettingsHint>This server’s administrator has turned port sharing off for your account.</SettingsHint> : null}
+        {blocked ? <SettingsHint>Your server’s administrator turned port sharing off for your account.</SettingsHint> : null}
         {on && config && !config.enabled ? (
-          <SettingsHint>This server has port sharing turned off, so the Ports button won’t appear. The server’s administrator turns it on.</SettingsHint>
-        ) : null}
-        {on && config?.enabled ? (
-          <SettingsHint>
-            This server allows {config.limits.maxShares} shared ports per person, {config.limits.maxConsumers} people connected to each, {config.limits.maxFlows} open connections per person, {config.limits.shareMbps} Mbit/s per share and {Math.round(config.limits.dailyBytes / 1_073_741_824)} GB of port sharing traffic per person each day (midnight UTC).
-          </SettingsHint>
+          <SettingsHint>This server has port sharing off. Its administrator can turn it on.</SettingsHint>
         ) : null}
       </SettingsSection>
     </SettingsPage>
   );
+}
+
+function Limits({ config }: { config: WorkshopConfig }) {
+  const { limits } = config;
+  return (
+    <Fact label="Server limits">
+      <span className="tabular-nums">
+        {limits.maxShares} shares · {limits.maxConsumers} people each · {limits.maxFlows} connections per person · {limits.shareMbps} Mbit/s per share · {Math.round(limits.dailyBytes / 1_073_741_824)} GB a day · {limits.maxMinutes / 60} h max
+      </span>
+    </Fact>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-4 px-4 py-2.5 text-small">
+      <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </div>
+  );
+}
+
+function Mono({ children }: { children: React.ReactNode }) {
+  return <span className="font-mono">{children}</span>;
 }

@@ -2,7 +2,7 @@
 
 ## Context
 
-Soroush wants SSH-tunnel-style port sharing between members of a nest, relayed by the server (no P2P), for things like a shared Minecraft server or a terminal session. It is the first of the **Workshop** features: power-user features that are off by default, with copy that names every protocol, encryption layer and route in full sentences.
+Soroush wants SSH-tunnel-style port sharing between members of a nest, relayed by the server (no P2P), for things like a shared Minecraft server or a terminal session. It is the first of the **Workshop** features: power-user features that are off by default, with short, technical copy that names every protocol, encryption layer and route. (Soroush dropped the full-sentences rule on 2026-11-06: it made the UI hard to follow.)
 
 This plan covers stages A–C: the server control plane, the relay over QUIC, and the desktop. `02-wss-fallback.md` adds the WebSocket fallback. E2EE is plan 03, written later.
 
@@ -115,7 +115,7 @@ Files to read first: `apps/desktop/src-tauri/src/lib.rs` (command registration),
   - **For publishers:** "Share a port" (name, protocol, port, audience, minutes), Extend, Stop, the connected members, and a live traffic readout.
   - **The route line,** for example "QUIC with TLS 1.3 to relay.example:7443".
 - **Errors, each in a full sentence:** the local port is taken, nothing is listening on the publisher's side, the relay is unreachable on every route, a limit is reached (the message names the limit and its value), the share expired, or access was lost.
-- **Wording rule:** add a "Workshop copy" section to the `raven-ui` skill and `RAVEN_UI_RULES.md`. It says to name the protocol, encryption, route and who can read the traffic, in full sentences, and not to explain basic terms. Until plan 03, every share panel states that the relay operator and any CDN on the route can read the forwarded bytes.
+- **Wording rule:** add a "Workshop copy" section to the `raven-ui` skill and `RAVEN_UI_RULES.md`. It says to name the protocol, encryption, route and who can read the traffic, briefly, as label and value facts, and not to explain basic terms. Until plan 03, every share panel states that the relay operator and any CDN on the route can read the forwarded bytes.
 - **Docs:** `docs/permissions.md` gets the "Planned" note. `docs/self-hosting.md` covers the env vars, the QUIC port and certificate, and the CDN caveats (proxying raw QUIC, idle timeouts, terms on bulk traffic).
 
 ## Verification

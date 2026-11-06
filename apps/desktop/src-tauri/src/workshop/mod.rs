@@ -199,7 +199,7 @@ pub async fn workshop_connect(
         .map_err(|e| format!("Raven couldn’t listen on this computer: {e}."))?;
     let local_port = listeners.port;
     let notice = listeners.moved_from.map(|wanted| {
-        format!("Port {wanted} is already in use on this computer, so Raven listens on {local_port} instead.")
+        format!("Port {wanted} is in use here, so it’s on {local_port}.")
     });
     let link = Arc::new(link);
     let route = link.route();

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyShareEvent, endReasonSentence, formatBytes, mayUseShare, routeSentence, timeLeft, type WorkshopShare } from "./workshopState";
+import { applyShareEvent, endReasonSentence, formatBytes, mayUseShare, routeParts, timeLeft, type WorkshopShare } from "./workshopState";
 
 const share = (id: string, over: Partial<WorkshopShare> = {}): WorkshopShare => ({
   id, name: "web", placeKind: "nest", placeId: "n1", publisherId: "alice", protocol: "tcp", port: 8080,
@@ -45,10 +45,8 @@ describe("wording", () => {
     }
     expect(endReasonSentence("relay_restarted", "publisher")).toBe("The relay restarted. Share the port again.");
   });
-  test("the route sentence says who can read the bytes", () => {
-    const sentence = routeSentence("QUIC with TLS 1.3 to relay.example:7443");
-    expect(sentence).toContain("QUIC with TLS 1.3 to relay.example:7443");
-    expect(sentence).toContain("can read the forwarded bytes");
+  test("the route splits into transport and relay", () => {
+    expect(routeParts("QUIC with TLS 1.3 to relay.example:7443")).toEqual({ transport: "QUIC with TLS 1.3", endpoint: "relay.example:7443" });
   });
   test("bytes", () => {
     expect(formatBytes(820)).toBe("820 B");

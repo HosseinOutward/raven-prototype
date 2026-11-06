@@ -77,29 +77,31 @@ export function timeLeft(expiresAt: string, now: number): string {
   return rest === 0 ? `${hours} h left` : `${hours} h ${rest} min left`;
 }
 
-/** Why a share or a connection ended, as a full sentence. */
+/** Why a share or a connection ended, in one short line. */
 export function endReasonSentence(reason: string | undefined, role: "publisher" | "consumer"): string {
   switch (reason) {
     case "stopped":
-      return role === "publisher" ? "You stopped sharing this port." : "You disconnected from this port.";
+      // A consumer who disconnects themselves sees nothing; this reaches them only when the sharer stops.
+      return role === "publisher" ? "You stopped sharing." : "The sharer stopped sharing.";
     case "expired":
-      return "This share reached its time limit and ended.";
+      return "Share ended: time limit reached.";
     case "publisher_offline":
-      return "The person sharing this port went offline, so the share ended.";
+      return "Share ended: the sharer went offline.";
     case "left_place":
-      return "You are no longer in the place this port was shared in, so access ended.";
+      return "Access ended: you left.";
     case "relay_restarted":
       return "The relay restarted. Share the port again.";
     default:
       return reason?.startsWith("connection_lost")
-        ? "The connection to the relay was lost, so this port stopped working."
-        : "The connection to this port ended.";
+        ? "Connection to the relay lost."
+        : "Connection ended.";
   }
 }
 
-/** The route as one sentence, plus who can read the traffic. Until end-to-end encryption exists. */
-export function routeSentence(route: string): string {
-  return `${route}. The connection to the relay is encrypted, but the relay’s operator, and any CDN on the route that ends TLS, can read the forwarded bytes.`;
+/** Splits "QUIC with TLS 1.3 to relay.example:7443" into the transport and the relay's address. */
+export function routeParts(route: string): { transport: string; endpoint: string } {
+  const at = route.lastIndexOf(" to ");
+  return at < 0 ? { transport: route, endpoint: "" } : { transport: route.slice(0, at), endpoint: route.slice(at + 4) };
 }
 
 /** Bytes as a short readout: "820 B", "14 KB", "3.2 MB". */
