@@ -393,7 +393,8 @@ func workshopAccessLost(err error) bool {
 		return true
 	}
 	var fe *fiber.Error
-	return errors.As(err, &fe) && fe.Code < 500
+	// The daily cap says nothing about whether the person is still in the place.
+	return errors.As(err, &fe) && fe.Code < 500 && fe.Code != fiber.StatusTooManyRequests
 }
 
 // revalidateWorkshop ends every share or consumer whose person no longer has access. It
