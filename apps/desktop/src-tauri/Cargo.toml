@@ -50,7 +50,11 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros", "
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 webpki-roots = "1"
 ringbuf = "0.4"
-futures-util = "0.3"
+futures-util = { version = "0.3", features = ["io", "sink"] }
+# Port sharing's WebSocket route (plan 02): yamux streams over one WebSocket with TLS.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+yamux = "0.13"
+tokio-util = { version = "0.7", features = ["compat"] }
 sonora = "0.1"
 # The voice detector inside sonora's gain control, used on its own to tell speech from
 # keyboards. Same versions sonora already depends on.

@@ -37,6 +37,8 @@ export interface WorkshopLimits {
 export interface WorkshopConfig {
   enabled: boolean;
   endpoints: string[];
+  /** What the operator declared about each route, by endpoint. Raven can't detect these. */
+  routeNotes?: Record<string, string[]>;
   limits: WorkshopLimits;
 }
 
@@ -99,6 +101,18 @@ export function endReasonSentence(reason: string | undefined, role: "publisher" 
 }
 
 /** Splits "QUIC with TLS 1.3 to relay.example:7443" into the transport and the relay's address. */
+/**
+ * Facts about the route in use, beyond its name: what the operator declared about the
+ * endpoint, and the cost of carrying UDP over the WebSocket route.
+ */
+export function routeNotes(transport: string, notes: string[] | undefined): string[] {
+  const lines: string[] = [];
+  if (notes?.includes("behind-cdn")) lines.push("TLS ends at a CDN before the relay.");
+  if (notes?.includes("origin-http")) lines.push("CDN to relay is plain HTTP.");
+  if (transport.startsWith("WebSocket")) lines.push("UDP rides TCP here: more delay under loss.");
+  return lines;
+}
+
 export function routeParts(route: string): { transport: string; endpoint: string } {
   const at = route.lastIndexOf(" to ");
   return at < 0 ? { transport: route, endpoint: "" } : { transport: route.slice(0, at), endpoint: route.slice(at + 4) };

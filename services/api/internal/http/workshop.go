@@ -13,6 +13,7 @@ import (
 	"raven/services/api/internal/database"
 	"raven/services/api/internal/relay"
 
+	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -35,10 +36,36 @@ var (
 	errWorkshopDailyLimit = fiber.NewError(fiber.StatusTooManyRequests, "You have used the day’s port sharing traffic this server allows. It resets at midnight UTC.")
 )
 
-// workshopRelayEndpoints are the routes clients may try, from RAVEN_RELAY_ENDPOINTS, for
-// example "quic://relay.example:7443,wss://example/relay".
-func workshopRelayEndpoints() []string {
-	return splitCSV(os.Getenv("RAVEN_RELAY_ENDPOINTS"))
+// workshopRouteNotes are what an operator may declare about a route, after its URL in
+// RAVEN_RELAY_ENDPOINTS. The client shows them on the route line; Raven can't detect them.
+var workshopRouteNotes = map[string]bool{
+	// A CDN ends TLS in front of the relay, so it can read the traffic.
+	"behind-cdn": true,
+	// The CDN reaches the relay over plain HTTP.
+	"origin-http": true,
+}
+
+// workshopRelayEndpoints are the routes clients may try, in order, from
+// RAVEN_RELAY_ENDPOINTS, and the notes declared for each, for example
+// "quic://relay.example:7443,wss://example/v1/relay/ws behind-cdn origin-http".
+func workshopRelayEndpoints() ([]string, map[string][]string) {
+	endpoints := []string{}
+	notes := map[string][]string{}
+	for _, entry := range splitCSV(os.Getenv("RAVEN_RELAY_ENDPOINTS")) {
+		fields := strings.Fields(entry)
+		if len(fields) == 0 {
+			continue
+		}
+		endpoints = append(endpoints, fields[0])
+		for _, note := range fields[1:] {
+			if workshopRouteNotes[note] {
+				notes[fields[0]] = append(notes[fields[0]], note)
+			} else {
+				log.Printf("RAVEN_RELAY_ENDPOINTS: unknown route note %q ignored", note)
+			}
+		}
+	}
+	return endpoints, notes
 }
 
 func (s *Server) registerWorkshopRoutes(r fiber.Router) {
@@ -51,9 +78,11 @@ func (s *Server) registerWorkshopRoutes(r fiber.Router) {
 
 func (s *Server) workshopConfig(c *fiber.Ctx) error {
 	limits := s.workshop.Limits()
+	endpoints, notes := workshopRelayEndpoints()
 	return c.JSON(fiber.Map{
-		"enabled":   limits.Enabled,
-		"endpoints": workshopRelayEndpoints(),
+		"enabled":    limits.Enabled,
+		"endpoints":  endpoints,
+		"routeNotes": notes,
 		"limits": fiber.Map{
 			"maxShares":      limits.MaxShares,
 			"maxConsumers":   limits.MaxConsumers,
@@ -487,8 +516,24 @@ func (p relayPolicy) MayConsume(userID string, share relay.ShareInfo) error {
 // StartRelay opens the QUIC listener for port sharing. addr is a UDP address such as
 // ":7443"; the certificate must be publicly trusted because clients verify it.
 func (s *Server) StartRelay(addr, certFile, keyFile string) error {
-	s.relayServer = relay.NewServer(s.workshop, relayPolicy{s})
 	return s.relayServer.Listen(addr, certFile, keyFile)
+}
+
+// relayWebSocket is the relay's fallback route: WebSocket over the API's own HTTPS, for
+// networks that block UDP. It is off while the server's port sharing switch is.
+func (s *Server) relayWebSocket() fiber.Handler {
+	upgrade := websocket.New(func(c *websocket.Conn) {
+		s.relayServer.ServeWebSocket(c)
+	}, websocket.Config{ReadBufferSize: 32 * 1024, WriteBufferSize: 32 * 1024})
+	return func(c *fiber.Ctx) error {
+		if !s.workshop.Limits().Enabled {
+			return fiber.ErrNotFound
+		}
+		if !websocket.IsWebSocketUpgrade(c) {
+			return fiber.ErrUpgradeRequired
+		}
+		return upgrade(c)
+	}
 }
 
 // WorkshopEnabled reports the server's port sharing switch, for the startup log.

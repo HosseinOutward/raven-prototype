@@ -92,6 +92,7 @@ func TestWorkshopIsOffUntilTheServerTurnsItOn(t *testing.T) {
 	if got := listShares(t, room.server, room.alice, "nest", room.nestID); len(got) != 0 {
 		t.Fatalf("nothing is listed while it is off: %v", got)
 	}
+	getJSON(t, room.server, "", "/v1/relay/ws", http.StatusNotFound)
 }
 
 func TestWorkshopValidation(t *testing.T) {
@@ -258,5 +259,19 @@ func TestTheRelayAuthenticatesLikeTheAPI(t *testing.T) {
 	postJSON(t, server, token, "/v1/auth/logout", nil, http.StatusNoContent)
 	if _, err := server.workshopAuthenticate(token); err == nil {
 		t.Fatal("a signed-out session must not authenticate")
+	}
+}
+
+func TestRelayEndpointsCarryOnlyDeclaredRouteNotes(t *testing.T) {
+	t.Setenv("RAVEN_RELAY_ENDPOINTS", "quic://r.example:7443, wss://r.example/v1/relay/ws behind-cdn origin-http made-up")
+	endpoints, notes := workshopRelayEndpoints()
+	if len(endpoints) != 2 || endpoints[0] != "quic://r.example:7443" || endpoints[1] != "wss://r.example/v1/relay/ws" {
+		t.Fatalf("endpoints %v", endpoints)
+	}
+	if got := notes["wss://r.example/v1/relay/ws"]; len(got) != 2 || got[0] != "behind-cdn" || got[1] != "origin-http" {
+		t.Fatalf("notes %v", notes)
+	}
+	if _, ok := notes["quic://r.example:7443"]; ok {
+		t.Fatal("no notes were declared for the QUIC route")
 	}
 }

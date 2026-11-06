@@ -14,7 +14,7 @@ use super::{
     consumer,
     flows::Counters,
     frames::{ROLE_CONSUMER, ROLE_PUBLISHER},
-    link::{self, Link, QuicLink},
+    link::{self, Link, RelayLink},
     publisher,
 };
 
@@ -45,9 +45,12 @@ fn quiet() -> publisher::Report {
     Arc::new(|message| println!("notice: {message}"))
 }
 
-async fn connect(role: u8, token: &str, share: &str) -> Arc<QuicLink> {
-    let endpoint = env("LIVE_ENDPOINT");
-    Arc::new(link::connect(&[endpoint], token, role, share).await.expect("connect to the relay"))
+async fn connect(role: u8, token: &str, share: &str) -> Arc<RelayLink> {
+    // A comma-separated list races the routes, as the app does.
+    let endpoints: Vec<String> = env("LIVE_ENDPOINT").split(',').map(str::to_string).collect();
+    let link = link::connect(&endpoints, token, role, share).await.expect("connect to the relay");
+    println!("route: {} ({})", link.route(), link.endpoint);
+    Arc::new(link)
 }
 
 /// Starts a consumer for a share and returns its local port and its task.
@@ -60,7 +63,7 @@ async fn consume(share: &str, protocol: &str, port: u16) -> (u16, tokio::task::J
     (local, tokio::spawn(async move { consumer::run(link, id, listeners, Arc::new(Counters::default()), quiet()).await }))
 }
 
-fn publish(link: Arc<QuicLink>, port: u16) -> tokio::task::JoinHandle<String> {
+fn publish(link: Arc<RelayLink>, port: u16) -> tokio::task::JoinHandle<String> {
     tokio::spawn(async move { publisher::run(link, port, Arc::new(Counters::default()), quiet()).await })
 }
 
@@ -125,11 +128,18 @@ async fn port_sharing_end_to_end() {
     let stop_pub = publish(connect(ROLE_PUBLISHER, &pub_token, &stop_share).await, tcp_port);
     let (stop_local, stop_consumer) = consume(&stop_share, "tcp", 0).await;
     assert!(http_get(stop_local).await.starts_with("HTTP/1.0 200"));
-    let status = Command::new("curl")
-        .args(["-s", "-o", "NUL", "-w", "%{http_code}", "-X", "DELETE", "-H", &format!("X-Session-ID: {pub_token}"), "-H", "X-Raven-Client-Version: 0.1.8"])
-        .arg(format!("{}/v1/workshop/shares/{stop_share}", env("LIVE_API")))
-        .output()
-        .unwrap();
+    // Off the runtime: the relay waits for each client to answer its close frame while
+    // the DELETE is in flight, and a blocked runtime can't answer.
+    let (token, url) = (pub_token.clone(), format!("{}/v1/workshop/shares/{stop_share}", env("LIVE_API")));
+    let status = tokio::task::spawn_blocking(move || {
+        Command::new("curl")
+            .args(["-s", "-o", "NUL", "-w", "%{http_code}", "-X", "DELETE", "-H", &format!("X-Session-ID: {token}"), "-H", "X-Raven-Client-Version: 0.1.8"])
+            .arg(url)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
     assert_eq!(String::from_utf8_lossy(&status.stdout), "204");
     let reason = tokio::time::timeout(Duration::from_secs(10), stop_consumer).await.expect("consumer ended").unwrap();
     assert_eq!(reason, "stopped");

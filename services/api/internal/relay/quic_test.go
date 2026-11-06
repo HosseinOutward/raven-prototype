@@ -59,6 +59,7 @@ func selfSigned(t *testing.T) *tls.Config {
 type harness struct {
 	t    *testing.T
 	reg  *Registry
+	srv  *Server
 	addr string
 }
 
@@ -72,7 +73,7 @@ func newHarness(t *testing.T, policy Policy) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
-	return &harness{t: t, reg: reg, addr: srv.Addr()}
+	return &harness{t: t, reg: reg, srv: srv, addr: srv.Addr()}
 }
 
 // client is the part of a Raven client the relay talks to.

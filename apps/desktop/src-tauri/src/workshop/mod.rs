@@ -1,7 +1,7 @@
 //! The Workshop's port sharing, desktop side.
 //!
-//! A share is published or used over one connection to the server's relay (QUIC with TLS
-//! 1.3 here; the WebSocket route is plan 02). The publisher dials only loopback on its own
+//! A share is published or used over one connection to the server's relay: QUIC with TLS
+//! 1.3, or a WebSocket over TLS where UDP doesn't get through. The publisher dials only loopback on its own
 //! computer, and a consumer listens only on `127.0.0.1`.
 //!
 //! The web side holds the API calls and the share list; this side moves the bytes and
@@ -12,6 +12,7 @@ pub mod flows;
 pub mod frames;
 pub mod link;
 pub mod publisher;
+pub mod wss;
 
 #[cfg(test)]
 mod live;
@@ -23,7 +24,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use flows::Counters;
 use frames::{ROLE_CONSUMER, ROLE_PUBLISHER};
-use link::{Link, QuicLink};
+use link::{Link, RelayLink};
 
 pub const WORKSHOP_STATUS_EVENT: &str = "workshop://status";
 
@@ -40,7 +41,7 @@ pub fn new_workshop_state() -> SharedWorkshopState {
 }
 
 struct Session {
-    link: Arc<QuicLink>,
+    link: Arc<RelayLink>,
     task: tauri::async_runtime::JoinHandle<()>,
     ticker: tauri::async_runtime::JoinHandle<()>,
 }
@@ -94,6 +95,8 @@ fn key(role: &str, share_id: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Started {
     route: String,
+    /// The endpoint that won, as the server listed it, for the operator's route notes.
+    endpoint: String,
     /// The port a consumer listens on, `127.0.0.1:<local_port>`.
     local_port: Option<u16>,
     /// Said when the share’s own port was taken and another was used.
@@ -160,6 +163,7 @@ pub async fn workshop_publish(
         .map_err(|e| e.to_string())?;
     let link = Arc::new(link);
     let route = link.route();
+    let endpoint = link.endpoint.clone();
     let counters = Arc::new(Counters::default());
     let share_id = args.share_id.clone();
     let shared = state.inner().clone();
@@ -177,7 +181,7 @@ pub async fn workshop_publish(
     if let Some(previous) = previous {
         previous.end();
     }
-    Ok(Started { route, local_port: None, notice: None })
+    Ok(Started { route, endpoint, local_port: None, notice: None })
 }
 
 #[tauri::command]
@@ -203,6 +207,7 @@ pub async fn workshop_connect(
     });
     let link = Arc::new(link);
     let route = link.route();
+    let endpoint = link.endpoint.clone();
     let counters = Arc::new(Counters::default());
     let share_id = args.share_id.clone();
     let shared = state.inner().clone();
@@ -219,7 +224,7 @@ pub async fn workshop_connect(
     if let Some(previous) = previous {
         previous.end();
     }
-    Ok(Started { route, local_port: Some(local_port), notice })
+    Ok(Started { route, endpoint, local_port: Some(local_port), notice })
 }
 
 fn stop(app: &AppHandle, state: &WorkshopState, role: &'static str, share_id: &str) {

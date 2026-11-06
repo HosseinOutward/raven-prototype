@@ -75,6 +75,8 @@ export interface ShareSession {
   /** Latest problem that did not end the share, such as nothing listening on the port. */
   notice?: string;
   route?: string;
+  /** The endpoint that won the race, as the server listed it. */
+  endpoint?: string;
   /** The port a consumer listens on, 127.0.0.1:<localPort>. */
   localPort?: number;
   bytesUp: number;
@@ -209,11 +211,11 @@ function messageOf(error: unknown): string {
 export async function publishShare(config: WorkshopConfig, request: PublishRequest): Promise<WorkshopShare> {
   const { share } = await api.createWorkshopShare(request);
   try {
-    const started = await invoke<{ route: string }>("workshop_publish", {
+    const started = await invoke<{ route: string; endpoint: string }>("workshop_publish", {
       args: { endpoints: config.endpoints, token: api.getSessionId(), shareId: share.id, port: share.port },
     });
     setSession(
-      { shareId: share.id, role: "publisher", state: "live", route: started.route, bytesUp: 0, bytesDown: 0, flows: 0, udpDropped: 0 },
+      { shareId: share.id, role: "publisher", state: "live", route: started.route, endpoint: started.endpoint, bytesUp: 0, bytesDown: 0, flows: 0, udpDropped: 0 },
       sessionKey("publisher", share.id),
     );
   } catch (error) {
@@ -235,12 +237,12 @@ export async function extendShare(shareId: string, minutes: number) {
 
 export async function connectShare(config: WorkshopConfig, share: WorkshopShare) {
   try {
-    const started = await invoke<{ route: string; localPort: number; notice: string | null }>("workshop_connect", {
+    const started = await invoke<{ route: string; endpoint: string; localPort: number; notice: string | null }>("workshop_connect", {
       args: { endpoints: config.endpoints, token: api.getSessionId(), shareId: share.id, protocol: share.protocol, port: share.port },
     });
     setSession(
       {
-        shareId: share.id, role: "consumer", state: "live", route: started.route, localPort: started.localPort,
+        shareId: share.id, role: "consumer", state: "live", route: started.route, endpoint: started.endpoint, localPort: started.localPort,
         notice: started.notice ?? undefined, bytesUp: 0, bytesDown: 0, flows: 0, udpDropped: 0,
       },
       sessionKey("consumer", share.id),

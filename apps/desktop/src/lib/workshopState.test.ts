@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyShareEvent, endReasonSentence, formatBytes, mayUseShare, routeParts, timeLeft, type WorkshopShare } from "./workshopState";
+import { applyShareEvent, endReasonSentence, formatBytes, mayUseShare, routeNotes, routeParts, timeLeft, type WorkshopShare } from "./workshopState";
 
 const share = (id: string, over: Partial<WorkshopShare> = {}): WorkshopShare => ({
   id, name: "web", placeKind: "nest", placeId: "n1", publisherId: "alice", protocol: "tcp", port: 8080,
@@ -47,6 +47,13 @@ describe("wording", () => {
   });
   test("the route splits into transport and relay", () => {
     expect(routeParts("QUIC with TLS 1.3 to relay.example:7443")).toEqual({ transport: "QUIC with TLS 1.3", endpoint: "relay.example:7443" });
+    expect(routeParts("WebSocket with TLS to rvn.example")).toEqual({ transport: "WebSocket with TLS", endpoint: "rvn.example" });
+    expect(routeNotes("QUIC with TLS 1.3", undefined)).toEqual([]);
+    expect(routeNotes("WebSocket with TLS", ["behind-cdn", "origin-http"])).toEqual([
+      "TLS ends at a CDN before the relay.",
+      "CDN to relay is plain HTTP.",
+      "UDP rides TCP here: more delay under loss.",
+    ]);
   });
   test("bytes", () => {
     expect(formatBytes(820)).toBe("820 B");

@@ -26,6 +26,7 @@ import {
   localAddress,
   mayUseShare,
   protocolLabel,
+  routeNotes,
   routeParts,
   timeLeft,
   type WorkshopConfig,
@@ -111,8 +112,10 @@ function PortsPanel({
   // A share that ended while this device held it stays here until dismissed, so the reason is read.
   const ended = [...sessions.values()].filter((session) => session.state === "ended" && !shares.some((share) => share.id === session.shareId));
 
-  const route = [...sessions.values()].find((session) => session.route && session.state === "live")?.route
+  const live = [...sessions.values()].find((session) => session.route && session.state === "live");
+  const route = live?.route
     ?? config.endpoints.find((endpoint) => endpoint.startsWith("quic://"))?.replace("quic://", "QUIC with TLS 1.3 to ");
+  const notes = live?.endpoint ? config.routeNotes?.[live.endpoint] : undefined;
 
   if (sharing) {
     return (
@@ -156,13 +159,13 @@ function PortsPanel({
         </div>
       )}
 
-      <RouteFooter route={route} />
+      <RouteFooter route={route} notes={notes} />
     </div>
   );
 }
 
 /** Which way the bytes go and who can read them. Until end-to-end encryption exists. */
-function RouteFooter({ route }: { route: string | undefined }) {
+function RouteFooter({ route, notes }: { route: string | undefined; notes: string[] | undefined }) {
   const parts = route ? routeParts(route) : null;
   return (
     <div className="flex items-start gap-2 border-t border-border/70 pt-3 text-caption text-muted-foreground">
@@ -173,6 +176,7 @@ function RouteFooter({ route }: { route: string | undefined }) {
             <span className="text-foreground">{parts.transport}</span> to relay <span className="font-mono">{parts.endpoint}</span>
           </div>
         ) : null}
+        {parts ? routeNotes(parts.transport, notes).map((line) => <div key={line}>{line}</div>) : null}
         <div>Not end-to-end encrypted. The relay and any CDN that ends TLS can read forwarded traffic.</div>
       </div>
     </div>

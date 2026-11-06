@@ -91,7 +91,7 @@ Environment variables for the `api` service:
 | `RAVEN_WORKSHOP_PORTS` | off | `on` turns the feature on |
 | `RAVEN_RELAY_QUIC_ADDR` | none | UDP address of the QUIC relay, for example `:7443` |
 | `RAVEN_RELAY_TLS_CERT`, `RAVEN_RELAY_TLS_KEY` | none | PEM files for the relay hostname |
-| `RAVEN_RELAY_ENDPOINTS` | none | routes clients try, in order, for example `quic://relay.example.org:7443` |
+| `RAVEN_RELAY_ENDPOINTS` | none | routes clients try, in order, comma-separated, for example `quic://relay.example.org:7443,wss://raven.example.org/v1/relay/ws`. After a URL, space-separated notes the app shows on the route line: `behind-cdn` (a CDN ends TLS in front of the relay) and `origin-http` (the CDN reaches your server over plain HTTP) |
 | `RAVEN_WORKSHOP_MAX_SHARES` | 3 | active shares per person |
 | `RAVEN_WORKSHOP_MAX_CONSUMERS` | 8 | people connected to one share |
 | `RAVEN_WORKSHOP_MAX_FLOWS` | 16 | open TCP connections plus UDP flows per person per share |
@@ -104,6 +104,7 @@ Things to know:
 - **Open the QUIC port.** QUIC is UDP. Open `RAVEN_RELAY_QUIC_ADDR`’s port in your firewall and map it in compose (`7443:7443/udp`).
 - **The certificate must be publicly trusted** (for example Let’s Encrypt) for the relay hostname, because clients verify it against the usual root certificates. The API reads it once at start; restart `api` after renewing.
 - **Keep the relay hostname out of a CDN.** CDNs generally don’t proxy raw QUIC, so use a DNS-only record. A CDN that did proxy it would end TLS and could read every forwarded byte, and many CDNs have idle timeouts and terms that forbid bulk traffic.
+- **The WebSocket route** is for people whose network blocks UDP. It is the API's own `/v1/relay/ws` over HTTPS, so it works through a CDN. Your reverse proxy must pass the WebSocket upgrade for that path and allow a long read timeout (shares last up to 12 h; the relay pings every 20 s). The app races the routes, starting QUIC first and the next one 300 ms later. If a CDN ends TLS, or reaches you over plain HTTP, declare it with the notes above: Raven can't detect either, and people are told only what you declare.
 - Until end-to-end encryption exists, you, as the operator, can read the bytes that pass through. The app tells people so.
 - A restart ends every share; clients show "The relay restarted. Share the port again."
 - The two capabilities `workshop.share_ports` and `workshop.use_ports` are allowed by default and can be changed per account in the admin dashboard.

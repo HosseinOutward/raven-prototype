@@ -225,6 +225,7 @@ func New(db *database.DB) *Server {
 	s.callVotes = newCallVotes()
 	s.workshop = relay.NewRegistry(relay.LimitsFromEnv())
 	s.workshop.OnEvent = s.publishWorkshopEvent
+	s.relayServer = relay.NewServer(s.workshop, relayPolicy{s})
 	s.loginThrottle = newLoginThrottle()
 	s.routes()
 	return s
@@ -294,6 +295,8 @@ func (s *Server) routes() {
 	v1.Get("/media/trees/:id/avatar", s.getTreeAvatar)
 	v1.Get("/media/server/avatar", s.getStoredServerAvatar)
 	v1.Get("/server/compatibility", s.getServerCompatibility)
+	// The relay's WebSocket route signs in inside the connection, like the QUIC one.
+	v1.Get("/relay/ws", s.relayWebSocket())
 	v1.Post("/auth/login", s.login)
 	v1.Post("/auth/sign-up", s.signUp)
 

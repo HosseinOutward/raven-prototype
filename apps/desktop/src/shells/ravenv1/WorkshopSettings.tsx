@@ -1,6 +1,6 @@
 import { setPortSharingEnabled, usePortSharingEnabled, useWorkshopConfig } from "@/lib/workshop";
 import { capabilitiesOf } from "@/lib/permissions";
-import type { WorkshopConfig } from "@/lib/workshopState";
+import { routeNotes, type WorkshopConfig } from "@/lib/workshopState";
 import { SettingsHint, SettingsPage, SettingsRows, SettingsSection, SettingsToggleRow } from "./SettingsScaffold";
 import type { RavenShellData } from "./state";
 
@@ -25,7 +25,8 @@ export function WorkshopSettings({ data }: { data: RavenShellData }) {
             onChange={setPortSharingEnabled}
           />
           <Fact label="Route">Your computer → relay on this server → their computer. Never direct.</Fact>
-          <Fact label="Transport">QUIC with TLS 1.3 on each leg</Fact>
+          <Fact label="Transport">QUIC with TLS 1.3. Fallback: WebSocket with TLS, usually on 443.</Fact>
+          {on && config ? <DeclaredNotes config={config} /> : null}
           <Fact label="End to end">
             <span className="text-warning">Not yet.</span> The relay and any CDN that ends TLS can read forwarded traffic.
           </Fact>
@@ -42,6 +43,12 @@ export function WorkshopSettings({ data }: { data: RavenShellData }) {
       </SettingsSection>
     </SettingsPage>
   );
+}
+
+/** What the operator declared about this server's routes, such as a CDN in front. */
+function DeclaredNotes({ config }: { config: WorkshopConfig }) {
+  const lines = [...new Set(Object.values(config.routeNotes ?? {}).flatMap((notes) => routeNotes("", notes)))];
+  return lines.length ? <Fact label="This server">{lines.join(" ")}</Fact> : null;
 }
 
 function Limits({ config }: { config: WorkshopConfig }) {
