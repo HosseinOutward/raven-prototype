@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Plus, UserPlus, Users } from "lucide-react";
 import { NewGroupDialog } from "@/components/chat/ChatDialogs";
-import { ConversationAvatar, ConversationRowCompact, MutedIndicator, UnreadCount } from "@/components/chat/ConversationRow";
+import { ConversationAvatar, ConversationRowCompact, MentionDot, MutedIndicator, UnreadCount } from "@/components/chat/ConversationRow";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { orderTextNests } from "@/lib/chat/layout";
@@ -188,6 +188,7 @@ function PersonRow({
         <bdi>{person.name}</bdi>
       </span>
       <MutedIndicator conversation={conversation} />
+      <MentionDot count={conversation?.mentionCount} />
       {unread ? <UnreadCount count={unread} /> : status ? <span className="max-w-[45%] shrink-0 truncate text-caption text-muted-foreground">{status}</span> : null}
     </button>
   );
@@ -219,6 +220,7 @@ function GroupRow({
         <span className="sr-only">, group</span>
       </span>
       <MutedIndicator conversation={conversation} />
+      <MentionDot count={conversation.mentionCount} />
       <UnreadCount count={conversation.unreadCount} />
     </button>
   );
