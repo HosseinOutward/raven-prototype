@@ -50,6 +50,7 @@ func (s *Server) registerAdminRoutes(authenticated fiber.Router) {
 	admin.Post("/spaces/:id/transfer", s.adminTransferSpace)
 	admin.Post("/spaces/:id/members", s.adminAddSpaceMember)
 	admin.Post("/spaces/:id/members/:userId/role", s.adminSetSpaceMemberRole)
+	admin.Post("/spaces/:id/members/:userId/name", s.adminSetSpaceMemberName)
 	admin.Delete("/spaces/:id/members/:userId", s.adminRemoveSpaceMember)
 	admin.Post("/spaces/:id/rooms", s.adminCreateRoom)
 	admin.Post("/spaces/:id/rooms/:roomId", s.adminRenameRoom)

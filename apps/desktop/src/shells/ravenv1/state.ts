@@ -169,6 +169,7 @@ export interface RavenShellData {
   deleteNest: (nestId: string) => Promise<void>;
   addTreeMember: (treeId: string, username: string, role?: TreeRole) => Promise<TreeMember>;
   updateTreeMemberRole: (treeId: string, userId: string, role: TreeRole) => Promise<TreeMember>;
+  updateTreeMemberName: (treeId: string, userId: string, displayName: string) => Promise<TreeMember>;
   removeTreeMember: (treeId: string, userId: string) => Promise<void>;
   leaveTree: (treeId: string) => Promise<void>;
   transferTreeOwnership: (treeId: string, userId: string) => Promise<TreeMember>;

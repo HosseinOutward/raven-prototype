@@ -13,6 +13,7 @@ type Pending =
   | { kind: "delete" }
   | { kind: "add-member" }
   | { kind: "add-room" }
+  | { kind: "rename-member"; member: SpaceMember }
   | { kind: "transfer"; member: SpaceMember }
   | { kind: "remove-member"; member: SpaceMember }
   | { kind: "rename-room"; room: Room }
@@ -91,9 +92,12 @@ export function SpaceView({ api, spaceId }: { api: AdminApi; spaceId: string }) 
                   {member.status === "suspended" ? <Badge tone="destructive">Suspended</Badge> : null}
                 </p>
                 <p className="truncate text-small text-muted-foreground">
-                  @{member.username} · joined {formatDate(member.joinedAt)}
+                  @{member.username}{member.nickname ? " · nickname" : ""} · joined {formatDate(member.joinedAt)}
                 </p>
               </div>
+              <Button size="sm" variant="ghost" aria-label={`Set name of ${member.username} in this space`} onClick={() => setPending({ kind: "rename-member", member })}>
+                Set name
+              </Button>
               {member.role === "owner" ? (
                 <Badge>Owner</Badge>
               ) : (
@@ -172,6 +176,16 @@ export function SpaceView({ api, spaceId }: { api: AdminApi; spaceId: string }) 
       {pending?.kind === "add-room" ? <RoomDialog title="Add room" confirmLabel="Add room" withKind onClose={close} onSubmit={async (name, kind) => apply(await api.createRoom(space.id, name, kind))} /> : null}
       {pending?.kind === "rename-room" ? (
         <RoomDialog title="Rename room" confirmLabel="Rename" initialName={pending.room.name} onClose={close} onSubmit={async (name) => apply(await api.renameRoom(space.id, pending.room.id, name))} />
+      ) : null}
+      {pending?.kind === "rename-member" ? (
+        <RoomDialog
+          title={`Name of ${pending.member.username} in ${space.name}`}
+          confirmLabel="Save"
+          initialName={pending.member.nickname}
+          allowBlank
+          onClose={close}
+          onSubmit={async (name) => apply(await api.setMemberName(space.id, pending.member.userId, name))}
+        />
       ) : null}
       {pending?.kind === "transfer" ? (
         <ConfirmDialog
@@ -338,11 +352,12 @@ interface RoomDialogProps {
   confirmLabel: string;
   initialName?: string;
   withKind?: boolean;
+  allowBlank?: boolean;
   onClose: () => void;
   onSubmit: (name: string, kind: "voice" | "text") => Promise<void>;
 }
 
-function RoomDialog({ title, confirmLabel, initialName = "", withKind, onClose, onSubmit }: RoomDialogProps) {
+function RoomDialog({ title, confirmLabel, initialName = "", withKind, allowBlank, onClose, onSubmit }: RoomDialogProps) {
   const [name, setName] = useState(initialName);
   const [kind, setKind] = useState<"voice" | "text">("voice");
   const [busy, setBusy] = useState(false);
@@ -373,14 +388,14 @@ function RoomDialog({ title, confirmLabel, initialName = "", withKind, onClose, 
           </Field>
         ) : null}
         <Field label="Name">
-          {(id) => <Input id={id} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} required />}
+          {(id) => <Input id={id} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} required={!allowBlank} placeholder={allowBlank ? "Blank uses their usual name" : undefined} />}
         </Field>
         {error ? <Notice>{error}</Notice> : null}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" disabled={busy || !name.trim()}>
+          <Button type="submit" variant="primary" disabled={busy || (!allowBlank && !name.trim())}>
             {busy ? "Saving…" : confirmLabel}
           </Button>
         </div>
