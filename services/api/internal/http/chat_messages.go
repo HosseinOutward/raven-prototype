@@ -462,32 +462,7 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 		return chatStored{}, err
 	}
 
-	// Sending means you have seen what came before. Others may see that too, when the
-	// sender's switch for this kind of conversation is on.
-	sharedSeq, sharedAt := access.SharedReadSeq, any(nil)
-	category, err := chatReadCategory(tx, access)
-	if err != nil {
-		return chatStored{}, err
-	}
-	if shares, err := chatReadSwitchOn(tx, category, sender.ID); err != nil {
-		return chatStored{}, err
-	} else if shares {
-		sharedSeq, sharedAt = seq, now
-	}
-	if _, err := tx.Exec(
-		`UPDATE chat_members SET read_seq = ?, shared_read_seq = ?, shared_read_at = COALESCE(?, shared_read_at), updated_at = ?
-		 WHERE conversation_id = ? AND user_id = ?`,
-		seq, sharedSeq, sharedAt, now, conversationID, sender.ID,
-	); err != nil {
-		return chatStored{}, err
-	}
-	// A new message brings the conversation back for anyone who archived it or removed
-	// it from their list.
-	if _, err := tx.Exec(
-		`UPDATE chat_members SET listed = TRUE, archived_at = NULL, updated_at = ?
-		 WHERE conversation_id = ? AND (listed = FALSE OR archived_at IS NOT NULL)`,
-		now, conversationID,
-	); err != nil {
+	if err := chatMarkSentTx(tx, access, sender.ID, seq, now); err != nil {
 		return chatStored{}, err
 	}
 
@@ -518,6 +493,37 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 		message.ReplyTo = &ref
 	}
 	return chatStored{message: message, reply: reply, recipients: recipients, committedAt: committedAt}, nil
+}
+
+// chatMarkSentTx does what sending a message does beyond storing it.
+func chatMarkSentTx(tx *database.Tx, access chatAccess, senderID string, seq int64, now string) error {
+	// Sending means you have seen what came before. Others may see that too, when the
+	// sender's switch for this kind of conversation is on.
+	sharedSeq, sharedAt := access.SharedReadSeq, any(nil)
+	category, err := chatReadCategory(tx, access)
+	if err != nil {
+		return err
+	}
+	if shares, err := chatReadSwitchOn(tx, category, senderID); err != nil {
+		return err
+	} else if shares {
+		sharedSeq, sharedAt = seq, now
+	}
+	if _, err := tx.Exec(
+		`UPDATE chat_members SET read_seq = ?, shared_read_seq = ?, shared_read_at = COALESCE(?, shared_read_at), updated_at = ?
+		 WHERE conversation_id = ? AND user_id = ?`,
+		seq, sharedSeq, sharedAt, now, access.ConversationID, senderID,
+	); err != nil {
+		return err
+	}
+	// A new message brings the conversation back for anyone who archived it or removed
+	// it from their list.
+	_, err = tx.Exec(
+		`UPDATE chat_members SET listed = TRUE, archived_at = NULL, updated_at = ?
+		 WHERE conversation_id = ? AND (listed = FALSE OR archived_at IS NOT NULL)`,
+		now, access.ConversationID,
+	)
+	return err
 }
 
 // chatAlreadyStored abandons the transaction, which gives the sequence number back, and

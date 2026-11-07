@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"sort"
+	"sync"
 	"time"
 
 	"raven/services/api/internal/auth"
@@ -78,16 +79,11 @@ func (s *Server) withChatOrigins(q chatQuerier, viewerID string, messages []Chat
 				sources[row.ConversationID] = source
 			}
 			if source != nil {
-				var seq int64
-				var deletedAt sql.NullString
-				err := q.QueryRow(
-					`SELECT seq, deleted_at FROM chat_messages WHERE id = ? AND conversation_id = ?`,
-					row.MessageID, row.ConversationID,
-				).Scan(&seq, &deletedAt)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				seq, live, err := chatOriginSeq(q, row)
+				if err != nil {
 					return err
 				}
-				if err == nil && !deletedAt.Valid {
+				if live {
 					shown := *source
 					shown.Seq = seq
 					origin.Source = &shown
@@ -97,6 +93,91 @@ func (s *Server) withChatOrigins(q chatQuerier, viewerID string, messages []Chat
 		messages[i].Origin = origin
 	}
 	return nil
+}
+
+// chatOriginSeq finds the original's seq, for opening the source at it. A removed original
+// is reported as not live and is never pointed at.
+func chatOriginSeq(q chatQuerier, row *chatOriginRow) (int64, bool, error) {
+	var seq int64
+	var deletedAt sql.NullString
+	err := q.QueryRow(
+		`SELECT seq, deleted_at FROM chat_messages WHERE id = ? AND conversation_id = ?`,
+		row.MessageID, row.ConversationID,
+	).Scan(&seq, &deletedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return seq, !deletedAt.Valid, nil
+}
+
+// chatSourceViews remembers how a source conversation looks to each person, keyed by
+// conversation and person.
+type chatSourceViews map[[2]string]*ChatOriginSource
+
+// chatOriginView is one version of a copy's origin and the people who get that version.
+type chatOriginView struct {
+	origin  *ChatOrigin
+	userIDs []string
+}
+
+// chatOriginViews splits an event's audience by what each person may see of a copy's
+// source. The source's name is private to those who can read it, so it never goes out in
+// a shared payload. When a check fails the source is left out for that person.
+func (s *Server) chatOriginViews(message ChatMessage, userIDs []string) []chatOriginView {
+	row := message.origin
+	if row == nil || message.Origin == nil || row.HideSource || row.ConversationID == "" {
+		return []chatOriginView{{origin: message.Origin, userIDs: userIDs}}
+	}
+	withoutSource := *message.Origin
+	withoutSource.Source = nil
+	seq, live, err := chatOriginSeq(s.db, row)
+	if err != nil {
+		log.Printf("chat: find a copy's original: %v", err)
+	}
+	if err != nil || !live {
+		return []chatOriginView{{origin: &withoutSource, userIDs: userIDs}}
+	}
+
+	cache := message.sourceViews
+	if cache == nil {
+		cache = chatSourceViews{}
+	}
+	indexes := map[ChatOriginSource]int{}
+	views := []chatOriginView{}
+	hiddenFrom := []string{}
+	for _, userID := range userIDs {
+		key := [2]string{row.ConversationID, userID}
+		source, seen := cache[key]
+		if !seen {
+			source, err = s.chatOriginSourceFor(s.db, row.ConversationID, userID)
+			if err != nil {
+				log.Printf("chat: check a copy's source: %v", err)
+				source = nil
+			}
+			cache[key] = source
+		}
+		if source == nil {
+			hiddenFrom = append(hiddenFrom, userID)
+			continue
+		}
+		index, grouped := indexes[*source]
+		if !grouped {
+			shown, origin := *source, withoutSource
+			shown.Seq = seq
+			origin.Source = &shown
+			index = len(views)
+			indexes[*source] = index
+			views = append(views, chatOriginView{origin: &origin})
+		}
+		views[index].userIDs = append(views[index].userIDs, userID)
+	}
+	if len(hiddenFrom) > 0 {
+		views = append(views, chatOriginView{origin: &withoutSource, userIDs: hiddenFrom})
+	}
+	return views
 }
 
 // chatOriginSourceFor describes a source conversation if the viewer may see it: they can
@@ -594,4 +675,156 @@ func chatSortedUnique(ids ...string) []string {
 	out := chatUniqueIDs(ids, "")
 	sort.Strings(out)
 	return out
+}
+
+// chatForwardPerMinute matches the send limiter's 20 per 10 seconds, counted in messages.
+const chatForwardPerMinute = 120
+
+// chatForwardBudget is the send limit for forwards. A forward counts each message it puts
+// in a conversation, which the request-counting limiter on other routes cannot do.
+type chatForwardBudget struct {
+	mu      sync.Mutex
+	windows map[string]*chatForwardWindow
+}
+
+type chatForwardWindow struct {
+	started time.Time
+	used    int
+}
+
+// take reports whether the person may put count more messages in now, and counts them.
+func (b *chatForwardBudget) take(userID string, count int, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.windows == nil {
+		b.windows = map[string]*chatForwardWindow{}
+	}
+	for id, window := range b.windows {
+		if now.Sub(window.started) >= time.Minute {
+			delete(b.windows, id)
+		}
+	}
+	window := b.windows[userID]
+	if window == nil {
+		window = &chatForwardWindow{started: now}
+		b.windows[userID] = window
+	}
+	if window.used+count > chatForwardPerMinute {
+		return false
+	}
+	window.used += count
+	return true
+}
+
+// chatInsertNoteTx adds the forwarder's note as a normal message, with the same read and
+// listing effects as sending one.
+func (s *Server) chatInsertNoteTx(tx *database.Tx, sender User, targetID, body string) (string, error) {
+	now := database.Now()
+	seq, err := chatNextSeq(tx, targetID, true, now)
+	if err != nil {
+		return "", err
+	}
+	access, err := s.chatAccessFor(tx, targetID, sender.ID)
+	if err != nil {
+		return "", err
+	}
+	if body, err = chatCheckNestMentions(tx, access, body); err != nil {
+		return "", err
+	}
+	noteID := auth.NewID()
+	if _, err := tx.Exec(
+		`INSERT INTO chat_messages (id, conversation_id, seq, changed_seq, sender_id, client_message_id, kind, body, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'text', ?, ?)`,
+		noteID, targetID, seq, seq, sender.ID, "note-"+noteID, body, now,
+	); err != nil {
+		return "", err
+	}
+	if err := chatMarkSentTx(tx, access, sender.ID, seq, now); err != nil {
+		return "", err
+	}
+	return noteID, nil
+}
+
+// forwardChatMessages copies messages from one conversation into another, oldest first,
+// followed by the forwarder's optional note.
+func (s *Server) forwardChatMessages(c *fiber.Ctx) error {
+	user := currentUser(c)
+	var input struct {
+		MessageIDs []string `json:"messageIds"`
+		To         string   `json:"to"`
+		Note       string   `json:"note"`
+		HideSender bool     `json:"hideSender"`
+		HideSource bool     `json:"hideSource"`
+	}
+	if err := c.BodyParser(&input); err != nil {
+		return errChatInvalidBody
+	}
+	ids := chatUniqueIDs(input.MessageIDs, "")
+	if len(ids) == 0 || len(ids) > chatMaxCopy || input.To == "" {
+		return errChatInvalidBody
+	}
+	note, err := normalizeChatCaption(input.Note)
+	if err != nil {
+		return err
+	}
+	count := len(ids)
+	if note != "" {
+		count++
+	}
+	if !s.chatForwards.take(user.ID, count, time.Now()) {
+		s.metrics.chatRateLimited.inc("forward")
+		return fiber.NewError(fiber.StatusTooManyRequests, "You’re sending too quickly. Try again in a moment.")
+	}
+
+	unlock := s.chatLocks.lock(input.To)
+	defer unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	sourceID := ""
+	for _, id := range ids {
+		var conversationID string
+		err := tx.QueryRow(`SELECT conversation_id FROM chat_messages WHERE id = ?`, id).Scan(&conversationID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errChatMessageGone
+		}
+		if err != nil {
+			return err
+		}
+		if sourceID != "" && conversationID != sourceID {
+			return errChatInvalidBody
+		}
+		sourceID = conversationID
+	}
+	result, err := s.chatCopyMessagesTx(tx, user, ids, input.To, chatCopyOptions{HideSender: input.HideSender, HideSource: input.HideSource})
+	if err != nil {
+		return err
+	}
+	newIDs := result.Copied
+	if note != "" {
+		noteID, err := s.chatInsertNoteTx(tx, user, input.To, note)
+		if err != nil {
+			return err
+		}
+		newIDs = append(newIDs, noteID)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committedAt := time.Now()
+
+	messages := make([]ChatMessage, 0, len(newIDs))
+	views := chatSourceViews{}
+	for _, id := range newIDs {
+		message, err := s.loadChatMessage(s.db, input.To, id, user.ID, 0)
+		if err != nil {
+			return err
+		}
+		messages = append(messages, message)
+		message.sourceViews = views
+		s.publishChatMessage("message.created", message, message.Seq, nil, result.Recipients, committedAt)
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"conversationId": input.To, "messages": messages})
 }

@@ -47,6 +47,7 @@ type Server struct {
 	events                   *eventBroker
 	metrics                  *serverMetrics
 	chatLocks                *keyedMutex
+	chatForwards             chatForwardBudget
 	// inviteLocks keeps one account's invite count and insert together.
 	inviteLocks *keyedMutex
 	// workshop is the Workshop's port sharing: every active share, in memory.

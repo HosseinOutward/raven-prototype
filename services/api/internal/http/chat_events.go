@@ -88,18 +88,28 @@ func (s *Server) publishChatMessage(eventType string, message ChatMessage, seq i
 			ref := reply.ref
 			visible.ReplyTo = &ref
 		}
-		s.publishChatEvent(ChatEvent{Type: eventType, ConversationID: message.ConversationID, Seq: seq, Message: &visible}, full)
+		s.publishChatMessageViews(eventType, visible, seq, full)
 	}
 	if len(withoutReply) > 0 {
 		limited := message
 		limited.ReplyTo = &ChatReplyRef{ID: reply.ref.ID, Unavailable: true}
-		s.publishChatEvent(ChatEvent{Type: eventType, ConversationID: message.ConversationID, Seq: seq, Message: &limited}, withoutReply)
+		s.publishChatMessageViews(eventType, limited, seq, withoutReply)
 	}
 	if len(bump) > 0 {
 		s.publishChatEvent(ChatEvent{Type: "conversation.bump", ConversationID: message.ConversationID, Seq: seq}, bump)
 	}
 	s.metrics.fanout.observe(float64(len(recipients)))
 	s.metrics.publishDelay.observeSince(committedAt)
+}
+
+// publishChatMessageViews sends a message to people who may see it. A copy's source differs
+// from person to person, so each group that sees it alike gets its own payload.
+func (s *Server) publishChatMessageViews(eventType string, message ChatMessage, seq int64, userIDs []string) {
+	for _, view := range s.chatOriginViews(message, userIDs) {
+		shown := message
+		shown.Origin = view.origin
+		s.publishChatEvent(ChatEvent{Type: eventType, ConversationID: message.ConversationID, Seq: seq, Message: &shown}, view.userIDs)
+	}
 }
 
 func chatCanSeeReply(reply *chatReplyTarget, recipient chatRecipient) bool {

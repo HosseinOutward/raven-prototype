@@ -139,6 +139,9 @@ type ChatMessage struct {
 
 	// origin is the stored copy record; Origin is built from it for each viewer.
 	origin *chatOriginRow
+	// sourceViews, when set, is shared by the events of one forward, so each person's view
+	// of a source conversation is worked out once.
+	sourceViews chatSourceViews
 }
 
 type ChatMessagePreview struct {
@@ -216,6 +219,7 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	chat.Post("/groups", s.chatLimiter("create", 20, time.Hour), s.chatRoute("create group", s.createChatGroup))
 	chat.Post("/saved", s.chatLimiter("open saved", 60, time.Minute), s.chatRoute("open saved", s.openChatSaved))
 	chat.Post("/saved/messages", s.chatLimiter("save", 60, time.Minute), s.chatRoute("save messages", s.saveChatMessages))
+	chat.Post("/forward", s.chatRoute("forward", s.forwardChatMessages))
 
 	conversation := chat.Group("/conversations/:id")
 	conversation.Post("/attachments", s.chatLimiter("attach", 60, time.Minute), s.chatRoute("create attachment", s.createChatAttachment))
