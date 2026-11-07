@@ -25,7 +25,7 @@ func chatSummarySQL(one bool) string {
 	return fmt.Sprintf(`SELECT b.id, b.kind, b.name, b.topic, b.tree_id, b.last_seq, b.last_activity_ms, b.created_at,
 		b.notify, b.member_role, b.visible_from_seq, b.read_seq, b.hide_rev, b.archived, b.listed, b.tree_role,
 		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_read_at, b.peer_is_friend, b.peer_deleted, b.shares_read,
-		b.member_count, b.preview_seq, b.unread_count,
+		b.member_count, b.preview_seq, b.unread_count, b.mention_count,
 		COALESCE(pm.id, ''), COALESCE(pm.sender_id, ''), COALESCE(NULLIF(TRIM(pmp.display_name), ''), pmu.username, ''),
 		COALESCE(pm.kind, ''), COALESCE(pm.body, ''), pm.system_json, COALESCE(pm.created_at, ''),
 		CASE WHEN pm.deleted_at IS NULL THEN 0 ELSE 1 END
@@ -62,8 +62,16 @@ func chatSummarySQL(one bool) string {
 				WHERE m.conversation_id = c.id AND m.seq > cm.read_seq AND m.seq >= cm.visible_from_seq
 				  AND m.sender_id <> cm.user_id AND m.kind = 'text' AND m.deleted_at IS NULL
 				  AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.user_id = cm.user_id AND h.message_id = m.id)
-				LIMIT %d
-			) capped) AS unread_count
+				LIMIT %[1]d
+			) capped) AS unread_count,
+			(SELECT COUNT(*) FROM (
+				SELECT 1 FROM chat_messages m
+				WHERE m.conversation_id = c.id AND m.seq > cm.read_seq AND m.seq >= cm.visible_from_seq
+				  AND m.sender_id <> cm.user_id AND m.kind = 'text' AND m.deleted_at IS NULL
+				  AND m.body LIKE '%%<@u:' || cm.user_id || '>%%'
+				  AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.user_id = cm.user_id AND h.message_id = m.id)
+				LIMIT %[1]d
+			) capped) AS mention_count
 		FROM chat_conversations c
 		JOIN chat_members cm ON cm.conversation_id = c.id AND cm.user_id = ?
 		LEFT JOIN tree_members tm ON tm.tree_id = c.tree_id AND tm.user_id = cm.user_id AND tm.state = 'joined'
@@ -73,7 +81,7 @@ func chatSummarySQL(one bool) string {
 		LEFT JOIN chat_user_settings ms ON ms.user_id = cm.user_id
 		LEFT JOIN chat_user_settings ps ON ps.user_id = peer.user_id
 		WHERE c.status = 'active'
-		  AND ((c.kind IN ('dm', 'group') AND cm.state = 'joined') OR (c.kind = 'nest' AND tm.user_id IS NOT NULL))%s
+		  AND ((c.kind IN ('dm', 'group') AND cm.state = 'joined') OR (c.kind = 'nest' AND tm.user_id IS NOT NULL))%[2]s
 	 ) b
 	 LEFT JOIN chat_messages pm ON pm.conversation_id = b.id AND pm.seq = b.preview_seq
 	 LEFT JOIN users pmu ON pmu.id = pm.sender_id
@@ -115,7 +123,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 			&item.ID, &item.Kind, &item.Name, &item.Topic, &item.TreeID, &item.LastSeq, &item.LastActivityMs, &item.CreatedAt,
 			&item.Notify, &memberRole, &item.VisibleFromSeq, &item.ReadSeq, &item.HideRev, &archived, &listed, &treeRole,
 			&peerID, &peerUsername, &peerName, &peerReadSeq, &peerReadAt, &peerIsFriend, &peerDeleted, &sharesRead,
-			&item.MemberCount, &previewSeq, &item.UnreadCount,
+			&item.MemberCount, &previewSeq, &item.UnreadCount, &item.MentionCount,
 			&preview.ID, &preview.SenderID, &preview.SenderName, &preview.Kind, &previewBody, &previewSystem, &preview.CreatedAt,
 			&previewDeleted,
 		); err != nil {

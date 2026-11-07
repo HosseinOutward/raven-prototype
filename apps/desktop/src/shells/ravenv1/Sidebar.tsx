@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
 import { ConversationAvatar, UnreadDot } from "@/components/chat/ConversationRow";
 import type { ChatStore } from "@/lib/chat/store";
-import { AvatarStack, LiveDot, PersonAvatar, SectionLabel } from "./atoms";
+import { AvatarStack, LiveDot, NestGlyph, PersonAvatar, SectionLabel } from "./atoms";
 import { PendingList } from "./Inbox";
 import { OFFLINE_RANK, personStatus, reachRank } from "./people";
 import { rowUnread } from "./friendsAndGroups";
@@ -404,7 +404,7 @@ function NestRow({
         aria-current={active ? "page" : undefined}
         className={cn("flex h-9 min-w-0 flex-1 items-center gap-2.5 pr-2 text-left", nested ? "pl-[34px]" : "pl-2")}
       >
-        {live ? <LiveDot /> : <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-subtle/60" aria-hidden />}
+        <NestGlyph kind="voice" live={live} className={live ? "text-live" : "text-subtle"} />
         <span className="min-w-0 flex-1 truncate text-small text-foreground">{nest.name}</span>
         {here ? (
           <span className="shrink-0 text-caption text-live">You’re here</span>

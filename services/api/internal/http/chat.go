@@ -164,6 +164,8 @@ type ChatConversation struct {
 	LastActivityMs int64               `json:"lastActivityMs"`
 	LastMessage    *ChatMessagePreview `json:"lastMessage,omitempty"`
 	UnreadCount    int64               `json:"unreadCount"`
+	// MentionCount is how many of the unread messages mention the viewer, capped like UnreadCount.
+	MentionCount int64 `json:"mentionCount"`
 	ReadSeq        int64               `json:"readSeq"`
 	// PeerReadSeq is how far the other person in a direct message has read. It is present
 	// only when both people share read status.

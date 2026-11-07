@@ -375,6 +375,9 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 	if !access.CanSend {
 		return chatStored{}, access.sendError()
 	}
+	if body, err = chatCheckNestMentions(tx, access, body); err != nil {
+		return chatStored{}, err
+	}
 
 	// A resend of something already stored changes nothing: give the number back and
 	// answer with the original.
@@ -539,6 +542,9 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	}
 	if !access.CanSend {
 		return access.sendError()
+	}
+	if body, err = chatCheckNestMentions(tx, access, body); err != nil {
+		return err
 	}
 
 	var senderID, kind, currentBody, createdAt string

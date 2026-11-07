@@ -125,6 +125,8 @@ export interface ChatConversation {
   lastMessage?: ChatMessagePreview;
   /** Counted up to UNREAD_CAP; at the cap it means "that many or more". */
   unreadCount: number;
+  /** Unread messages that mention you, counted up to UNREAD_CAP. Absent from older servers. */
+  mentionCount?: number;
   readSeq: number;
   /** How far the other person in a direct message has read. Absent unless both share it. */
   peerReadSeq?: number;

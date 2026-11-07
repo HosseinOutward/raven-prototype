@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, ChevronRight, FolderPlus, Globe2, Hand, Hash, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
+import { ArrowUpDown, ChevronRight, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -7,7 +7,7 @@ import { api, type Nest, type TreeDetails, type TreeMember, type TreeSearchResul
 import type { ChatStore } from "@/lib/chat/store";
 import { treeCan } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-import { EmptyState, GroupedList, PersonAvatar, SectionLabel } from "../atoms";
+import { EmptyState, GroupedList, NestGlyph, PersonAvatar, SectionLabel } from "../atoms";
 import { displayNameFor, lifecycleLabel, PRESENCE, presenceFromApi, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useTreeChatSummaries } from "../useChat";
@@ -97,7 +97,7 @@ export function TreeLobbyView({
                   {chat ? (
                     <>
                       <DropdownMenuItem onSelect={() => setCreateTextNestOpen(true)}>
-                        <Hash className="text-muted-foreground" />
+                        <NestGlyph kind="text" className="text-muted-foreground" />
                         New text {nestSingular}
                       </DropdownMenuItem>
                       <DropdownMenuItem onSelect={() => setCreateCategoryOpen(true)}>

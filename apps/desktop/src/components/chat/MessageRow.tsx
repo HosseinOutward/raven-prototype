@@ -20,7 +20,8 @@ import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
 import { EmojiPicker } from "./EmojiPicker";
 import { Reactions } from "./Reactions";
-import { MessageText } from "./MessageText";
+import { MessageText, type MentionContext } from "./MessageText";
+import { mentionsUser } from "@/lib/chat/mentions";
 import { useSwipeToReply } from "./useSwipeToReply";
 
 /** What stands above a message without being part of it. */
@@ -93,6 +94,8 @@ export interface MessageRowProps {
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
   /** Opens the sender's profile page. Without it the avatar and name are plain. */
   onOpenPerson?: (userId: string) => void;
+  /** Draws mentions; without it they show as unknown. */
+  mentions?: MentionContext;
 }
 
 /** A sender's face or name; opens their profile when the conversation can. */
@@ -319,7 +322,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
           <div className={cn("min-w-0 max-w-[min(100%,34rem)] rounded-control transition-colors", props.highlighted && "outline outline-2 outline-ring")}>
             {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><PersonLink message={message} onOpenPerson={props.onOpenPerson} className="max-w-full truncate hover:underline"><bdi>{message.senderName}</bdi></PersonLink></div> : null}
             {bareEmoji ? <>
-              <MessageText body={message.body} />
+              <MessageText body={message.body} mentions={props.mentions} />
               {hasChips ? <div className="mt-1">{chips(mine ? "end" : "start")}</div> : null}
               <MessageMeta message={message} mine={mine} deleted={deleted} status={status} alignStart={!mine} />
             </> : <MessageAttachments
@@ -336,6 +339,8 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             className={cn(
               "min-w-0 max-w-[min(100%,34rem)] rounded-card px-3 py-1.5 transition-colors",
               mine ? "bg-accent" : "bg-secondary",
+              // A message that mentions you catches a thin edge of light on its side.
+              !mine && !deleted && mentionsUser(message.body, props.me) && "shadow-[inset_2px_0_0_0_hsl(var(--live))]",
               props.highlighted && "outline outline-2 outline-ring",
             )}
           >
@@ -354,7 +359,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             {deleted ? (
               <p className="text-body italic text-subtle">Message deleted</p>
             ) : hasText ? (
-              <MessageText body={message.body} />
+              <MessageText body={message.body} mentions={props.mentions} />
             ) : null}
             {hasChips ? (
               // Reactions share the last line with the time, as in a printed note's footer.

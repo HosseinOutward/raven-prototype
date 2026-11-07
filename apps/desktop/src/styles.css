@@ -488,6 +488,23 @@ textarea {
   }
 }
 
+/* A voice nest with people inside: its glyph's bars breathe slowly, out of step. */
+@keyframes raven-bar-breathe {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.55);
+  }
+}
+
+.raven-nest-bar {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: raven-bar-breathe 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,

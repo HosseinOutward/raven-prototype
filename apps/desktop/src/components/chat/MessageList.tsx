@@ -8,6 +8,7 @@ import { unreadLabel } from "@/lib/chat/reducer";
 import { buildRows, type ChatRow as Row } from "@/lib/chat/rows";
 import type { ChatAttachment, ChatMessage, ConversationState, PendingMessage } from "@/lib/chat/types";
 import { MessageRow, PendingRow, type DeliveryStatus } from "./MessageRow";
+import type { MentionContext } from "./MessageText";
 import { SeenBy } from "./SeenBy";
 
 /** Virtuoso counts rows from here, leaving room to add older ones in front. */
@@ -102,6 +103,7 @@ export interface MessageListProps {
   onDeleteForEveryone: (message: ChatMessage) => void;
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
   onOpenPerson: (userId: string) => void;
+  mentions?: MentionContext;
 }
 
 /**
@@ -110,7 +112,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson },
+  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, mentions },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -298,6 +300,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onOpenReply={openReply}
                 onOpenImage={onOpenImage}
                 onOpenPerson={onOpenPerson}
+                mentions={mentions}
               />
               {message.seq === summary.lastSeq && !message.deletedAt && (mine || summary.kind !== "dm") ? (
                 <SeenBy

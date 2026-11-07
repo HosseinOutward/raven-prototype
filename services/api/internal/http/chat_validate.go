@@ -1,6 +1,7 @@
 package http
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -120,4 +121,40 @@ func validChatReaction(s string) bool {
 		}
 	}
 	return hasEmoji
+}
+
+// chatNestMention matches a mention of a voice nest (`<@n:id>`) or a text nest (`<@t:id>`).
+var chatNestMention = regexp.MustCompile(`<@([nt]):([^\s<>]{1,64})>`)
+
+// chatCheckNestMentions keeps nest mentions only inside a text nest and only when they
+// point at a nest of that same tree, so a message cannot point anyone across spaces. Any
+// other nest mention is rewritten to a plain "@". Mentions of people need no check: only
+// members receive the message, and an unknown id is drawn as "someone".
+func chatCheckNestMentions(q chatQuerier, access chatAccess, body string) (string, error) {
+	if !strings.Contains(body, "<@n:") && !strings.Contains(body, "<@t:") {
+		return body, nil
+	}
+	var failure error
+	out := chatNestMention.ReplaceAllStringFunc(body, func(token string) string {
+		if failure != nil {
+			return token
+		}
+		match := chatNestMention.FindStringSubmatch(token)
+		if access.Kind == chatKindNest && access.TreeID != "" {
+			query := `SELECT COUNT(*) FROM nests WHERE id = ? AND tree_id = ? AND status = 'active' AND type = 'persistent'`
+			if match[1] == "t" {
+				query = `SELECT COUNT(*) FROM chat_conversations WHERE id = ? AND tree_id = ? AND kind = 'nest' AND status = 'active'`
+			}
+			var count int
+			if err := q.QueryRow(query, match[2], access.TreeID).Scan(&count); err != nil {
+				failure = err
+				return token
+			}
+			if count > 0 {
+				return token
+			}
+		}
+		return "@"
+	})
+	return out, failure
 }

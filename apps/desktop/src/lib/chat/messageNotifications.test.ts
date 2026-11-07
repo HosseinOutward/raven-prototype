@@ -121,4 +121,30 @@ describe("live message notification subscription", () => {
     expect(s.sounds).toHaveLength(4);
     s.stop();
   });
+  test("a mention gets through a mute and the quiet gap, never do not disturb", async () => {
+    const s = await setup();
+    s.summary.notify = "off";
+    s.context.mentions = { nestSingular: "Room", person: (id) => (id === "me" ? { name: "Me", username: "me" } : null), nest: () => null };
+    s.receive({ body: "no mention" });
+    expect(s.sounds).toEqual([]);
+    s.receive({ body: "hey <@u:me> look at <@n:gone>" });
+    await flush();
+    expect(s.toasts).toEqual(["Sara: hey Me look at a room"]);
+    s.receive({ body: "<@u:me> again" });
+    await flush();
+    expect(s.toasts).toHaveLength(2);
+    s.context.dnd = true;
+    s.receive({ body: "<@u:me> during dnd" });
+    expect(s.toasts).toHaveLength(2);
+    s.context.dnd = false;
+    s.context.active = true;
+    s.context.conversationId = "c";
+    s.receive({ body: "<@u:me> while open" });
+    expect(s.toasts).toHaveLength(2);
+    // Someone else's mention, or one inside code, is not yours.
+    s.context.active = false;
+    s.receive({ body: "<@u:sam> and `<@u:me>`" });
+    expect(s.toasts).toHaveLength(2);
+    s.stop();
+  });
 });

@@ -593,3 +593,20 @@ describe("optimistic reactions", () => {
     expect(next.conversations[C].messages[0].reactions).toBeUndefined();
   });
 });
+
+describe("mention count", () => {
+  test("a message mentioning me counts; reading to the end or sending clears it", () => {
+    const start = chat({ lastSeq: 2, unreadCount: 0, mentionCount: 0 });
+    let state = applyEvent(start, created(3, { body: "hi <@u:me>" }), NOW).state;
+    state = applyEvent(state, created(4, { body: "hi <@u:ava>" }), NOW).state;
+    state = applyEvent(state, created(5, { body: "`<@u:me>` in code" }), NOW).state;
+    expect(state.conversations[C].summary.mentionCount).toBe(1);
+    expect(state.conversations[C].summary.unreadCount).toBe(3);
+    const partly = applyEvent(state, { type: "conversation.read", conversationId: C, userId: ME, readSeq: 4, unreadCount: 1 }, NOW).state;
+    expect(partly.conversations[C].summary.mentionCount).toBe(1);
+    const all = applyEvent(state, { type: "conversation.read", conversationId: C, userId: ME, readSeq: 5, unreadCount: 0 }, NOW).state;
+    expect(all.conversations[C].summary.mentionCount).toBe(0);
+    const sent = applyEvent(state, created(6, { senderId: ME, body: "ok" }), NOW).state;
+    expect(sent.conversations[C].summary.mentionCount).toBe(0);
+  });
+});

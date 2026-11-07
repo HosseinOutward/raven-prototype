@@ -1,4 +1,5 @@
 import type { NotificationSettings } from "../notifications";
+import { mentionsUser, type MentionResolver } from "./mentions";
 import { notifies, notificationText } from "./notify";
 import type { ChatStore } from "./store";
 import type { ChatMessage } from "./types";
@@ -8,6 +9,8 @@ export interface MessageNotificationContext {
   dnd: boolean;
   active: boolean;
   conversationId?: string;
+  /** Names for mentions in the notification's text. */
+  mentions?: MentionResolver;
 }
 
 /** One live subscription, with bounded waits for new conversations and quiet bursts. */
@@ -32,12 +35,14 @@ export function subscribeMessageNotifications(
     if (!current.userId || message.senderId === current.userId || message.kind !== "text" || message.deletedAt) return true;
     const summary = chat.getState().conversations[message.conversationId]?.summary;
     if (!summary) return false;
-    if (!notifies(summary.kind, summary.notify) || current.dnd || (current.active && current.conversationId === summary.id)) return true;
+    // A mention of you gets through a muted conversation and its quiet gap, never do not disturb.
+    const mentioned = mentionsUser(message.body, current.userId);
+    if (!(notifies(summary.kind, summary.notify) || mentioned) || current.dnd || (current.active && current.conversationId === summary.id)) return true;
     void commands.play().catch(() => undefined);
     const settings = commands.settings();
     const last = shown.get(summary.id);
-    if (settings.messages && !inFlight.has(summary.id) && (last === undefined || now() - last >= 20_000)) {
-      const { title, body } = notificationText(message, summary, settings.messageText);
+    if (settings.messages && !inFlight.has(summary.id) && (mentioned || last === undefined || now() - last >= 20_000)) {
+      const { title, body } = notificationText(message, summary, settings.messageText, current.mentions);
       inFlight.add(summary.id);
       void commands.notify(title, body).then((didShow) => {
         if (didShow && !stopped) shown.set(summary.id, now());

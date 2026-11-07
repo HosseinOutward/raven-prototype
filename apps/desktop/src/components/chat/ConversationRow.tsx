@@ -1,5 +1,6 @@
 import { memo } from "react";
-import { BellOff, Hash, Users } from "lucide-react";
+import { BellOff, UserRound, Users } from "lucide-react";
+import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { Avatar } from "@/components/ui/avatar";
 import { api } from "@/lib/api";
 import { unreadLabel } from "@/lib/chat/reducer";
@@ -18,6 +19,19 @@ export function UnreadCount({ count, className }: { count: number; className?: s
   return (
     <span aria-label={`${label} unread`} className={cn("shrink-0 rounded-full bg-accent px-1.5 text-caption font-medium tabular-nums text-foreground", className)}>
       {label}
+    </span>
+  );
+}
+
+/**
+ * Someone mentioned you here: a small face in the soft aqua that means a person, beside
+ * the count. Not an "@" badge.
+ */
+export function MentionDot({ count, className }: { count?: number; className?: string }) {
+  if (!count) return null;
+  return (
+    <span role="img" aria-label="Mentions you" title="Mentions you" className={cn("flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-live text-live-foreground", className)}>
+      <UserRound className="h-2.5 w-2.5" strokeWidth={2.5} aria-hidden />
     </span>
   );
 }
@@ -45,7 +59,7 @@ export function ConversationAvatar({ conversation, className }: { conversation: 
   if (conversation.kind === "nest") {
     return (
       <span className={cn("flex shrink-0 items-center justify-center text-subtle", className)} aria-hidden>
-        <Hash className="h-4 w-4" />
+        <NestGlyph kind="text" />
       </span>
     );
   }
@@ -85,6 +99,7 @@ export const ConversationRowCompact = memo(function ConversationRowCompact({
       </span>
       <MutedIndicator conversation={conversation} />
       {conversation.kind === "group" ? <GroupIndicator /> : null}
+      <MentionDot count={conversation.mentionCount} />
       <UnreadCount count={conversation.unreadCount} />
     </button>
   );
@@ -116,6 +131,7 @@ export const ConversationRow = memo(function ConversationRow({
           <span dir="auto" className={cn("min-w-0 flex-1 truncate text-small", unread ? "text-foreground" : "text-muted-foreground")}>
             {preview || "No messages yet"}
           </span>
+          <MentionDot count={conversation.mentionCount} />
           <UnreadCount count={conversation.unreadCount} />
         </span>
       </span>

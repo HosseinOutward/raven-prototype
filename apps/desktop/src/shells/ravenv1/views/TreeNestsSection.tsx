@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Hash, MoreHorizontal, Pencil, Trash2, Volume2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, GripVertical, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { RenameDialog } from "@/components/chat/ChatDialogs";
-import { UnreadCount } from "@/components/chat/ConversationRow";
+import { MentionDot, UnreadCount } from "@/components/chat/ConversationRow";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -16,7 +16,7 @@ import { textNestsOfTree } from "@/lib/chat/reducer";
 import type { ChatStore } from "@/lib/chat/store";
 import type { TreeCategory } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
-import { GroupedList, LiveDot, SectionLabel } from "../atoms";
+import { GroupedList, NestGlyph, SectionLabel } from "../atoms";
 import { lifecycleLabel, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useChatState } from "../useChat";
@@ -133,6 +133,7 @@ export function TreeNestsSection({
                       key={`text:${ref.id}`}
                       name={nameOf(ref)}
                       unread={textById.get(ref.id)?.unreadCount ?? 0}
+                      mentions={textById.get(ref.id)?.mentionCount ?? 0}
                       onOpen={() => onNavigate({ kind: "chat", id: ref.id })}
                       menu={canManage ? <NestRowMenu name={nameOf(ref)} onRename={() => setRenamingNest(ref)} onDelete={() => setDeletingNest(ref)} /> : undefined}
                     />
@@ -266,12 +267,13 @@ function NestRowMenu({ name, onRename, onDelete }: { name: string; onRename: () 
 const rowClassName = "group flex h-11 w-full items-center transition-colors hover:bg-secondary";
 const rowButtonClassName = "flex h-11 min-w-0 flex-1 items-center gap-3 px-3.5 text-left";
 
-function TextNestRow({ name, unread, onOpen, menu }: { name: string; unread: number; onOpen: () => void; menu?: ReactNode }) {
+function TextNestRow({ name, unread, mentions, onOpen, menu }: { name: string; unread: number; mentions: number; onOpen: () => void; menu?: ReactNode }) {
   return (
     <div className={rowClassName}>
       <button type="button" onClick={onOpen} className={rowButtonClassName}>
-        <Hash className="h-4 w-4 shrink-0 text-subtle" aria-hidden />
+        <NestGlyph kind="text" className="text-subtle" />
         <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 && "font-medium")}><bdi>{name}</bdi></span>
+        <MentionDot count={mentions} />
         <UnreadCount count={unread} />
         <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
       </button>
@@ -286,9 +288,7 @@ function VoiceNestRow({ nest, onOpen, menu }: { nest: Nest; onOpen: (nest: Nest)
   return (
     <div className={rowClassName}>
       <button type="button" onClick={() => onOpen(nest)} className={rowButtonClassName}>
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-          {live ? <LiveDot /> : <span className="h-1.5 w-1.5 rounded-full bg-subtle/60" aria-hidden />}
-        </span>
+        <NestGlyph kind="voice" live={live} className={live ? "text-live" : "text-subtle"} />
         <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
         {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
         <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
@@ -399,7 +399,7 @@ function ArrangeItemRow({ entry }: { entry: Extract<ArrangeEntry, { type: "item"
       >
         <GripVertical className="h-4 w-4" />
       </button>
-      {entry.kind === "text" ? <Hash className="h-4 w-4 shrink-0 text-subtle" aria-hidden /> : <Volume2 className="h-4 w-4 shrink-0 text-subtle" aria-hidden />}
+      <NestGlyph kind={entry.kind === "text" ? "text" : "voice"} className="text-subtle" />
       <span className="min-w-0 flex-1 truncate text-body"><bdi>{entry.name}</bdi></span>
     </div>
   );

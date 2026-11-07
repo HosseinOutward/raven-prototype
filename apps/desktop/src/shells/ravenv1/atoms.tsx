@@ -93,6 +93,31 @@ export function LiveDot({ className }: { className?: string }) {
   return <span aria-hidden className={cn("h-1.5 w-1.5 shrink-0 rounded-full bg-live", className)} />;
 }
 
+/**
+ * What kind of nest something is, drawn the same in messages, tree pages and the sidebar.
+ * Voice is a quiet level meter whose bars breathe while people are inside; text is a
+ * speech bubble. Sized and stroked like the lucide icons around it.
+ */
+export function NestGlyph({ kind, live = false, className }: { kind: "voice" | "text"; live?: boolean; className?: string }) {
+  const svg = { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true, className: cn("h-4 w-4 shrink-0", className) };
+  if (kind === "text") {
+    return (
+      <svg {...svg}>
+        <path d="M4 2.75h8A2.25 2.25 0 0 1 14.25 5v4.5A2.25 2.25 0 0 1 12 11.75H7.5l-3 2.25v-2.25H4A2.25 2.25 0 0 1 1.75 9.5V5A2.25 2.25 0 0 1 4 2.75z" />
+        <path d="M5 6h6M5 8.5h3.5" />
+      </svg>
+    );
+  }
+  const bar = live ? "raven-nest-bar" : undefined;
+  return (
+    <svg {...svg}>
+      <path className={bar} d="M4 6.25v3.5" />
+      <path className={bar} style={live ? { animationDelay: "-0.55s" } : undefined} d="M8 3.25v9.5" />
+      <path className={bar} style={live ? { animationDelay: "-1.1s" } : undefined} d="M12 5.25v5.5" />
+    </svg>
+  );
+}
+
 /** Quiet heading for a group of rows. Sentence case, never tracked capitals. */
 export function SectionLabel({ children, className, action }: { children: ReactNode; className?: string; action?: ReactNode }) {
   return (

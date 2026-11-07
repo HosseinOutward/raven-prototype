@@ -10,7 +10,9 @@ export type Inline =
   | { type: "text"; text: string }
   | { type: "bold" | "italic" | "strike"; children: Inline[] }
   | { type: "code"; text: string }
-  | { type: "link"; href: string; text: string };
+  | { type: "link"; href: string; text: string }
+  /** A person (`<@u:id>`), voice nest (`<@n:id>`) or text nest (`<@t:id>`). Drawing decides whether the id is known. */
+  | { type: "mention"; target: "user" | "nest" | "text"; id: string };
 
 export type Block =
   /** One line of the message. Each is given its own direction when drawn. */
@@ -28,6 +30,8 @@ const ADDRESS = /^https?:\/\/[^\s<>]+/i;
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "'", "\"", "»", "”", "’", "،", "؛", "؟", "…"]);
 const CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 const MAX_NESTING = 4;
+const MENTION = /^<@([unt]):([^\s<>]{1,64})>/;
+const MENTION_TARGETS = { u: "user", n: "nest", t: "text" } as const;
 
 const PAIRS: Array<{ marker: string; type: "bold" | "italic" | "strike"; wordBound: boolean }> = [
   { marker: "**", type: "bold", wordBound: false },
@@ -116,6 +120,16 @@ function parseInline(text: string, depth = 0): Inline[] {
         flush();
         out.push({ type: "code", text: text.slice(index + 1, end) });
         index = end + 1;
+        continue;
+      }
+    }
+
+    if (character === "<") {
+      const match = MENTION.exec(text.slice(index, index + 72));
+      if (match) {
+        flush();
+        out.push({ type: "mention", target: MENTION_TARGETS[match[1] as keyof typeof MENTION_TARGETS], id: match[2] });
+        index += match[0].length;
         continue;
       }
     }

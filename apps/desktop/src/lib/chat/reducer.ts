@@ -15,6 +15,7 @@
 // message arriving twice, or an old copy arriving late, does no harm. Nothing here
 // performs a request; functions return the state and the work that follows from it.
 
+import { mentionsUser } from "./mentions";
 import {
   UNREAD_CAP,
   type ChatAttachmentSummary,
@@ -211,7 +212,7 @@ export function applySummary(state: ChatState, fresh: ChatConversation, members?
   // A reply that is older than what an event has already established is ignored for
   // everything the event set; only the slow-changing details are taken from it.
   const summary: ChatConversation = fresh.lastSeq < existing.summary.lastSeq
-    ? { ...fresh, lastSeq: existing.summary.lastSeq, lastMessage: existing.summary.lastMessage, unreadCount: existing.summary.unreadCount, readSeq: Math.max(fresh.readSeq, existing.summary.readSeq), lastActivityMs: existing.summary.lastActivityMs, archived: existing.summary.archived }
+    ? { ...fresh, lastSeq: existing.summary.lastSeq, lastMessage: existing.summary.lastMessage, unreadCount: existing.summary.unreadCount, mentionCount: existing.summary.mentionCount, readSeq: Math.max(fresh.readSeq, existing.summary.readSeq), lastActivityMs: existing.summary.lastActivityMs, archived: existing.summary.archived }
     : fresh;
   const next: ConversationState = { ...existing, summary, members: members ?? existing.members };
   const viewChanged = existing.loaded && (fresh.hideRev !== existing.summary.hideRev || fresh.visibleFromSeq !== existing.summary.visibleFromSeq);
@@ -259,8 +260,10 @@ function noteInSummary(conversation: ConversationState, message: ChatMessage, se
       // Sending means having read what came before.
       next.readSeq = seq;
       next.unreadCount = 0;
+      next.mentionCount = 0;
     } else if (message.kind === "text") {
       next.unreadCount = Math.min(summary.unreadCount + 1, UNREAD_CAP);
+      if (mentionsUser(message.body, me)) next.mentionCount = Math.min((summary.mentionCount ?? 0) + 1, UNREAD_CAP);
       // A message from the other person in a direct message shows they have read up to it.
       if (summary.kind === "dm" && summary.peerReadSeq !== undefined) next.peerReadSeq = Math.max(summary.peerReadSeq, seq);
     }
@@ -363,6 +366,8 @@ export function applyEvent(state: ChatState, event: ChatEvent, now: number, atBo
       if (event.userId === state.me) {
         if (readSeq < existing.summary.readSeq) return unchanged(state);
         const summary = { ...existing.summary, readSeq, unreadCount: event.unreadCount ?? existing.summary.unreadCount };
+        // Reading to the end clears the mention mark.
+        if (readSeq >= existing.summary.lastSeq) summary.mentionCount = 0;
         return unchanged(put(state, { ...existing, summary }));
       }
       let conversation = existing;
@@ -575,7 +580,7 @@ export function markReadLocally(state: ChatState, conversationId: string, seq: n
   // server's answer corrects it a moment later.
   const stillUnread = existing.messages.filter((message) => message.seq > readSeq && message.senderId !== state.me && message.kind === "text" && !message.deletedAt).length;
   const unreadCount = readSeq >= existing.summary.lastSeq ? 0 : existing.loaded && !existing.hasMoreAfter ? stillUnread : existing.summary.unreadCount;
-  return put(state, { ...existing, summary: { ...existing.summary, readSeq, unreadCount } });
+  return put(state, { ...existing, summary: { ...existing.summary, readSeq, unreadCount, mentionCount: readSeq >= existing.summary.lastSeq ? 0 : existing.summary.mentionCount } });
 }
 
 /** Reactions change immediately without pretending the server advanced its revision. */

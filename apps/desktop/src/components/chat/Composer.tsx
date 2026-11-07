@@ -15,6 +15,10 @@ import { trayReady, type TraySource } from "@/lib/chat/tray";
 import type { ChatMessage, PreparedAttachment } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
 import { AttachmentTray } from "./AttachmentTray";
+import { Avatar } from "@/components/ui/avatar";
+import { api } from "@/lib/api";
+import { filterCandidates, fromTokens, mentionQuery, mentionToken, toTokens, type MentionCandidate, type MentionResolver, type PickedMention } from "@/lib/chat/mentions";
+import { NestGlyph } from "@/shells/ravenv1/atoms";
 
 /** The server refuses anything longer. */
 const MAX_LENGTH = 4096;
@@ -23,6 +27,8 @@ const MAX_HEIGHT = 188;
 
 /** What was being written in each conversation, kept while the app is open. */
 const drafts = new Map<string, string>();
+/** The mentions picked into each draft, so a restored draft still sends them as mentions. */
+const draftMentions = new Map<string, PickedMention[]>();
 
 export interface ComposerProps {
   conversationId: string;
@@ -39,15 +45,25 @@ export interface ComposerProps {
   onEditLast: () => void;
   /** What images this server takes, or null when it takes none. */
   imageLimits: AttachmentLimits | null;
+  /** Who and what `@` can mention here: people first, then nests. */
+  mentionCandidates?: MentionCandidate[];
+  /** Turns a stored message's mentions back into names when it is edited. */
+  mentionResolver?: MentionResolver;
+  /** The heading over nests in the `@` list (`data.labels.nestPlural`). */
+  nestHeading?: string;
 }
 
 async function filesToSources(files: File[]): Promise<TraySource[]> {
   return Promise.all(files.map(async (file): Promise<TraySource> => ({ kind: "bytes", bytes: await file.arrayBuffer(), name: file.name || "image" })));
 }
 
+const NO_CANDIDATES: MentionCandidate[] = [];
+
 /** Where a message is written. Enter sends it; Shift+Enter starts a new line. */
-export function Composer({ conversationId, name, replyingTo, editing, onCancelReply, onCancelEdit, onSend, onSaveEdit, onTyping, onEditLast, imageLimits }: ComposerProps) {
+export function Composer({ conversationId, name, replyingTo, editing, onCancelReply, onCancelEdit, onSend, onSaveEdit, onTyping, onEditLast, imageLimits, mentionCandidates = NO_CANDIDATES, mentionResolver, nestHeading = "" }: ComposerProps) {
   const [text, setText] = useState(() => drafts.get(conversationId) ?? "");
+  const picked = useRef<PickedMention[]>(draftMentions.get(conversationId) ?? []);
+  const pickedBeforeEdit = useRef<PickedMention[]>([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojiData, setEmojiData] = useState<EmojiData>();
   const [caret, setCaret] = useState(0);
@@ -68,10 +84,15 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   useEffect(() => {
     if (editing) {
       beforeEdit.current = text;
-      setText(editing.body);
+      pickedBeforeEdit.current = picked.current;
+      const shown = mentionResolver ? fromTokens(editing.body, mentionResolver) : { text: editing.body, picked: [] };
+      picked.current = shown.picked;
+      setText(shown.text);
     } else {
       setText(beforeEdit.current || (drafts.get(conversationId) ?? ""));
+      picked.current = beforeEdit.current ? pickedBeforeEdit.current : (draftMentions.get(conversationId) ?? []);
       beforeEdit.current = "";
+      pickedBeforeEdit.current = [];
     }
     field.current?.focus();
     // Runs when editing starts or stops, not on every keystroke.
@@ -83,7 +104,11 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   }, [conversationId, replyingTo?.id]);
 
   useEffect(() => {
-    if (!editing) drafts.set(conversationId, text);
+    if (editing) return;
+    drafts.set(conversationId, text);
+    // A name deleted from the text is no longer a mention to keep.
+    picked.current = picked.current.filter((pick) => text.includes(pick.text));
+    draftMentions.set(conversationId, picked.current);
   }, [conversationId, text, editing]);
 
   // The box grows with what is written, up to a few lines, then scrolls.
@@ -102,7 +127,14 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   const suggestions = emojiData && token && dismissed !== tokenKey
     ? searchEmoji({ ...emojiData, list: emojiData.list.filter((entry) => entry.shortcodes.some((code) => code.startsWith(token.query))) }, token.query, 6)
     : [];
-  const activeSuggestion = Math.min(suggestionIndex, Math.max(0, suggestions.length - 1));
+  const mention = mentionCandidates.length > 0 ? mentionQuery(text, caret) : null;
+  const mentionKey = mention ? `@${mention.start}:${mention.query}` : null;
+  const mentionOpen = Boolean(mention && dismissed !== mentionKey);
+  const mentionPeople = mention && mentionOpen ? filterCandidates(mentionCandidates.filter((candidate) => candidate.target === "user"), mention.query, 6) : [];
+  const mentionNests = mention && mentionOpen ? filterCandidates(mentionCandidates.filter((candidate) => candidate.target !== "user"), mention.query, 6) : [];
+  const mentionList = [...mentionPeople, ...mentionNests];
+  const choices = suggestions.length > 0 ? suggestions.length : mentionList.length;
+  const activeSuggestion = Math.min(suggestionIndex, Math.max(0, choices - 1));
 
   const insertEmoji = (emoji: string, start = selection.current.start, end = selection.current.end) => {
     const from = Math.min(start, text.length);
@@ -122,6 +154,20 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
     const emoji = withTone(suggestions[index], skinTone());
     recordEmoji(emoji); insertEmoji(emoji, token.start, caret);
   };
+
+  const chooseMention = (index: number) => {
+    const candidate = mentionList[index];
+    if (!mention || !candidate) return;
+    const shown = `@${candidate.name}`;
+    const token = mentionToken(candidate.target, candidate.id);
+    if (!picked.current.some((pick) => pick.text === shown && pick.token === token)) picked.current = [...picked.current, { text: shown, token }];
+    insertEmoji(`${shown} `, mention.start, caret);
+  };
+  const outgoing = () => toTokens(
+    text,
+    picked.current,
+    mentionCandidates.flatMap((candidate) => (candidate.target === "user" && candidate.username ? [{ id: candidate.id, username: candidate.username }] : [])),
+  );
 
   // Only typing the closing colon completes a `:code:`: moving the caret, pasting or
   // undoing a completion leaves the text alone. Loading may finish just after the colon.
@@ -148,13 +194,15 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
     if (blocked) return;
     if (editing) {
       setSaving(true);
-      void onSaveEdit(text)
+      void onSaveEdit(outgoing())
         .then(onCancelEdit, () => undefined)
         .finally(() => setSaving(false));
       return;
     }
-    onSend(text, hasImages ? chatTray.take(conversationId) : []);
+    onSend(outgoing(), hasImages ? chatTray.take(conversationId) : []);
     setText("");
+    picked.current = [];
+    draftMentions.delete(conversationId);
     selection.current = { start: 0, end: 0 };
     setCaret(0);
     drafts.delete(conversationId);
@@ -177,18 +225,23 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // While an input method is composing a character, Enter belongs to it.
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-    if (suggestions.length > 0) {
+    if (choices > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
-        setSuggestionIndex((activeSuggestion + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length);
+        setSuggestionIndex((activeSuggestion + (event.key === "ArrowDown" ? 1 : -1) + choices) % choices);
         return;
       }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
-        event.preventDefault(); chooseSuggestion(activeSuggestion); return;
+        event.preventDefault();
+        if (suggestions.length > 0) chooseSuggestion(activeSuggestion);
+        else chooseMention(activeSuggestion);
+        return;
       }
       if (event.key === "Escape") {
-        event.preventDefault(); setDismissed(tokenKey); return;
+        event.preventDefault(); setDismissed(suggestions.length > 0 ? tokenKey : mentionKey); return;
       }
+    } else if (mentionOpen && event.key === "Escape") {
+      event.preventDefault(); setDismissed(mentionKey); return;
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -239,6 +292,18 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
             <span className="text-[20px] leading-none">{withTone(entry, skinTone())}</span>
             <span>:{entry.shortcodes.find((code) => code.startsWith(token!.query))}:</span>
           </div>)}
+        </div> : mentionOpen ? <div id={suggestionsId} role="listbox" aria-label="People and places to mention" className="absolute bottom-full left-0 z-50 mb-2 w-[280px] animate-pop-in rounded-card border bg-popover p-1 text-popover-foreground shadow-raised">
+          {mentionList.length === 0 ? <p className="px-2 py-1.5 text-small text-muted-foreground">Nobody here by that name</p> : null}
+          {mentionList.map((candidate, index) => <div key={`${candidate.target}:${candidate.id}`} role="presentation">
+            {index === mentionPeople.length && mentionNests.length > 0 ? <div role="presentation" className="px-2 pb-1 pt-1.5 text-caption text-subtle">{nestHeading}</div> : null}
+            <div id={`${suggestionsId}-${index}`} role="option" aria-selected={index === activeSuggestion} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(index)} className={cn("flex h-8 cursor-pointer items-center gap-2 rounded-control px-2 text-small hover:bg-secondary", index === activeSuggestion && "bg-secondary")}>
+              {candidate.target === "user"
+                ? <Avatar name={candidate.name} src={api.userAvatarUrl(candidate.id)} className="h-5 w-5" />
+                : <span className="flex h-5 w-5 shrink-0 items-center justify-center text-subtle"><NestGlyph kind={candidate.target === "nest" ? "voice" : "text"} /></span>}
+              <bdi className="min-w-0 truncate text-foreground">{candidate.name}</bdi>
+              {candidate.username && candidate.username !== candidate.name ? <bdi className="min-w-0 truncate text-caption text-subtle">{candidate.username}</bdi> : null}
+            </div>
+          </div>)}
         </div> : null}
         {imageLimits && !editing ? (
           <>
@@ -272,8 +337,8 @@ export function Composer({ conversationId, name, replyingTo, editing, onCancelRe
           placeholder={hasImages ? "Add a caption" : `Message ${name}`}
           aria-invalid={tooLong}
           aria-autocomplete="list"
-          aria-controls={suggestions.length ? suggestionsId : undefined}
-          aria-activedescendant={suggestions.length ? `${suggestionsId}-${activeSuggestion}` : undefined}
+          aria-controls={suggestions.length || mentionOpen ? suggestionsId : undefined}
+          aria-activedescendant={choices ? `${suggestionsId}-${activeSuggestion}` : undefined}
           onSelect={(event) => {
             const element = event.currentTarget;
             selection.current = { start: element.selectionStart, end: element.selectionEnd };

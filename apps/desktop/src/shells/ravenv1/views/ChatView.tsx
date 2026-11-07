@@ -14,7 +14,8 @@ import { failureText } from "@/lib/chat/errors";
 import { notifies } from "@/lib/chat/notify";
 import { canShow, reactionLimits } from "@/lib/chat/attachments";
 import { addToTray } from "@/lib/chat/composerTray";
-import { excerptOf, summarize } from "@/lib/chat/reducer";
+import { excerptOf, summarize, textNestsOfTree } from "@/lib/chat/reducer";
+import type { MentionCandidate, MentionResolver, MentionTarget } from "@/lib/chat/mentions";
 import type { ChatStore } from "@/lib/chat/store";
 import type { ChatAttachment, ChatMember, ChatMessage, ConversationState, PreparedAttachment } from "@/lib/chat/types";
 import { EmptyState, PersonAvatar } from "../atoms";
@@ -23,7 +24,7 @@ import { displayNameFor, PRESENCE, type RavenShellData, type RavenView, type She
 import type { NestEntryController } from "../useNestEntry";
 import { useProfileKnock } from "../useProfileKnock";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
-import { useChatSelector, useConversation, useImageLimits, useWindowActive } from "../useChat";
+import { useChatSelector, useChatState, useConversation, useImageLimits, useWindowActive } from "../useChat";
 import { ViewHeader } from "./shared";
 import { PortsControl } from "@/components/workshop/PortsPanel";
 
@@ -162,6 +163,54 @@ function OpenConversation({
   // conversation can be older than a display-name change.
   const name = peer?.name ?? summary.name;
   const tree = summary.treeId ? data.getTree(summary.treeId) : undefined;
+  // Who and what a message here can mention, and how a mention is drawn. Nests come from
+  // this conversation's own tree only; anything else reads as unknown.
+  const chatState = useChatState(chat);
+  const treeDetails = summary.treeId ? data.getTreeDetails(summary.treeId) : undefined;
+  const people = useMemo(() => {
+    if (summary.kind === "nest") {
+      return (treeDetails?.members ?? []).filter((member) => member.state === "joined").map((member) => ({ id: member.userId, username: member.username, name: displayNameFor(member) }));
+    }
+    if (summary.kind === "dm") {
+      const both = [summary.peer, data.user ? { id: data.user.id, username: data.user.username, displayName: data.preferences.displayName } : undefined];
+      return both.filter((person): person is NonNullable<typeof person> => Boolean(person)).map((person) => ({ id: person.id, username: person.username, name: displayNameFor(person) }));
+    }
+    return conversation.members.map((member) => ({ id: member.id, username: member.username, name: displayNameFor(member) }));
+  }, [summary.kind, summary.peer, treeDetails, conversation.members, data.user, data.preferences.displayName]);
+  const voiceNests = useMemo(() => (summary.kind === "nest" && treeDetails ? [...treeDetails.activeNests, ...treeDetails.inactiveNests] : []), [summary.kind, treeDetails]);
+  const textNests = useMemo(() => (summary.kind === "nest" && summary.treeId && chatState ? textNestsOfTree(chatState, summary.treeId).map((nest) => nest.summary) : []), [summary.kind, summary.treeId, chatState]);
+  const mentionResolver = useMemo<MentionResolver>(() => {
+    const byId = new Map(people.map((person) => [person.id, person]));
+    return {
+      nestSingular: data.labels.nestSingular,
+      person: (personId) => {
+        const known = byId.get(personId);
+        if (!known) return null;
+        const shell = data.getPerson(personId);
+        return { name: shell?.name ?? known.name, username: known.username, presence: shell && !shell.presenceUnknown ? shell.presence : undefined };
+      },
+      nest: (target, nestId) => {
+        if (target === "text") {
+          const text = textNests.find((nest) => nest.id === nestId);
+          return text ? { name: text.name, kind: "text", people: [] } : null;
+        }
+        const voice = voiceNests.find((nest) => nest.id === nestId);
+        if (!voice) return null;
+        const live = data.activeNests.find((nest) => nest.id === nestId);
+        return { name: voice.name, kind: "voice", people: (live?.currentParticipants ?? []).map((participant) => ({ id: participant.userId, name: displayNameFor(participant) })) };
+      },
+    };
+  }, [people, textNests, voiceNests, data]);
+  const mentionCandidates = useMemo<MentionCandidate[]>(() => [
+    ...people.filter((person) => person.id !== me).map((person) => ({ target: "user" as const, id: person.id, name: person.name, username: person.username })),
+    ...voiceNests.map((nest) => ({ target: "nest" as const, id: nest.id, name: nest.name })),
+    ...textNests.filter((nest) => nest.id !== id).map((nest) => ({ target: "text" as const, id: nest.id, name: nest.name })),
+  ], [people, voiceNests, textNests, me, id]);
+  const mentions = useMemo(() => ({
+    resolve: mentionResolver,
+    me,
+    onOpen: (target: MentionTarget, targetId: string) => onNavigate(target === "user" ? { kind: "user", id: targetId } : target === "nest" ? { kind: "nest", id: targetId } : { kind: "chat", id: targetId }),
+  }), [mentionResolver, me, onNavigate]);
   const friends = useMemo(() => data.friends.map((friend) => ({ id: friend.userId, name: friend.displayName || friend.username })), [data.friends]);
 
   // A failure is said once, off to the side. The conversation stays as it was.
@@ -348,6 +397,7 @@ function OpenConversation({
           onDeleteForEveryone={askDelete}
           onOpenImage={openImage}
           onOpenPerson={(userId) => onNavigate({ kind: "user", id: userId })}
+          mentions={mentions}
         />
 
         {summary.canSend ? (
@@ -368,6 +418,9 @@ function OpenConversation({
             onTyping={() => chat.typing(id)}
             onEditLast={editLast}
             imageLimits={imageLimits}
+            mentionCandidates={mentionCandidates}
+            mentionResolver={mentionResolver}
+            nestHeading={data.labels.nestPlural}
           />
         ) : (
           <p className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-5 text-center text-small text-muted-foreground">

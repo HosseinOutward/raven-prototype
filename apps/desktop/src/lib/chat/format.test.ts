@@ -12,6 +12,7 @@ function show(inline: Inline[]): string {
       case "bold": return `<b>${show(node.children)}</b>`;
       case "italic": return `<i>${show(node.children)}</i>`;
       case "strike": return `<s>${show(node.children)}</s>`;
+      case "mention": return `[${node.target}:${node.id}]`;
     }
   }).join("");
 }
@@ -149,5 +150,22 @@ describe("times", () => {
     expect(listTime(new Date(2026, 9, 9).getTime(), now).length).toBeLessThan(6);
     expect(listTime(new Date(2025, 0, 2).getTime(), now)).toMatch(/2025/);
     expect(listTime(0, now)).toBe("");
+  });
+});
+
+describe("mentions", () => {
+  test("tokens become mention nodes, also inside marks", () => {
+    expect(line("hi <@u:abc> and <@n:v1>, <@t:t1>!")).toBe("hi [user:abc] and [nest:v1], [text:t1]!");
+    expect(line("**<@u:abc>**")).toBe("<b>[user:abc]</b>");
+  });
+
+  test("inside code they stay as typed", () => {
+    expect(line("`<@u:abc>`")).toBe("<code><@u:abc></code>");
+    expect(parseMessage("```\n<@u:abc>\n```")).toEqual([{ type: "code", text: "<@u:abc>" }]);
+  });
+
+  test("a hand-typed token with a bad id is still a mention; anything malformed is text", () => {
+    expect(line("<@u:no-such-person>")).toBe("[user:no-such-person]");
+    expect(line("<@x:abc> <@u:> <@u:a b> <@u:abc")).toBe("<@x:abc> <@u:> <@u:a b> <@u:abc");
   });
 });
