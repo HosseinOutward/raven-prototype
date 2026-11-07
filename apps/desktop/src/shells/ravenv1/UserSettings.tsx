@@ -151,7 +151,7 @@ export function UserSettingsView({
     case "profile":
       return <ProfileSettings data={data} />;
     case "messages":
-      return <ChatSettingsPage chat={chat} />;
+      return <ChatSettingsPage chat={chat} labels={data.labels} />;
     case "invitations":
       return capabilitiesOf(data.user).createInvites ? <InvitationsSettings data={data} /> : <ProfileSettings data={data} />;
     case "sessions":

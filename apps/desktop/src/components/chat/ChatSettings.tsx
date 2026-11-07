@@ -4,20 +4,26 @@ import { failureText } from "@/lib/chat/errors";
 import { DEFAULT_SETTINGS } from "@/lib/chat/reducer";
 import type { ChatStore } from "@/lib/chat/store";
 import { SettingsHint, SettingsPage, SettingsRows, SettingsSection, SettingsToggleRow } from "@/shells/ravenv1/SettingsScaffold";
+import type { UILabelCopy } from "@/shells/ravenv1/state";
 import { useChatSelector } from "@/shells/ravenv1/useChat";
 
 /** Settings for text chat. They are about what other people can see of you. */
 type ReadKey = "readDm" | "readGroup" | "readPrivateSpace" | "readPublicSpace";
 
-const SWITCHES: Array<{ key: ReadKey; label: string; description: string }> = [
-  { key: "readDm", label: "Direct messages", description: "Show when you’ve seen the last message in a direct message." },
-  { key: "readGroup", label: "Groups", description: "Show when you’ve seen the last message in a group." },
-  { key: "readPrivateSpace", label: "Private spaces", description: "Show when you’ve seen the last message in a nest of a private tree." },
-  { key: "readPublicSpace", label: "Public spaces", description: "Show when you’ve seen the last message in a nest of a public tree." },
-];
+/** The switches, worded with the server's own names for trees and nests (Trees/Nests or Spaces/Rooms). */
+function switchesFor(labels: UILabelCopy): Array<{ key: ReadKey; label: string; description: string }> {
+  const tree = labels.treeSingular.toLowerCase();
+  const nest = labels.nestSingular.toLowerCase();
+  return [
+    { key: "readDm", label: "Direct messages", description: "Show when you’ve seen the last message in a direct message." },
+    { key: "readGroup", label: "Groups", description: "Show when you’ve seen the last message in a group." },
+    { key: "readPrivateSpace", label: `Private ${labels.treePlural.toLowerCase()}`, description: `Show when you’ve seen the last message in a ${nest} of a private ${tree}.` },
+    { key: "readPublicSpace", label: `Public ${labels.treePlural.toLowerCase()}`, description: `Show when you’ve seen the last message in a ${nest} of a public ${tree}.` },
+  ];
+}
 
 /** Settings for text chat. They are about what other people can see of you. */
-export function ChatSettingsPage({ chat }: { chat: ChatStore | null }) {
+export function ChatSettingsPage({ chat, labels }: { chat: ChatStore | null; labels: UILabelCopy }) {
   const stored = useChatSelector(chat, (state) => state.settings, DEFAULT_SETTINGS);
   const [values, setValues] = useState(stored);
   useEffect(() => setValues(stored), [stored]);
@@ -42,7 +48,7 @@ export function ChatSettingsPage({ chat }: { chat: ChatStore | null }) {
     <SettingsPage title="Messages" description="What other people can see when you read and write.">
       <SettingsSection title="Seen by">
         <SettingsRows>
-          {SWITCHES.map(({ key, label, description }) => (
+          {switchesFor(labels).map(({ key, label, description }) => (
             <SettingsToggleRow key={key} label={label} description={description} checked={values[key]} onChange={(next) => change(key, next)} />
           ))}
         </SettingsRows>

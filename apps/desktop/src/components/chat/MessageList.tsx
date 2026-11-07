@@ -297,7 +297,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onOpenReply={openReply}
                 onOpenImage={onOpenImage}
               />
-              {mine && message.seq === summary.lastSeq && !message.deletedAt ? (
+              {message.seq === summary.lastSeq && !message.deletedAt && (mine || summary.kind !== "dm") ? (
                 <SeenBy
                   direct={summary.kind === "dm"}
                   readers={conversation.seen?.seq === message.seq ? conversation.seen.readers : []}

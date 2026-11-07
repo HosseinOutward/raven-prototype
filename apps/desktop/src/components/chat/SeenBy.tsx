@@ -8,8 +8,9 @@ import { AvatarStack } from "@/shells/ravenv1/atoms";
 const person = (reader: ChatSeenReader) => reader.displayName || reader.username;
 
 /**
- * Under your own last message: who has seen it. In a direct message that is a time, in a
- * group or nest a few faces that open the names and times.
+ * Under the conversation's last message: who has seen it. In a direct message that is a time,
+ * in a group or nest a few faces that open the names and times. Direct messages show it only
+ * under your own last message, since the other reader there is you.
  */
 export function SeenBy({ direct, readers, fallbackAt }: { direct: boolean; readers: ChatSeenReader[]; fallbackAt?: string }) {
   const first = readers[0];

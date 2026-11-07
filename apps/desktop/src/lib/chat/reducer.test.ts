@@ -435,6 +435,14 @@ describe("who has seen the last message", () => {
     expect(next.conversations[C].seen).toEqual({ seq: 4, readers: [], readSeq: 3 });
   });
 
+  test("a new message from someone else clears the readers too, and their reads fill in again", () => {
+    const seen = applyEvent(group(), read(AVA, 3, "2026-10-11T10:05:00Z"), NOW).state;
+    const next = applyEvent(seen, created(4, { senderId: BEA }), NOW).state;
+    expect(next.conversations[C].seen).toEqual({ seq: 4, readers: [], readSeq: 3 });
+    const later = applyEvent(next, read(AVA, 4, "2026-10-11T10:06:00Z"), NOW).state;
+    expect(later.conversations[C].seen?.readers).toEqual([{ userId: AVA, username: AVA, displayName: "AVA", at: "2026-10-11T10:06:00Z" }]);
+  });
+
   test("conversation.seen asks for the list again", () => {
     expect(applyEvent(group(), { type: "conversation.seen", conversationId: C }, NOW).effects).toEqual([{ type: "fetchSeen", conversationId: C }]);
   });

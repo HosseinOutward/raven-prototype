@@ -91,6 +91,21 @@ func TestChatSeenListsReadersOfTheLastMessageOnly(t *testing.T) {
 	expectSeen(t, "carol caught up", chatSeen(t, server, alice.token, group.ID), carol.user.ID)
 }
 
+func TestChatSeenShowsReadersUnderSomeoneElsesLastMessage(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	alice := chatAlice(t, server, aliceToken)
+	bob, carol := chatNewPerson(t, server, "bob"), chatNewPerson(t, server, "carol")
+	chatBefriend(t, server, alice, bob)
+	chatBefriend(t, server, alice, carol)
+	group := chatNewGroup(t, server, alice, "crew", bob, carol)
+	last := chatSend(t, server, alice.token, group.ID, "hello").Seq
+	chatRead(t, server, bob.token, group.ID, last)
+
+	// Carol is a third member: she sees Bob's read under Alice's message, but not her own or Alice's.
+	expectSeen(t, "carol under alice's message", chatSeen(t, server, carol.token, group.ID), bob.user.ID)
+	expectSeen(t, "bob never sees himself", chatSeen(t, server, bob.token, group.ID))
+}
+
 func TestChatReadSwitchesGateWritingAndAreMutual(t *testing.T) {
 	server, aliceToken := newTestServer(t)
 	alice := chatAlice(t, server, aliceToken)
