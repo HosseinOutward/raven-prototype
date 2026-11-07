@@ -266,8 +266,10 @@ func (y yamuxStream) Close() error {
 	return err
 }
 func (y yamuxStream) Abort() {
-	_ = y.s.Close()
 	_ = y.s.SetDeadline(time.Now())
+	// Close waits until its FIN is written, up to yamux's write timeout, so it must not
+	// hold up whoever is ending the share.
+	go y.s.Close()
 }
 
 // wsBytes turns a WebSocket's binary messages into the byte stream yamux runs on.
