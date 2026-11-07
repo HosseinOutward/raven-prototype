@@ -21,6 +21,7 @@ import { MessageAttachments, PendingAttachments } from "./Attachments";
 import { EmojiPicker } from "./EmojiPicker";
 import { Reactions } from "./Reactions";
 import { MessageText } from "./MessageText";
+import { useSwipeToReply } from "./useSwipeToReply";
 
 /** What stands above a message without being part of it. */
 function Decorations({ dayHeading, newDivider }: { dayHeading?: string; newDivider?: boolean }) {
@@ -135,6 +136,11 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionOpen, setReactionOpen] = useState(false);
   const [fullPicker, setFullPicker] = useState(false);
+  // Swipe left to reply, wherever the Reply button would show. Plan 05 can add selection mode here.
+  const swipe = useSwipeToReply({
+    disabled: !props.canReply || message.kind === "system" || Boolean(message.deletedAt),
+    onReply: () => props.onReply(message),
+  });
 
   if (message.kind === "system") {
     return (
@@ -290,8 +296,13 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   return (
     <div>
       <Decorations dayHeading={props.dayHeading} newDivider={props.newDivider} />
+      <div className="relative">
+      <span ref={swipe.arrowRef} aria-hidden className={cn("pointer-events-none absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full opacity-0", swipe.armed ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground")} style={{ transform: "scale(0.6)" }}>
+        <CornerUpLeft className="h-4 w-4" />
+      </span>
       <div
-        className={cn("group flex items-end gap-2", continuation ? "pt-0.5" : "pt-2.5", mine && "flex-row-reverse")}
+        ref={swipe.rowRef}
+        className={cn("group flex touch-pan-y items-end gap-2", continuation ? "pt-0.5" : "pt-2.5", mine && "flex-row-reverse")}
         onContextMenu={(event) => {
           // Right-click opens the same menu as the button, unless text is being selected.
           if (window.getSelection()?.toString()) return;
@@ -357,6 +368,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
           </div>
         )}
         {actions}
+      </div>
       </div>
     </div>
   );
