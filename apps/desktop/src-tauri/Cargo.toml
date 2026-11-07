@@ -122,6 +122,13 @@ x11-dl = "2.21"
 # Native macOS display/window and system/app audio capture via ScreenCaptureKit.
 screencapturekit = { version = "8.0.0", features = ["macos_13_0"] }
 
+# Keep target/ small: line tables only for our crate, no debuginfo for dependencies.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Studio's model is far too slow unoptimised: in a dev build it would never keep up and
 # would always fall back to Strong. Optimise the inference path even there. tract also
 # runs graph checks under debug assertions that reject DeepFilterNet's model ("duplicate
