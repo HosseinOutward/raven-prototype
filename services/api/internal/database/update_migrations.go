@@ -52,6 +52,7 @@ func migrateVersioned(db *sql.DB, driver string) error {
 		{version: "2026110202_account_deletion", statements: accountDeletionStatements()},
 		{version: "2026110401_voice_moderation", statements: voiceModerationStatements()},
 		{version: "2026110402_call_votes", statements: callVoteStatements()},
+		{version: "2026110501_space_names", statements: spaceNameStatements()},
 	}
 	for _, migration := range migrations {
 		if err := applyUpdateMigration(db, driver, migration); err != nil {

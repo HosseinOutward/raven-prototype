@@ -672,7 +672,7 @@ func (s *Server) sessionsForNest(nestID string) ([]SessionSummary, error) {
 
 func (s *Server) activeParticipants(sessionID string) ([]ParticipantSummary, error) {
 	rows, err := s.db.Query(
-		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), sp.joined_at, sp.away, sp.deafened,
+		`SELECT u.id, u.username, `+spaceNameSQL("tm", "up", "u")+`, sp.joined_at, sp.away, sp.deafened,
 		        COALESCE(CASE WHEN n.tree_id IS NOT NULL AND n.type = 'persistent' THEN tm.server_muted ELSE nm.server_muted END, FALSE),
 		        COALESCE(CASE WHEN n.tree_id IS NOT NULL AND n.type = 'persistent' THEN tm.server_deafened ELSE nm.server_deafened END, FALSE)
 		 FROM session_participants sp
@@ -703,9 +703,11 @@ func (s *Server) activeParticipants(sessionID string) ([]ParticipantSummary, err
 
 func (s *Server) eventsForNest(nestID string) ([]NestEvent, error) {
 	rows, err := s.db.Query(
-		`SELECT el.id, el.nest_id, el.session_id, el.user_id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), el.event_type, el.metadata_json, el.created_at
+		`SELECT el.id, el.nest_id, el.session_id, el.user_id, u.username, `+spaceNameSQL("tm", "up", "u")+`, el.event_type, el.metadata_json, el.created_at
 		 FROM nest_event_log el
 		 LEFT JOIN users u ON u.id = el.user_id
+		 LEFT JOIN nests en ON en.id = el.nest_id
+		 LEFT JOIN tree_members tm ON tm.tree_id = en.tree_id AND tm.user_id = el.user_id
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
 		 WHERE el.nest_id = ?
 		 ORDER BY el.created_at DESC LIMIT 200`,

@@ -34,6 +34,7 @@ type AdminSpaceMember struct {
 	UserID      string  `json:"userId"`
 	Username    string  `json:"username"`
 	DisplayName string  `json:"displayName"`
+	Nickname    string  `json:"nickname"`
 	Role        string  `json:"role"`
 	Status      string  `json:"status"`
 	JoinedAt    *string `json:"joinedAt"`
@@ -110,7 +111,7 @@ func (s *Server) adminSpaceDetail(spaceID string) (fiber.Map, error) {
 		return nil, err
 	}
 	memberRows, err := s.db.Query(
-		`SELECT u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), tm.role, u.status, tm.joined_at
+		`SELECT u.id, u.username, `+spaceNameSQL("tm", "up", "u")+`, tm.display_name, tm.role, u.status, tm.joined_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
@@ -125,7 +126,7 @@ func (s *Server) adminSpaceDetail(spaceID string) (fiber.Map, error) {
 	members := []AdminSpaceMember{}
 	for memberRows.Next() {
 		var member AdminSpaceMember
-		if err := memberRows.Scan(&member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.Status, &member.JoinedAt); err != nil {
+		if err := memberRows.Scan(&member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.Role, &member.Status, &member.JoinedAt); err != nil {
 			return nil, err
 		}
 		members = append(members, member)

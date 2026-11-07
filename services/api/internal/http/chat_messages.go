@@ -16,17 +16,20 @@ import (
 // chatMessageSelectSQL reads messages as one person sees them. Its single placeholder is
 // that person, used to tell whether they removed, for themselves, the message a reply
 // points at.
-const chatMessageSelectSQL = `SELECT m.id, m.conversation_id, m.seq, m.changed_seq, m.sender_id,
-		COALESCE(NULLIF(TRIM(sp.display_name), ''), su.username),
+var chatMessageSelectSQL = `SELECT m.id, m.conversation_id, m.seq, m.changed_seq, m.sender_id,
+		`+spaceNameSQL("stm", "sp", "su")+`,
 		m.client_message_id, m.kind, m.body, m.system_json, m.created_at, m.edited_at, m.deleted_at,
 		m.reply_to_message_id,
-		p.seq, p.sender_id, COALESCE(NULLIF(TRIM(pp.display_name), ''), pu.username), p.body, p.deleted_at,
+		p.seq, p.sender_id, `+spaceNameSQL("ptm", "pp", "pu")+`, p.body, p.deleted_at,
 		CASE WHEN ph.user_id IS NULL THEN 0 ELSE 1 END
 	 FROM chat_messages m
 	 JOIN users su ON su.id = m.sender_id
+	 LEFT JOIN chat_conversations cc ON cc.id = m.conversation_id
+	 LEFT JOIN tree_members stm ON stm.tree_id = cc.tree_id AND stm.user_id = su.id
 	 LEFT JOIN user_preferences sp ON sp.user_id = su.id
 	 LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.conversation_id = m.conversation_id
 	 LEFT JOIN users pu ON pu.id = p.sender_id
+	 LEFT JOIN tree_members ptm ON ptm.tree_id = cc.tree_id AND ptm.user_id = pu.id
 	 LEFT JOIN user_preferences pp ON pp.user_id = pu.id
 	 LEFT JOIN chat_message_hides ph ON ph.message_id = p.id AND ph.user_id = ?`
 
@@ -156,9 +159,11 @@ func chatReplyTargetFor(q chatQuerier, conversationID, parentID string) (*chatRe
 	var kind, body string
 	var deletedAt sql.NullString
 	err := q.QueryRow(
-		`SELECT p.seq, p.sender_id, COALESCE(NULLIF(TRIM(pp.display_name), ''), pu.username), p.kind, p.body, p.deleted_at
+		`SELECT p.seq, p.sender_id, `+spaceNameSQL("ptm", "pp", "pu")+`, p.kind, p.body, p.deleted_at
 		 FROM chat_messages p
 		 JOIN users pu ON pu.id = p.sender_id
+		 LEFT JOIN chat_conversations cc ON cc.id = p.conversation_id
+		 LEFT JOIN tree_members ptm ON ptm.tree_id = cc.tree_id AND ptm.user_id = pu.id
 		 LEFT JOIN user_preferences pp ON pp.user_id = pu.id
 		 WHERE p.id = ? AND p.conversation_id = ?`,
 		parentID, conversationID,
@@ -481,7 +486,7 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 		Seq:             seq,
 		ChangedSeq:      seq,
 		SenderID:        sender.ID,
-		SenderName:      sender.DisplayName,
+		SenderName:      s.spaceNameOf(access.TreeID, sender),
 		ClientMessageID: clientMessageID,
 		Kind:            chatMessageText,
 		Body:            body,

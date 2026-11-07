@@ -40,6 +40,8 @@ type Server struct {
 	// setParticipantPermission changes what a connected LiveKit participant may do. Also a
 	// field for tests.
 	setParticipantPermission func(room, identity string, permission *livekit.ParticipantPermission)
+	// setParticipantName renames a connected LiveKit participant. Also a field for tests.
+	setParticipantName func(room, identity, name string)
 	voiceLimitsSeen          *voiceLimitTracker
 	callVotes                *callVotes
 	loginThrottle            *loginThrottle
@@ -217,6 +219,7 @@ func New(db *database.DB) *Server {
 	s.removeParticipant = s.liveKitRemoveParticipant
 	s.closeRoom = s.liveKitDeleteRoom
 	s.setParticipantPermission = s.liveKitSetParticipantPermission
+	s.setParticipantName = s.liveKitSetParticipantName
 	s.voiceLimitsSeen = newVoiceLimitTracker()
 	s.callVotes = newCallVotes()
 	s.loginThrottle = newLoginThrottle()
@@ -322,6 +325,7 @@ func (s *Server) routes() {
 	service.Post("/trees/:id/join", s.joinTree)
 	service.Post("/trees/:id/members", s.addTreeMember)
 	service.Post("/trees/:id/members/:userId/role", s.updateTreeMemberRole)
+	service.Post("/trees/:id/members/:userId/name", s.updateTreeMemberName)
 	service.Delete("/trees/:id/members/:userId", s.removeTreeMember)
 	service.Post("/trees/:id/leave", s.leaveTree)
 	service.Post("/trees/:id/transfer", s.transferTreeOwnership)
@@ -945,12 +949,16 @@ func (s *Server) liveKitToken(c *fiber.Ctx) error {
 		identityKind = auth.IdentityVideo
 	}
 
+	displayName := user.DisplayName
+	if nestBelongsToTree(nest) {
+		displayName = s.spaceNameOf(*nest.TreeID, user)
+	}
 	token, err := auth.SignLiveKitToken(auth.LiveKitTokenInput{
 		APIKey:    s.liveKitAPIKey,
 		APISecret: s.liveKitAPISecret,
 		Session:   session,
 		Identity:  identity,
-		Name:      user.DisplayName,
+		Name:      displayName,
 		Role:      tokenRole,
 		Grants:    auth.CallGrantsFor(identityKind, limits),
 	})
@@ -962,7 +970,7 @@ func (s *Server) liveKitToken(c *fiber.Ctx) error {
 		"token":       token,
 		"sessionName": session,
 		"identity":    identity,
-		"displayName": user.DisplayName,
+		"displayName": displayName,
 	})
 }
 
@@ -1472,9 +1480,11 @@ func (s *Server) nestDetails(nest Nest) (NestDetails, error) {
 
 func (s *Server) members(nestID string) ([]Member, error) {
 	rows, err := s.db.Query(
-		`SELECT nm.nest_id, u.id, u.username, COALESCE(NULLIF(TRIM(up.display_name), ''), u.username), nm.role, nm.state, nm.joined_at, nm.left_at
+		`SELECT nm.nest_id, u.id, u.username, `+spaceNameSQL("tm", "up", "u")+`, nm.role, nm.state, nm.joined_at, nm.left_at
 		 FROM nest_members nm
 		 JOIN users u ON u.id = nm.user_id
+		 JOIN nests nn ON nn.id = nm.nest_id
+		 LEFT JOIN tree_members tm ON tm.tree_id = nn.tree_id AND tm.user_id = u.id
 		 LEFT JOIN user_preferences up ON up.user_id = u.id
 		 WHERE nm.nest_id = ?
 		 ORDER BY nm.role, u.username`, nestID,

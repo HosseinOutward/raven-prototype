@@ -34,6 +34,8 @@ const (
 	treeActionModerateMessages treeAction = "messages.moderate"
 	// treeActionModerateVoice is server mute and server deafen. It is aimed at a person too.
 	treeActionModerateVoice treeAction = "voice.moderate"
+	// treeActionRenameMember sets another person's name in the space. Aimed at a person too.
+	treeActionRenameMember treeAction = "members.rename"
 	treeActionEditSettings     treeAction = "settings.edit"
 	treeActionAssignRoles      treeAction = "roles.assign"
 	treeActionTransfer         treeAction = "ownership.transfer"
@@ -78,6 +80,7 @@ var treeActionMinimumRole = map[treeAction]string{
 	treeActionRemoveMember:     treeRoleModerator,
 	treeActionModerateMessages: treeRoleModerator,
 	treeActionModerateVoice:    treeRoleModerator,
+	treeActionRenameMember:     treeRoleModerator,
 	treeActionEditSettings:     treeRoleOwner,
 	treeActionAssignRoles:      treeRoleOwner,
 	treeActionTransfer:         treeRoleOwner,
@@ -92,6 +95,7 @@ var treeViewerActions = []treeAction{
 	treeActionRemoveMember,
 	treeActionModerateMessages,
 	treeActionModerateVoice,
+	treeActionRenameMember,
 	treeActionEditSettings,
 	treeActionAssignRoles,
 	treeActionTransfer,

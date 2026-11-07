@@ -108,7 +108,10 @@ export interface AdminSpace {
 export interface SpaceMember {
   userId: string;
   username: string;
+  /** The name shown in this space: the nickname if there is one, else the usual name. */
   displayName: string;
+  /** The nickname set in this space, empty when none. */
+  nickname: string;
   role: SpaceRole;
   status: UserStatus;
   joinedAt: string | null;

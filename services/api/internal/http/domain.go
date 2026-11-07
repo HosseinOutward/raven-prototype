@@ -32,6 +32,7 @@ type TreeMember struct {
 	UserID        string  `json:"userId"`
 	Username      string  `json:"username"`
 	DisplayName   string  `json:"displayName"`
+	Nickname      string  `json:"nickname"`
 	Role          string  `json:"role"`
 	State         string  `json:"state"`
 	JoinedAt      *string `json:"joinedAt"`
@@ -1428,7 +1429,7 @@ func (s *Server) findTree(treeID string) (Tree, error) {
 
 func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	rows, err := s.db.Query(
-		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
+		`SELECT tm.tree_id, u.id, u.username, `+spaceNameSQL("tm", "pref", "u")+`, tm.display_name, tm.role, tm.state, tm.joined_at, tm.left_at,
 		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
@@ -1446,7 +1447,7 @@ func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	for rows.Next() {
 		var member TreeMember
 		var presenceUpdatedAt sql.NullString
-		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt); err != nil {
+		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt); err != nil {
 			return nil, err
 		}
 		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
@@ -1459,7 +1460,7 @@ func (s *Server) findTreeMember(treeID, userID string) (TreeMember, error) {
 	var member TreeMember
 	var presenceUpdatedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT tm.tree_id, u.id, u.username, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
+		`SELECT tm.tree_id, u.id, u.username, `+spaceNameSQL("tm", "pref", "u")+`, tm.display_name, tm.role, tm.state, tm.joined_at, tm.left_at,
 		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
@@ -1467,7 +1468,7 @@ func (s *Server) findTreeMember(treeID, userID string) (TreeMember, error) {
 		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ? AND tm.user_id = ? AND tm.state = 'joined'`,
 		treeID, userID,
-	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt)
+	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt)
 	if err == nil {
 		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
 	}
@@ -1982,15 +1983,17 @@ func nullableStringPtr(value *string) any {
 }
 
 func knockSelectSQL() string {
-	return `SELECT k.id, k.from_user_id, fu.username, COALESCE(NULLIF(TRIM(fup.display_name), ''), fu.username),
-		k.to_user_id, tu.username, COALESCE(NULLIF(TRIM(tup.display_name), ''), tu.username), k.nest_id, n.name,
+	return `SELECT k.id, k.from_user_id, fu.username, `+spaceNameSQL("ftm", "fup", "fu")+`,
+		k.to_user_id, tu.username, `+spaceNameSQL("ttm", "tup", "tu")+`, k.nest_id, n.name,
 		k.status, k.message, k.created_at, k.expires_at, k.resolved_at, k.resolved_by_user_id, k.reply, k.reply_until, k.reply_message
 		FROM knocks k
 		JOIN users fu ON fu.id = k.from_user_id
 		LEFT JOIN user_preferences fup ON fup.user_id = fu.id
 		LEFT JOIN users tu ON tu.id = k.to_user_id
 		LEFT JOIN user_preferences tup ON tup.user_id = tu.id
-		LEFT JOIN nests n ON n.id = k.nest_id`
+		LEFT JOIN nests n ON n.id = k.nest_id
+		LEFT JOIN tree_members ftm ON ftm.tree_id = n.tree_id AND ftm.user_id = k.from_user_id
+		LEFT JOIN tree_members ttm ON ttm.tree_id = n.tree_id AND ttm.user_id = k.to_user_id`
 }
 
 func scanKnocks(rows *sql.Rows) ([]Knock, error) {

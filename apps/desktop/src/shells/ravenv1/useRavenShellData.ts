@@ -798,6 +798,11 @@ export function useRavenShellData(): RavenShellData {
       runMutation(() => api.updateTreeMemberRole(treeId, userId, role).then((result) => result.member)),
     [runMutation],
   );
+  const updateTreeMemberName = useCallback(
+    (treeId: string, userId: string, displayName: string) =>
+      runMutation(() => api.updateTreeMemberName(treeId, userId, displayName).then((result) => result.member)),
+    [runMutation],
+  );
   const removeTreeMember = useCallback((treeId: string, userId: string) => runMutation(() => api.removeTreeMember(treeId, userId)), [runMutation]);
   const leaveTree = useCallback((treeId: string) => runMutation(() => api.leaveTree(treeId)), [runMutation]);
   const transferTreeOwnership = useCallback(
@@ -917,6 +922,7 @@ export function useRavenShellData(): RavenShellData {
     deleteNest,
     addTreeMember,
     updateTreeMemberRole,
+    updateTreeMemberName,
     removeTreeMember,
     leaveTree,
     transferTreeOwnership,

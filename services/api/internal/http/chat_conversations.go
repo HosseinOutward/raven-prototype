@@ -1224,9 +1224,11 @@ func (s *Server) getChatSeen(c *fiber.Ctx) error {
 	readSeq = min(readSeq, access.LastSeq)
 	args = append(args, access.ConversationID, access.LastSeq, user.ID, senderID)
 	rows, err := s.db.Query(
-		`SELECT cm.user_id, u.username, COALESCE(NULLIF(TRIM(p.display_name), ''), u.username), COALESCE(cm.shared_read_at, '')
+		`SELECT cm.user_id, u.username, `+spaceNameSQL("rtm", "p", "u")+`, COALESCE(cm.shared_read_at, '')
 		 FROM chat_members cm
 		 JOIN users u ON u.id = cm.user_id
+		 LEFT JOIN chat_conversations rc ON rc.id = cm.conversation_id
+		 LEFT JOIN tree_members rtm ON rtm.tree_id = rc.tree_id AND rtm.user_id = u.id
 		 LEFT JOIN user_preferences p ON p.user_id = u.id
 		 LEFT JOIN chat_user_settings s ON s.user_id = cm.user_id
 		 WHERE `+membership+` AND cm.conversation_id = ? AND cm.shared_read_seq >= ?
