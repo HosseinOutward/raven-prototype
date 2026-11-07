@@ -333,6 +333,9 @@ func exportTranscriptLine(m ChatMessage) string {
 	if m.EditedAt != nil {
 		text += " (edited)"
 	}
+	if m.Origin != nil && m.Origin.SenderName != "" {
+		return fmt.Sprintf("[%s] %s (from %s): %s", when, m.SenderName, m.Origin.SenderName, text)
+	}
 	return fmt.Sprintf("[%s] %s: %s", when, m.SenderName, text)
 }
 
@@ -377,6 +380,9 @@ var exportUnsafe = regexp.MustCompile(`[^a-z0-9]+`)
 // exportTitle names a conversation the way the app does: a direct message by the other
 // person, anything else by its own name.
 func exportTitle(summary ChatConversation) string {
+	if summary.Kind == chatKindSaved {
+		return "Saved messages"
+	}
 	if summary.Name != "" {
 		return summary.Name
 	}

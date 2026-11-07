@@ -80,6 +80,20 @@ func (s *Server) drainChatObjectPurges() error {
 		return err
 	}
 	for _, key := range keys {
+		// A copy (Saved messages, a forward) shares the original's objects. While any
+		// variant row still names this one, it stays stored; the last row's delete queues
+		// it again.
+		var inUse int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM chat_attachment_variants WHERE object_key = ?`, key).Scan(&inUse)
+		if err != nil {
+			return err
+		}
+		if inUse > 0 {
+			if _, err := s.db.Exec(`DELETE FROM chat_object_purges WHERE object_key = ?`, key); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := s.profileMedia.Delete(context.Background(), key); err != nil {
 			var attempts int
 			if err := s.db.QueryRow(`UPDATE chat_object_purges SET attempts = attempts + 1 WHERE object_key = ? AND attempts < 20 RETURNING attempts`, key).Scan(&attempts); err != nil {

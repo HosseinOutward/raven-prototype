@@ -81,7 +81,7 @@ func chatSummarySQL(one bool) string {
 		LEFT JOIN chat_user_settings ms ON ms.user_id = cm.user_id
 		LEFT JOIN chat_user_settings ps ON ps.user_id = peer.user_id
 		WHERE c.status = 'active'
-		  AND ((c.kind IN ('dm', 'group') AND cm.state = 'joined') OR (c.kind = 'nest' AND tm.user_id IS NOT NULL))%[2]s
+		  AND ((c.kind IN ('dm', 'group', 'saved') AND cm.state = 'joined') OR (c.kind = 'nest' AND tm.user_id IS NOT NULL))%[2]s
 	 ) b
 	 LEFT JOIN chat_messages pm ON pm.conversation_id = b.id AND pm.seq = b.preview_seq
 	 LEFT JOIN users pmu ON pmu.id = pm.sender_id
@@ -157,6 +157,9 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 			item.Role = treeRole
 			item.CanSend = true
 			item.CanManage = treeRoleAllows(treeRole, treeActionManageRooms)
+		case chatKindSaved:
+			item.Role = memberRole
+			item.CanSend = true
 		}
 		if !capabilities.SendMessages {
 			item.CanSend = false

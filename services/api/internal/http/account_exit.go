@@ -198,8 +198,9 @@ func (s *Server) accountConversationIDs(userID string, erase bool) ([]string, er
 	args := []any{userID}
 	if erase {
 		query += ` UNION SELECT conversation_id FROM chat_messages WHERE sender_id = ? AND kind = 'text' AND deleted_at IS NULL
+		 UNION SELECT conversation_id FROM chat_messages WHERE origin_sender_id = ? AND deleted_at IS NULL
 		 UNION SELECT conversation_id FROM chat_reactions WHERE user_id = ?`
-		args = append(args, userID, userID)
+		args = append(args, userID, userID, userID)
 	}
 	ids, err := s.stringColumn(query+`)`, args...)
 	sort.Strings(ids)
@@ -288,12 +289,19 @@ func (s *Server) deleteAccountCore(user User, erase bool) error {
 	type dmChange struct{ peerID, conversationID string }
 	var dmChanges []dmChange
 	for _, conversationID := range conversationIDs {
-		var kind, treeID string
-		if err := tx.QueryRow(`SELECT kind, COALESCE(tree_id, '') FROM chat_conversations WHERE id = ? AND status = 'active'`, conversationID).Scan(&kind, &treeID); err != nil {
+		var kind, treeID, creatorID string
+		if err := tx.QueryRow(`SELECT kind, COALESCE(tree_id, ''), creator_user_id FROM chat_conversations WHERE id = ? AND status = 'active'`, conversationID).Scan(&kind, &treeID, &creatorID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
 			return err
+		}
+		if kind == chatKindSaved && creatorID == user.ID {
+			// Nobody else can read their Saved messages, so it goes with the account.
+			if err := chatDeleteConversationTx(tx, conversationID); err != nil {
+				return err
+			}
+			continue
 		}
 		access := chatAccess{ConversationID: conversationID, Kind: kind, TreeID: treeID}
 		if erase {
@@ -440,9 +448,10 @@ func (s *Server) eraseAccountMessagesTx(tx *database.Tx, access chatAccess, user
 		})
 	}
 
+	// Copies of their messages (in someone's Saved messages, or forwarded) go too.
 	own, err := stringColumnTx(tx,
-		`SELECT id FROM chat_messages WHERE conversation_id = ? AND sender_id = ? AND kind = 'text' AND deleted_at IS NULL ORDER BY seq`,
-		conversationID, userID)
+		`SELECT id FROM chat_messages WHERE conversation_id = ? AND (sender_id = ? OR origin_sender_id = ?) AND kind = 'text' AND deleted_at IS NULL ORDER BY seq`,
+		conversationID, userID, userID)
 	if err != nil {
 		return nil, err
 	}

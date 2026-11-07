@@ -128,6 +128,13 @@ func (s *Server) chatAccessFor(q chatQuerier, conversationID, userID string) (ch
 		access.Role = memberRole.String
 		access.CanSend = true
 		access.CanManage = memberRole.String == "owner"
+	case chatKindSaved:
+		// One member, who owns it. Nobody else can be added.
+		if memberState.String != "joined" {
+			return chatAccess{}, errChatNotFound
+		}
+		access.Role = memberRole.String
+		access.CanSend = true
 	case chatKindNest:
 		var treeRole string
 		err := q.QueryRow(

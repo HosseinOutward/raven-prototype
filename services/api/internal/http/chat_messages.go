@@ -21,7 +21,9 @@ const chatMessageSelectSQL = `SELECT m.id, m.conversation_id, m.seq, m.changed_s
 		m.client_message_id, m.kind, m.body, m.system_json, m.created_at, m.edited_at, m.deleted_at,
 		m.reply_to_message_id,
 		p.seq, p.sender_id, COALESCE(NULLIF(TRIM(pp.display_name), ''), pu.username), p.body, p.deleted_at,
-		CASE WHEN ph.user_id IS NULL THEN 0 ELSE 1 END
+		CASE WHEN ph.user_id IS NULL THEN 0 ELSE 1 END,
+		m.origin_message_id, COALESCE(m.origin_conversation_id, ''), COALESCE(m.origin_sender_id, ''), m.origin_sender_name,
+		COALESCE(m.origin_created_at, ''), m.origin_hide_sender, m.origin_hide_source
 	 FROM chat_messages m
 	 JOIN users su ON su.id = m.sender_id
 	 LEFT JOIN user_preferences sp ON sp.user_id = su.id
@@ -41,13 +43,21 @@ func scanChatMessage(scanner rowScanner, floor int64) (ChatMessage, error) {
 	var parentSeq sql.NullInt64
 	var parentSender, parentName, parentBody, parentDeleted sql.NullString
 	var parentHidden int
+	var originID sql.NullString
+	var origin chatOriginRow
 	if err := scanner.Scan(
 		&message.ID, &message.ConversationID, &message.Seq, &message.ChangedSeq, &message.SenderID,
 		&message.SenderName, &message.ClientMessageID, &message.Kind, &message.Body, &systemJSON,
 		&message.CreatedAt, &editedAt, &deletedAt, &replyTo,
 		&parentSeq, &parentSender, &parentName, &parentBody, &parentDeleted, &parentHidden,
+		&originID, &origin.ConversationID, &origin.SenderID, &origin.SenderName, &origin.CreatedAt,
+		&origin.HideSender, &origin.HideSource,
 	); err != nil {
 		return ChatMessage{}, err
+	}
+	if originID.Valid && !deletedAt.Valid {
+		origin.MessageID = originID.String
+		message.origin = &origin
 	}
 	if systemJSON.Valid && systemJSON.String != "" {
 		message.System = json.RawMessage(systemJSON.String)
@@ -97,6 +107,9 @@ func (s *Server) queryChatMessages(q chatQuerier, viewerID string, floor int64, 
 	if err := withChatReactions(q, messages); err != nil {
 		return nil, err
 	}
+	if err := s.withChatOrigins(q, viewerID, messages); err != nil {
+		return nil, err
+	}
 	return messages, nil
 }
 
@@ -114,7 +127,10 @@ func (s *Server) loadChatMessage(q chatQuerier, conversationID, messageID, viewe
 	if err = withChatAttachments(q, messages); err != nil {
 		return ChatMessage{}, err
 	}
-	err = withChatReactions(q, messages)
+	if err = withChatReactions(q, messages); err != nil {
+		return ChatMessage{}, err
+	}
+	err = s.withChatOrigins(q, viewerID, messages)
 	return messages[0], err
 }
 
@@ -210,6 +226,8 @@ const (
 	chatReadGroup        = "group"
 	chatReadPrivateSpace = "private_space"
 	chatReadPublicSpace  = "public_space"
+	// chatReadSaved has no switch: nobody else is there to see it, so it is always off.
+	chatReadSaved = "saved"
 )
 
 // chatReadColumns maps a category to its switch's column and its default for people who
@@ -231,6 +249,8 @@ func chatReadCategory(q chatQuerier, access chatAccess) (string, error) {
 		return chatReadDM, nil
 	case chatKindGroup:
 		return chatReadGroup, nil
+	case chatKindSaved:
+		return chatReadSaved, nil
 	}
 	var visibility string
 	if err := q.QueryRow(`SELECT visibility FROM trees WHERE id = ?`, access.TreeID).Scan(&visibility); err != nil {
@@ -245,7 +265,10 @@ func chatReadCategory(q chatQuerier, access chatAccess) (string, error) {
 // chatReadSwitchSQL is a SQL expression for a person's switch in a category, given the
 // alias of their chat_user_settings row (which may be missing).
 func chatReadSwitchSQL(category, alias string) string {
-	spec := chatReadColumns[category]
+	spec, ok := chatReadColumns[category]
+	if !ok {
+		return "FALSE"
+	}
 	def := "FALSE"
 	if spec.enabled {
 		def = "TRUE"
@@ -550,10 +573,13 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	var senderID, kind, currentBody, createdAt string
 	var deletedAt, replyToID sql.NullString
 	var messageSeq int64
+	var isCopy bool
 	err = tx.QueryRow(
-		`SELECT sender_id, kind, body, created_at, deleted_at, reply_to_message_id, seq FROM chat_messages WHERE id = ? AND conversation_id = ?`,
+		`SELECT sender_id, kind, body, created_at, deleted_at, reply_to_message_id, seq,
+		        CASE WHEN origin_message_id IS NULL THEN FALSE ELSE TRUE END
+		 FROM chat_messages WHERE id = ? AND conversation_id = ?`,
 		messageID, conversationID,
-	).Scan(&senderID, &kind, &currentBody, &createdAt, &deletedAt, &replyToID, &messageSeq)
+	).Scan(&senderID, &kind, &currentBody, &createdAt, &deletedAt, &replyToID, &messageSeq, &isCopy)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && messageSeq < access.VisibleFromSeq) {
 		return errChatMessageGone
 	}
@@ -563,11 +589,15 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	if senderID != user.ID {
 		return errChatNotAllowed
 	}
-	if kind != chatMessageText || deletedAt.Valid {
+	if kind != chatMessageText || deletedAt.Valid || isCopy {
+		// A copy keeps the original's words.
 		return errChatCannotEdit
 	}
-	if created, err := time.Parse(time.RFC3339Nano, createdAt); err != nil || time.Since(created) > chatEditWindow {
-		return errChatEditTooLate
+	// Notes in Saved messages can be edited at any time.
+	if access.Kind != chatKindSaved {
+		if created, err := time.Parse(time.RFC3339Nano, createdAt); err != nil || time.Since(created) > chatEditWindow {
+			return errChatEditTooLate
+		}
 	}
 	if body == "" {
 		var count int
@@ -637,8 +667,15 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 	conversationID := c.Params("id")
 	messageID := c.Params("messageId")
 
-	unlock := s.chatLocks.lock(conversationID)
-	defer unlock()
+	// Copies of the message go with it. Their conversations are locked with this one, in
+	// one order, so their events also reach the stream in commit order.
+	copyConversations, err := s.chatCopyConversationIDs(messageID)
+	if err != nil {
+		return err
+	}
+	for _, id := range chatSortedUnique(append(copyConversations, conversationID)...) {
+		defer s.chatLocks.lock(id)()
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -698,6 +735,10 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	copies, err := s.chatEraseCopiesTx(tx, messageID, user.ID, now)
+	if err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -708,6 +749,9 @@ func (s *Server) deleteChatMessageForEveryone(c *fiber.Ctx) error {
 		return err
 	}
 	s.publishChatMessage("message.updated", message, seq, nil, recipients, committedAt)
+	for _, publish := range copies {
+		publish(committedAt)
+	}
 	return c.JSON(fiber.Map{"message": message})
 }
 

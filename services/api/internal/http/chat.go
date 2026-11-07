@@ -62,6 +62,8 @@ const (
 	chatKindDM    = "dm"
 	chatKindGroup = "group"
 	chatKindNest  = "nest"
+	// chatKindSaved is a person's Saved messages: one member, notes and copies.
+	chatKindSaved = "saved"
 
 	chatMessageText   = "text"
 	chatMessageSystem = "system"
@@ -131,6 +133,12 @@ type ChatMessage struct {
 	CreatedAt       string           `json:"createdAt"`
 	EditedAt        *string          `json:"editedAt,omitempty"`
 	DeletedAt       *string          `json:"deletedAt,omitempty"`
+	// Origin is set on a copy (saved or forwarded): where it came from, as this viewer
+	// may see it.
+	Origin *ChatOrigin `json:"origin,omitempty"`
+
+	// origin is the stored copy record; Origin is built from it for each viewer.
+	origin *chatOriginRow
 }
 
 type ChatMessagePreview struct {
@@ -206,6 +214,8 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	chat.Post("/settings", s.chatRoute("settings", s.updateChatSettings))
 	chat.Post("/dms", s.chatLimiter("open", 60, time.Minute), s.chatRoute("open direct message", s.openChatDM))
 	chat.Post("/groups", s.chatLimiter("create", 20, time.Hour), s.chatRoute("create group", s.createChatGroup))
+	chat.Post("/saved", s.chatLimiter("open saved", 60, time.Minute), s.chatRoute("open saved", s.openChatSaved))
+	chat.Post("/saved/messages", s.chatLimiter("save", 60, time.Minute), s.chatRoute("save messages", s.saveChatMessages))
 
 	conversation := chat.Group("/conversations/:id")
 	conversation.Post("/attachments", s.chatLimiter("attach", 60, time.Minute), s.chatRoute("create attachment", s.createChatAttachment))

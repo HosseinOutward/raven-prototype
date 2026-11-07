@@ -12,6 +12,9 @@ import (
 type updateMigration struct {
 	version    string
 	statements []string
+	// after runs in the migration's transaction, after its statements, for a change plain
+	// SQL cannot make. It is not part of the checksum.
+	after func(*sql.Tx) error
 }
 
 // migrateVersioned applies each migration once and records its checksum. A migration's
@@ -53,6 +56,7 @@ func migrateVersioned(db *sql.DB, driver string) error {
 		{version: "2026110401_voice_moderation", statements: voiceModerationStatements()},
 		{version: "2026110402_call_votes", statements: callVoteStatements()},
 		{version: "2026110601_workshop", statements: workshopStatements()},
+		savedMessagesMigration(driver),
 	}
 	for _, migration := range migrations {
 		if err := applyUpdateMigration(db, driver, migration); err != nil {
@@ -87,6 +91,11 @@ func applyUpdateMigration(db *sql.DB, driver string, migration updateMigration) 
 			return fmt.Errorf("migration %s: %w", migration.version, err)
 		}
 	}
+	if migration.after != nil {
+		if err := migration.after(tx); err != nil {
+			return fmt.Errorf("migration %s: %w", migration.version, err)
+		}
+	}
 	if _, err := tx.Exec(
 		rebind(driver, `INSERT INTO schema_migrations (version, checksum, applied_at) VALUES (?, ?, ?)`),
 		migration.version,
@@ -96,6 +105,14 @@ func applyUpdateMigration(db *sql.DB, driver string, migration updateMigration) 
 		return err
 	}
 	return tx.Commit()
+}
+
+func savedMessagesMigration(driver string) updateMigration {
+	migration := updateMigration{version: "2026110701_saved_messages", statements: savedMessagesStatements(driver)}
+	if driver != "pgx" {
+		migration.after = sqliteWidenChatKindCheck
+	}
+	return migration
 }
 
 // dropUpdateControlStatements removes the tables of the retired release-operations
