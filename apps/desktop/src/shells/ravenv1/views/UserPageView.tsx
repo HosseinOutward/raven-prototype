@@ -79,7 +79,7 @@ export function UserPageView({
 
         {isSelf ? (
           <div className="mt-6 flex justify-center">
-            <Button variant="secondary" onClick={() => onNavigate({ kind: "settings" })}>
+            <Button variant="secondary" onClick={() => onNavigate({ kind: "settings", section: "profile" })}>
               <Settings className="h-4 w-4" />
               Edit your profile
             </Button>
@@ -138,33 +138,31 @@ export function UserPageView({
         )}
 
         {isSelf ? null : (
-          <>
-            <p id="profile-knock-help" className="mt-6 text-center text-small text-muted-foreground" role="status">
-              {profileKnock.description}
-            </p>
-
-            {sharedTrees.length ? (
-              <section className="mt-10">
-                <SectionLabel className="mb-1">{data.labels.treePlural} you share</SectionLabel>
-                <GroupedList>
-                  {sharedTrees.map((tree) => (
-                    <button
-                      key={tree.id}
-                      type="button"
-                      onClick={() => onNavigate({ kind: "tree", id: tree.id })}
-                      className="flex h-11 w-full items-center gap-3 px-3 text-left transition-colors hover:bg-secondary"
-                    >
-                      <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-6 w-6 rounded-chip text-[10px]" />
-                      <span className="min-w-0 flex-1 truncate text-small">{tree.name}</span>
-                    </button>
-                  ))}
-                </GroupedList>
-              </section>
-            ) : null}
-
-            <p className="mt-6 text-center text-caption text-subtle">{visibleBecause}</p>
-          </>
+          <p id="profile-knock-help" className="mt-6 text-center text-small text-muted-foreground" role="status">
+            {profileKnock.description}
+          </p>
         )}
+
+        {sharedTrees.length ? (
+          <section className="mt-10">
+            <SectionLabel className="mb-1">{isSelf ? `${data.labels.treePlural} you’re in` : `${data.labels.treePlural} you share`}</SectionLabel>
+            <GroupedList>
+              {sharedTrees.map((tree) => (
+                <button
+                  key={tree.id}
+                  type="button"
+                  onClick={() => onNavigate({ kind: "tree", id: tree.id })}
+                  className="flex h-11 w-full items-center gap-3 px-3 text-left transition-colors hover:bg-secondary"
+                >
+                  <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-6 w-6 rounded-chip text-[10px]" />
+                  <span className="min-w-0 flex-1 truncate text-small">{tree.name}</span>
+                </button>
+              ))}
+            </GroupedList>
+          </section>
+        ) : null}
+
+        {isSelf ? null : <p className="mt-6 text-center text-caption text-subtle">{visibleBecause}</p>}
       </div>
 
       {viewingPicture === person.id ? <ProfilePictureViewer src={api.userAvatarUrl(person.id)} alt={`${person.name}’s profile picture`} onClose={() => setViewingPicture(null)} /> : null}

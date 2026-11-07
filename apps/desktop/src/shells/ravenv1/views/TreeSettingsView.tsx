@@ -252,7 +252,7 @@ function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; d
             const canMakeOwner = canTransfer && !isSelf;
             return (
               <div key={member.userId} className="flex items-center gap-3 px-4 py-2.5">
-                <button type="button" onClick={() => onNavigate(isSelf ? { kind: "settings" } : { kind: "user", id: member.userId })} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                <button type="button" onClick={() => onNavigate({ kind: "user", id: member.userId })} className="flex min-w-0 flex-1 items-center gap-3 text-left">
                   <PersonAvatar id={member.userId} name={name} className="h-8 w-8" />
                   <span className="min-w-0">
                     <span className="block truncate text-body">{name}{isSelf ? " (you)" : ""}</span>

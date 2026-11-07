@@ -1,5 +1,5 @@
 import { Avatar } from "@/components/ui/avatar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api } from "@/lib/api";
 import { clockTime, fullTime } from "@/lib/chat/time";
 import type { ChatSeenReader } from "@/lib/chat/types";
@@ -12,7 +12,7 @@ const person = (reader: ChatSeenReader) => reader.displayName || reader.username
  * in a group or nest a few faces that open the names and times. Direct messages show it only
  * under your own last message, since the other reader there is you.
  */
-export function SeenBy({ direct, readers, fallbackAt }: { direct: boolean; readers: ChatSeenReader[]; fallbackAt?: string }) {
+export function SeenBy({ direct, readers, fallbackAt, onOpenPerson }: { direct: boolean; readers: ChatSeenReader[]; fallbackAt?: string; onOpenPerson?: (userId: string) => void }) {
   const first = readers[0];
   if (direct) {
     const at = first?.at ?? fallbackAt;
@@ -37,10 +37,20 @@ export function SeenBy({ direct, readers, fallbackAt }: { direct: boolean; reade
           <p className="px-2 py-1.5 text-caption text-subtle">Seen by {readers.length}</p>
           <ul className="max-h-64 overflow-y-auto">
             {readers.map((reader) => (
-              <li key={reader.userId} className="flex items-center gap-2 rounded-control px-2 py-1.5">
-                <Avatar name={person(reader)} src={api.userAvatarUrl(reader.userId)} className="h-6 w-6" />
-                <span className="min-w-0 flex-1 truncate text-small">{person(reader)}</span>
-                <time dateTime={reader.at} title={fullTime(reader.at)} className="text-caption tabular-nums text-subtle">{clockTime(reader.at)}</time>
+              <li key={reader.userId}>
+                <PopoverClose asChild>
+                  <button
+                    type="button"
+                    disabled={!onOpenPerson}
+                    onClick={() => onOpenPerson?.(reader.userId)}
+                    aria-label={`Open ${person(reader)}’s profile`}
+                    className="flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-start transition-colors enabled:hover:bg-secondary"
+                  >
+                    <Avatar name={person(reader)} src={api.userAvatarUrl(reader.userId)} className="h-6 w-6" />
+                    <span className="min-w-0 flex-1 truncate text-small">{person(reader)}</span>
+                    <time dateTime={reader.at} title={fullTime(reader.at)} className="text-caption tabular-nums text-subtle">{clockTime(reader.at)}</time>
+                  </button>
+                </PopoverClose>
               </li>
             ))}
           </ul>

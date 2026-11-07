@@ -347,6 +347,7 @@ function OpenConversation({
           onRemoveForMe={askRemove}
           onDeleteForEveryone={askDelete}
           onOpenImage={openImage}
+          onOpenPerson={(userId) => onNavigate({ kind: "user", id: userId })}
         />
 
         {summary.canSend ? (

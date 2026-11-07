@@ -33,3 +33,12 @@ describe("presenceFromApi", () => {
     expect(PRESENCE.invisible.label).toBe("Invisible");
   });
 });
+
+describe("selfPerson", () => {
+  test("shapes you like anyone else, with your spaces and presence", async () => {
+    const { selfPerson } = await import("./state");
+    const me = selfPerson({ user: { id: "me", username: "soroush", displayName: "Soroush" } as never, presence: { state: "online", reachability: "open" } as never, trees: [{ id: "t1" }, { id: "t2" }] as never });
+    expect(me).toMatchObject({ id: "me", name: "Soroush", username: "soroush", presence: "open", treeIds: ["t1", "t2"] });
+    expect(selfPerson({ user: null, presence: null, trees: [] })).toBeUndefined();
+  });
+});

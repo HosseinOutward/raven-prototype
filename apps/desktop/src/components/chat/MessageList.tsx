@@ -101,6 +101,7 @@ export interface MessageListProps {
   onRemoveForMe: (message: ChatMessage) => void;
   onDeleteForEveryone: (message: ChatMessage) => void;
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
+  onOpenPerson: (userId: string) => void;
 }
 
 /**
@@ -109,7 +110,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage },
+  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -296,9 +297,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onDeleteForEveryone={onDeleteForEveryone}
                 onOpenReply={openReply}
                 onOpenImage={onOpenImage}
+                onOpenPerson={onOpenPerson}
               />
               {message.seq === summary.lastSeq && !message.deletedAt && (mine || summary.kind !== "dm") ? (
                 <SeenBy
+                  onOpenPerson={onOpenPerson}
                   direct={summary.kind === "dm"}
                   readers={conversation.seen?.seq === message.seq ? conversation.seen.readers : []}
                   fallbackAt={summary.peerReadSeq !== undefined && summary.peerReadSeq >= message.seq ? summary.peerReadAt : undefined}

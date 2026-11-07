@@ -52,7 +52,7 @@ import { focusPanelOnOpen } from "@/lib/focusHandoff";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { type VideoQualityProfileId } from "@/lib/video";
-import { Activity, AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, Video, VideoOff, LogOut } from "lucide-react";
+import { Activity, AlertTriangle, ArrowDown, ArrowLeftRight, ArrowUp, Check, ChevronUp, Coffee, HeadphoneOff, Headphones, Loader2, Mic, MicOff, MonitorPause, MonitorUp, PhoneOff, Settings, SignalLow, SlidersHorizontal, UserPlus, UserRound, Video, VideoOff, LogOut } from "lucide-react";
 import { AccountSummary, ElapsedTime, InfoTooltip, LiveDot, PresenceDot } from "./atoms";
 import { displayNameFor, PRESENCE, presenceFromApi, SELECTABLE_PRESENCES, type RavenShellData, type RavenView } from "./state";
 import type { ChatStore } from "@/lib/chat/store";
@@ -686,6 +686,12 @@ export function DeviceDock({
                   </DropdownMenuItem>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+              {data.user ? (
+                <DropdownMenuItem onSelect={() => onNavigate({ kind: "user", id: data.user!.id })}>
+                  <UserRound className="text-muted-foreground" />
+                  Your profile
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem onSelect={() => onNavigate({ kind: "settings" })}>
                 <Settings className="text-muted-foreground" />
                 Settings

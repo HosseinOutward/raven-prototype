@@ -245,6 +245,21 @@ export function presenceFromApi(presence?: Pick<UserPresence, "state" | "reachab
   return "around";
 }
 
+/** You, shaped like anyone else, for your own profile page. `people` never holds you. */
+export function selfPerson(data: Pick<RavenShellData, "user" | "presence" | "trees">): ShellPerson | undefined {
+  const user = data.user;
+  if (!user) return undefined;
+  return {
+    id: user.id,
+    name: displayNameFor(user),
+    username: user.username || undefined,
+    presence: presenceFromApi(data.presence),
+    treeIds: data.trees.map((tree) => tree.id),
+    activeNestIds: [],
+    relationship: "context",
+  };
+}
+
 export function presenceForActiveNest(presence?: Partial<Pick<UserPresence, "state" | "reachability">> | null): {
   state: UserPresenceState;
   reachability: UserReachability;

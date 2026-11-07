@@ -232,7 +232,7 @@ export function TreeLobbyView({
                   member={member}
                   isSelf={member.userId === data.user?.id}
                   nestName={member.activeNestId ? data.getNest(member.activeNestId)?.name : undefined}
-                  onOpen={() => onNavigate(member.userId === data.user?.id ? { kind: "settings" } : { kind: "user", id: member.userId })}
+                  onOpen={() => onNavigate({ kind: "user", id: member.userId })}
                 />
               ))}
             </div>

@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
 import { AlertCircle, Check, CheckCheck, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, MoreHorizontal, Pencil, SmilePlus, Trash2 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -90,6 +90,18 @@ export interface MessageRowProps {
   onOpenReply: (seq: number) => void;
   /** Opens the viewer on one of the message's images. */
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
+  /** Opens the sender's profile page. Without it the avatar and name are plain. */
+  onOpenPerson?: (userId: string) => void;
+}
+
+/** A sender's face or name; opens their profile when the conversation can. */
+function PersonLink({ message, onOpenPerson, className, children }: { message: ChatMessage; onOpenPerson?: (userId: string) => void; className?: string; children: ReactNode }) {
+  if (!onOpenPerson) return <>{children}</>;
+  return (
+    <button type="button" onClick={() => onOpenPerson(message.senderId)} aria-label={`Open ${message.senderName}’s profile`} className={cn("max-w-full rounded-control text-start", className)}>
+      {children}
+    </button>
+  );
 }
 
 /** The time, and for my own messages whether it has been read. */
@@ -289,12 +301,12 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
       >
         {!mine && props.withAvatars ? (
           <span className="w-7 shrink-0 self-start">
-            {showSender ? <Avatar name={message.senderName} src={api.userAvatarUrl(message.senderId)} className="h-7 w-7" /> : null}
+            {showSender ? <PersonLink message={message} onOpenPerson={props.onOpenPerson} className="block rounded-full"><Avatar name={message.senderName} src={api.userAvatarUrl(message.senderId)} className="h-7 w-7" /></PersonLink> : null}
           </span>
         ) : null}
         {bare ? (
           <div className={cn("min-w-0 max-w-[min(100%,34rem)] rounded-control transition-colors", props.highlighted && "outline outline-2 outline-ring")}>
-            {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
+            {showSender && !mine ? <div className="truncate pb-0.5 text-caption font-medium text-muted-foreground"><PersonLink message={message} onOpenPerson={props.onOpenPerson} className="max-w-full truncate hover:underline"><bdi>{message.senderName}</bdi></PersonLink></div> : null}
             {bareEmoji ? <>
               <MessageText body={message.body} />
               {hasChips ? <div className="mt-1">{chips(mine ? "end" : "start")}</div> : null}
@@ -316,7 +328,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               props.highlighted && "outline outline-2 outline-ring",
             )}
           >
-            {showSender && !mine ? <div className="truncate text-caption font-medium text-muted-foreground"><bdi>{message.senderName}</bdi></div> : null}
+            {showSender && !mine ? <div className="truncate text-caption font-medium text-muted-foreground"><PersonLink message={message} onOpenPerson={props.onOpenPerson} className="max-w-full truncate hover:underline"><bdi>{message.senderName}</bdi></PersonLink></div> : null}
             {reply && !deleted ? <ReplyQuote reply={reply} onOpen={reply.seq ? () => props.onOpenReply(reply.seq!) : undefined} /> : null}
             {attachments.length > 0 ? (
               <div className="-mx-1.5 mb-1 mt-0.5">

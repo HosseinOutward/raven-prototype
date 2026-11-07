@@ -7,7 +7,7 @@ import type { ChatStore } from "@/lib/chat/store";
 import type { RavenUpdater } from "@/lib/updater";
 import { EmptyState } from "../atoms";
 import { strangerNamed } from "../people";
-import type { RavenShellData, RavenView } from "../state";
+import { selfPerson, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import type { NestEntryController } from "../useNestEntry";
 import { resolveUserSettingsSection, UserSettingsView } from "../UserSettings";
@@ -86,7 +86,7 @@ export function MainView({
       return <UserSettingsView section={resolveUserSettingsSection(view.section, Boolean(capabilitiesOf(data.user).createInvites))} data={data} media={media} updater={updater} chat={chat} onNavigate={onNavigate} />;
     case "user": {
       const lastName = knownNames.current.get(view.id);
-      const person = data.getPerson(view.id) ?? view.person ?? (lastName ? strangerNamed(view.id, lastName) : undefined);
+      const person = (view.id === data.user?.id ? selfPerson(data) : undefined) ?? data.getPerson(view.id) ?? view.person ?? (lastName ? strangerNamed(view.id, lastName) : undefined);
       return person ? <UserPageView person={person} data={data} chat={chat} onNavigate={onNavigate} /> : <MissingView what="person" onNavigate={onNavigate} />;
     }
     case "chat":
