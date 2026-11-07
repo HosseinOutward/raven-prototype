@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Archive, ArchiveRestore, Bell, BellOff, Eraser, Hand, ImagePlus, LogIn, LogOut, MoreHorizontal, Pencil, Trash2, Users } from "lucide-react";
 import { GroupPeopleDialog, RenameDialog } from "@/components/chat/ChatDialogs";
+import { ForwardDialog } from "@/components/chat/ForwardDialog";
+import { SelectionBar } from "@/components/chat/SelectionBar";
 import { ImageViewer } from "@/components/chat/ImageViewer";
 import { Composer } from "@/components/chat/Composer";
 import { ConversationAvatar } from "@/components/chat/ConversationRow";
@@ -12,6 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
 import { notifies } from "@/lib/chat/notify";
+import { canSelect, clickSelection, selectionAfterKey, startSelection, type MessageSelection } from "@/lib/chat/selection";
 import { canShow, reactionLimits } from "@/lib/chat/attachments";
 import { addToTray } from "@/lib/chat/composerTray";
 import { excerptOf, summarize, textNestsOfTree } from "@/lib/chat/reducer";
@@ -134,6 +137,10 @@ function OpenConversation({
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [viewing, setViewing] = useState<{ messageId: string; attachmentId: string } | null>(null);
+  // Lives here and not in the list because its bar takes the composer's place. The view is
+  // keyed by conversation, so opening another one clears it.
+  const [selection, setSelection] = useState<MessageSelection | null>(null);
+  const [forwarding, setForwarding] = useState<string[] | null>(null);
   const [dropping, setDropping] = useState(false);
   const imageLimits = useImageLimits(data);
   // Images can come in only where something can be sent, and not while editing a message.
@@ -252,6 +259,37 @@ function OpenConversation({
     }, report("Couldn’t add that to Saved messages."));
   }, [chat, onNavigate, report]);
   const openSource = useCallback((conversationId: string, seq: number) => onNavigate({ kind: "chat", id: conversationId, at: seq }), [onNavigate]);
+
+  const selecting = selection !== null;
+  useEffect(() => {
+    if (!selecting || forwarding) return;
+    const onKey = (event: KeyboardEvent) => setSelection((current) => selectionAfterKey(current, event.key));
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selecting, forwarding]);
+  const forwardOne = useCallback((message: ChatMessage) => setForwarding([message.id]), []);
+  const startSelecting = useCallback((message: ChatMessage) => {
+    setReplyingTo(null);
+    setEditing(null);
+    setSelection(startSelection(message.id));
+  }, []);
+  const toggleSelected = useCallback((message: ChatMessage, shift: boolean, order: string[]) => {
+    setSelection((current) => (current ? clickSelection(current, message.id, shift, order) : current));
+  }, []);
+  // Something chosen may have been deleted since. It can no longer be sent anywhere.
+  const chosenIds = () => [...(selection?.ids ?? [])].filter((chosen) => {
+    const message = conversation.messages.find((each) => each.id === chosen);
+    return !message || canSelect(message);
+  });
+  const saveChosen = () => {
+    void chat.saveMessages(chosenIds()).then(({ conversationId, copy, already }) => {
+      setSelection(null);
+      toast({
+        title: already ? "Already in Saved messages" : "Added to Saved messages",
+        action: { label: "Open", onClick: () => onNavigate({ kind: "chat", id: conversationId, at: copy?.seq }) },
+      });
+    }, report("Couldn’t add those to Saved messages."));
+  };
 
   const openImage = useCallback((message: ChatMessage, attachment: ChatAttachment) => setViewing({ messageId: message.id, attachmentId: attachment.id }), []);
 
@@ -427,10 +465,21 @@ function OpenConversation({
           onOpenPerson={(userId) => onNavigate({ kind: "user", id: userId })}
           onSave={summary.kind === "saved" ? undefined : saveMessage}
           onOpenSource={openSource}
+          onForward={forwardOne}
+          onStartSelecting={startSelecting}
+          selection={selection}
+          onToggleSelected={toggleSelected}
           mentions={mentions}
         />
 
-        {summary.canSend ? (
+        {selection ? (
+          <SelectionBar
+            count={selection.ids.size}
+            onForward={() => setForwarding(chosenIds())}
+            onSave={summary.kind === "saved" ? undefined : saveChosen}
+            onCancel={() => setSelection(null)}
+          />
+        ) : summary.canSend ? (
           <Composer
             conversationId={id}
             name={summary.kind === "saved" ? "yourself" : name}
@@ -469,6 +518,21 @@ function OpenConversation({
         ) : null}
       </div>
 
+      {forwarding ? (
+        <ForwardDialog
+          chat={chat}
+          trees={data.trees}
+          messageIds={forwarding}
+          messages={forwarding.map((chosen) => conversation.messages.find((each) => each.id === chosen))}
+          from={summary.kind}
+          onClose={() => setForwarding(null)}
+          onForwarded={(conversationId, seq) => {
+            setForwarding(null);
+            setSelection(null);
+            toast({ title: "Forwarded", action: { label: "Open", onClick: () => onNavigate({ kind: "chat", id: conversationId, at: seq }) } });
+          }}
+        />
+      ) : null}
       {viewedMessage && viewedIndex >= 0 ? (
         <ImageViewer
           conversationId={id}

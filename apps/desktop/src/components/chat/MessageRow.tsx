@@ -1,5 +1,5 @@
 import { memo, useState, type ReactNode } from "react";
-import { AlertCircle, Bookmark, Check, CheckCheck, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, Forward, MoreHorizontal, Pencil, SmilePlus, Trash2, Users } from "lucide-react";
+import { AlertCircle, Bookmark, Check, CheckCheck, CheckCircle2, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, Forward, MoreHorizontal, Pencil, SmilePlus, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -143,6 +143,14 @@ export interface MessageRowProps {
   onSave?: (message: ChatMessage) => void;
   /** Opens the chat a copy came from, at the original. */
   onOpenSource?: (conversationId: string, seq: number) => void;
+  /** Opens the forward picker for this message. Without it the menu does not offer that. */
+  onForward?: (message: ChatMessage) => void;
+  /** Starts choosing messages, with this one chosen. */
+  onSelect?: (message: ChatMessage) => void;
+  /** Selection mode: clicking the row chooses it, and nothing in it acts. */
+  selecting?: boolean;
+  selected?: boolean;
+  onToggleSelected?: (message: ChatMessage, shift: boolean) => void;
   /** Saved messages has one reader, so there is one way to delete. */
   inSaved?: boolean;
   /** Draws mentions; without it they show as unknown. */
@@ -190,9 +198,9 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionOpen, setReactionOpen] = useState(false);
   const [fullPicker, setFullPicker] = useState(false);
-  // Swipe left to reply, wherever the Reply button would show. Plan 05 can add selection mode here.
+  // Swipe left to reply, wherever the Reply button would show.
   const swipe = useSwipeToReply({
-    disabled: !props.canReply || message.kind === "system" || Boolean(message.deletedAt),
+    disabled: !props.canReply || message.kind === "system" || Boolean(message.deletedAt) || Boolean(props.selecting),
     onReply: () => props.onReply(message),
   });
 
@@ -314,6 +322,18 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               Reply
             </DropdownMenuItem>
           ) : null}
+          {props.onForward && !deleted ? (
+            <DropdownMenuItem onSelect={() => props.onForward!(message)}>
+              <Forward className="text-muted-foreground" />
+              Forward
+            </DropdownMenuItem>
+          ) : null}
+          {props.onSelect && !deleted ? (
+            <DropdownMenuItem onSelect={() => props.onSelect!(message)}>
+              <CheckCircle2 className="text-muted-foreground" />
+              Select
+            </DropdownMenuItem>
+          ) : null}
           {props.onSave && !deleted ? (
             <DropdownMenuItem onSelect={() => props.onSave!(message)}>
               <Bookmark className="text-muted-foreground" />
@@ -359,14 +379,39 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   return (
     <div>
       <Decorations dayHeading={props.dayHeading} newDivider={props.newDivider} />
-      <div className="relative">
+      <div
+        className={cn("relative", props.selecting && "flex cursor-pointer select-none items-center gap-2 rounded-control transition-colors", props.selected && "bg-secondary/60")}
+        // In selection mode the whole row is one control: nothing inside it opens or reacts.
+        onClickCapture={props.selecting ? (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!deleted) props.onToggleSelected?.(message, event.shiftKey);
+        } : undefined}
+      >
+      {props.selecting ? (
+        deleted ? <span className="h-5 w-5 shrink-0" aria-hidden /> : (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={Boolean(props.selected)}
+            aria-label="Select this message"
+            className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors", props.selected ? "border-primary bg-primary text-primary-foreground" : "border-input")}
+          >
+            {props.selected ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
+          </button>
+        )
+      ) : null}
       <span ref={swipe.arrowRef} aria-hidden className={cn("pointer-events-none absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full opacity-0", swipe.armed ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground")} style={{ transform: "scale(0.6)" }}>
         <CornerUpLeft className="h-4 w-4" />
       </span>
       <div
         ref={swipe.rowRef}
-        className={cn("group flex touch-pan-y items-end gap-2", continuation ? "pt-0.5" : "pt-2.5", mine && "flex-row-reverse")}
+        className={cn("group flex touch-pan-y items-end gap-2", continuation ? "pt-0.5" : "pt-2.5", mine && "flex-row-reverse", props.selecting && "min-w-0 flex-1")}
         onContextMenu={(event) => {
+          if (props.selecting) {
+            event.preventDefault();
+            return;
+          }
           // Right-click opens the same menu as the button, unless text is being selected.
           if (window.getSelection()?.toString()) return;
           event.preventDefault();
@@ -433,7 +478,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             )}
           </div>
         )}
-        {actions}
+        {props.selecting ? null : actions}
       </div>
       </div>
     </div>

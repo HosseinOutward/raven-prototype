@@ -6,6 +6,7 @@ import type { ChatStore } from "@/lib/chat/store";
 import { typingLine } from "@/lib/chat/text";
 import { unreadLabel } from "@/lib/chat/reducer";
 import { buildRows, type ChatRow as Row } from "@/lib/chat/rows";
+import { canSelect, type MessageSelection } from "@/lib/chat/selection";
 import type { ChatAttachment, ChatMessage, ConversationState, PendingMessage } from "@/lib/chat/types";
 import { MessageRow, PendingRow, type DeliveryStatus } from "./MessageRow";
 import type { MentionContext } from "./MessageText";
@@ -109,6 +110,12 @@ export interface MessageListProps {
   onSave?: (message: ChatMessage) => void;
   /** Opens the chat a copied message came from, at the original. */
   onOpenSource?: (conversationId: string, seq: number) => void;
+  onForward?: (message: ChatMessage) => void;
+  onStartSelecting?: (message: ChatMessage) => void;
+  /** The messages being chosen; null when not choosing. */
+  selection?: MessageSelection | null;
+  /** A click on a message while choosing. `order` is what can be chosen, in order. */
+  onToggleSelected?: (message: ChatMessage, shift: boolean, order: string[]) => void;
   mentions?: MentionContext;
 }
 
@@ -118,7 +125,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, onSave, onOpenSource, mentions },
+  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, onSave, onOpenSource, onForward, onStartSelecting, selection, onToggleSelected, mentions },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -149,6 +156,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     return (id: string) => names.get(id) || "Someone";
   }, [messages, conversation.members]);
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
+  const selectable = useMemo(() => rows.flatMap((row) => (row.kind === "message" && canSelect(row.message) ? [row.message.id] : [])), [rows]);
 
   const initialIndex = useMemo(() => {
     if (focusSeq !== null) {
@@ -311,6 +319,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onOpenPerson={onOpenPerson}
                 onSave={onSave}
                 onOpenSource={onOpenSource}
+                onForward={onForward}
+                onSelect={onStartSelecting}
+                selecting={Boolean(selection)}
+                selected={selection?.ids.has(message.id)}
+                onToggleSelected={(toggled, shift) => onToggleSelected?.(toggled, shift, selectable)}
                 inSaved={inSaved}
                 mentions={mentions}
               />

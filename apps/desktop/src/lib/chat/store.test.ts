@@ -176,6 +176,14 @@ const conversation = (store: ChatStore) => store.getState().conversations[C];
 const bodies = (store: ChatStore) => conversation(store).messages.map((item) => item.body);
 
 describe("sending", () => {
+  test("opening at a message loads around it only when it is outside the window", async () => {
+    const { store, server } = await openStore();
+    const before = server.pageLoads();
+    await store.jumpTo(C, 7);
+    expect(server.pageLoads()).toBe(before + 1);
+    expect(server.calls.at(-1)).toContain('"around":7');
+  });
+
   test("a message shows at once as pending, then becomes the stored message", async () => {
     const { store, server } = await openStore();
     const release = server.hold("send");

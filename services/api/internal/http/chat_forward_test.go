@@ -225,3 +225,16 @@ func TestChatForwardKeepsTheOriginalOrderAndCountsEachMessage(t *testing.T) {
 	}
 	chatForward(t, s, alice, group.ID, http.StatusTooManyRequests, ids, nil)
 }
+
+func TestChatForwardOfASavedNoteShowsNoSource(t *testing.T) {
+	s, alice, bob, dm := chatPair(t)
+	saved := chatOpenSaved(t, s, alice)
+	note := chatSend(t, s, alice.token, saved.ID, "a note to self")
+	got := chatForward(t, s, alice, dm.ID, http.StatusCreated, []string{note.ID}, nil)[0]
+	if got.Origin == nil || got.Origin.SenderID != alice.user.ID || got.Origin.Source != nil {
+		t.Fatalf("origin of a forwarded note: %+v", got.Origin)
+	}
+	if seen := chatHistoryFind(t, s, bob, dm.ID, got.ID); seen.Origin.Source != nil {
+		t.Fatalf("bob sees a source: %+v", seen.Origin.Source)
+	}
+}

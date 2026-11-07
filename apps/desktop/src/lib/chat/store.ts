@@ -11,7 +11,7 @@ import { recordEmoji } from "../emoji/prefs";
 import type { ReactionLimits } from "./attachments";
 import { toggledReactions } from "./reactions";
 import { modeFor } from "./notify";
-import type { ChatApi } from "./chatApi";
+import type { ChatApi, ForwardInput } from "./chatApi";
 import { httpStatusOf } from "./errors";
 import {
   classifySendFailure,
@@ -841,11 +841,25 @@ export class ChatStore {
   }
 
   /** Copies a message into Saved messages and returns the copy, new or already there. */
-  async saveMessage(messageId: string) {
-    const { conversationId, saved, alreadySaved } = await this.api.saveMessages([messageId]);
+  saveMessage(messageId: string) {
+    return this.saveMessages([messageId]);
+  }
+
+  /** Copies several messages into Saved messages. */
+  async saveMessages(messageIds: string[]) {
+    const { conversationId, saved, alreadySaved } = await this.api.saveMessages(messageIds);
     // The copy itself arrives as an event; a Saved messages this store has not met needs its row.
     if (!this.state.conversations[conversationId]) await this.fetchSummary(conversationId);
     return { conversationId, copy: saved[0] ?? alreadySaved[0], already: saved.length === 0 };
+  }
+
+  /** Forwards messages. `to` is null for a Saved messages that has not been created yet. */
+  async forward(input: Omit<ForwardInput, "to"> & { to: string | null }) {
+    const to = input.to ?? (await this.openSaved()).id;
+    const result = await this.api.forward({ ...input, to });
+    // The copies arrive as events; a conversation this store has not met needs its row.
+    if (!this.state.conversations[to]) await this.fetchSummary(to);
+    return result;
   }
 
   async createGroup(name: string, memberIds: string[]) {

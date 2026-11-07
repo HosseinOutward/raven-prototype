@@ -37,6 +37,14 @@ export interface AttachmentUploadState {
  * The chat endpoints. The store depends on this interface rather than on `api`, so its
  * tests can stand in a server that drops, delays and reorders at will.
  */
+export interface ForwardInput {
+  messageIds: string[];
+  to: string;
+  note?: string;
+  hideSender: boolean;
+  hideSource: boolean;
+}
+
 export interface ChatApi {
   listConversations(): Promise<{ conversations: ChatConversation[]; settings: ChatSettings }>;
   getConversation(id: string): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
@@ -45,6 +53,8 @@ export interface ChatApi {
   openSaved(): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   /** Copies messages into Saved messages. Those already there come back in `alreadySaved`. */
   saveMessages(messageIds: string[]): Promise<{ conversationId: string; saved: ChatMessage[]; alreadySaved: ChatMessage[] }>;
+  /** Copies messages from one conversation into another, oldest first, then the note. */
+  forward(input: ForwardInput): Promise<{ conversationId: string; messages: ChatMessage[] }>;
   createGroup(name: string, memberIds: string[]): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   updateConversation(id: string, patch: { name?: string; topic?: string }): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   deleteConversation(id: string): Promise<void>;
@@ -89,6 +99,7 @@ export const chatApi: ChatApi = {
   openDM: (userId) => api.call("/v1/chat/dms", json({ userId })),
   openSaved: () => api.call("/v1/chat/saved", { method: "POST" }),
   saveMessages: (messageIds) => api.call("/v1/chat/saved/messages", json({ messageIds })),
+  forward: (input) => api.call("/v1/chat/forward", json(input)),
   createGroup: (name, memberIds) => api.call("/v1/chat/groups", json({ name, memberIds })),
   updateConversation: (id, patch) => api.call(`${conversationPath(id)}/settings`, json(patch)),
   deleteConversation: (id) => api.call(conversationPath(id), { method: "DELETE" }),
