@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronDown, Hand, LogIn, MessageSquare, Settings, UserPlus, X } from "lucide-react";
+import { Bookmark, Check, ChevronDown, Hand, LogIn, MessageSquare, Settings, UserPlus, X } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ import { personStatus } from "../people";
 import { PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { namesSentence } from "./shared";
+import { useOpenSaved } from "../useChat";
 import { useProfileKnock } from "../useProfileKnock";
 import { usePendingActions } from "../usePendingActions";
 
@@ -32,6 +33,7 @@ export function UserPageView({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const profileKnock = useProfileKnock(data, person.id);
   const [openingChat, setOpeningChat] = useState(false);
+  const saved = useOpenSaved(chat, onNavigate);
   // Whose picture is open: this view stays mounted when moving from one person to another.
   const [viewingPicture, setViewingPicture] = useState<string | null>(null);
 
@@ -78,11 +80,17 @@ export function UserPageView({
         </div>
 
         {isSelf ? (
-          <div className="mt-6 flex justify-center">
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
             <Button variant="secondary" onClick={() => onNavigate({ kind: "settings", section: "profile" })}>
               <Settings className="h-4 w-4" />
               Edit your profile
             </Button>
+            {chat ? (
+              <Button variant="secondary" disabled={saved.opening} onClick={saved.open}>
+                <Bookmark className="h-4 w-4" />
+                Saved messages
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2">

@@ -159,6 +159,7 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 			item.CanManage = treeRoleAllows(treeRole, treeActionManageRooms)
 		case chatKindSaved:
 			item.Role = memberRole
+			item.Name = "Saved messages"
 			item.CanSend = true
 		}
 		if !capabilities.SendMessages {

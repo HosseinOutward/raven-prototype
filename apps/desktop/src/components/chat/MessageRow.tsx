@@ -1,5 +1,5 @@
 import { memo, useState, type ReactNode } from "react";
-import { AlertCircle, Check, CheckCheck, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, MoreHorizontal, Pencil, SmilePlus, Trash2 } from "lucide-react";
+import { AlertCircle, Bookmark, Check, CheckCheck, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, Forward, MoreHorizontal, Pencil, SmilePlus, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -14,8 +14,9 @@ import { saveAttachment } from "@/lib/chat/imageActions";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
 import { emojiOnlyCount } from "@/lib/chat/format";
 import { systemLine } from "@/lib/chat/text";
-import { clockTime, fullTime } from "@/lib/chat/time";
-import type { ChatAttachment, ChatMessage, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
+import { clockTime, fullTime, listTime } from "@/lib/chat/time";
+import type { ChatAttachment, ChatMessage, ChatOrigin, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
+import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
 import { EmojiPicker } from "./EmojiPicker";
@@ -62,6 +63,50 @@ function ReplyQuote({ reply, onOpen }: { reply: ChatReplyRef; onOpen?: () => voi
   );
 }
 
+/**
+ * The caption above a copied message: who wrote it, the chat it came from when this viewer
+ * may know that, and when. The sender opens their profile; the chat opens at the original.
+ */
+export function ForwardedFrom({ origin, onOpenPerson, onOpenSource }: { origin: ChatOrigin; onOpenPerson?: (userId: string) => void; onOpenSource?: (conversationId: string, seq: number) => void }) {
+  const { senderId, senderName, source } = origin;
+  const person = senderName ? (
+    <>
+      <Avatar name={senderName} src={senderId ? api.userAvatarUrl(senderId) : undefined} className="h-3.5 w-3.5 text-[8px]" />
+      <bdi className="min-w-0 truncate">{senderName}</bdi>
+    </>
+  ) : null;
+  const doorway = "inline-flex min-w-0 max-w-full items-center gap-1 rounded-chip border border-subtle/50 px-1.5 leading-5";
+  const place = source ? (
+    <>
+      {source.kind === "dm" && source.peerId ? (
+        <Avatar name={source.name} src={api.userAvatarUrl(source.peerId)} className="h-3.5 w-3.5 text-[8px]" />
+      ) : source.kind === "group" ? (
+        <Users className="h-3.5 w-3.5 shrink-0 text-subtle" aria-hidden />
+      ) : (
+        <NestGlyph kind="text" className="h-3.5 w-3.5 text-subtle" />
+      )}
+      <bdi className="min-w-0 truncate">{source.name}</bdi>
+    </>
+  ) : null;
+  return (
+    <div className="mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-caption text-muted-foreground">
+      <Forward className="h-3.5 w-3.5 shrink-0 text-subtle" aria-hidden />
+      {person ? <span className="sr-only">Forwarded from</span> : <span>Forwarded</span>}
+      {person && senderId && onOpenPerson ? (
+        <button type="button" onClick={() => onOpenPerson(senderId)} aria-label={`Open ${senderName}’s profile`} className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-chip hover:underline">{person}</button>
+      ) : person ? (
+        <span className="inline-flex min-w-0 max-w-full items-center gap-1">{person}</span>
+      ) : null}
+      {source && onOpenSource ? (
+        <button type="button" onClick={() => onOpenSource(source.conversationId, source.seq)} aria-label={`Open ${source.name} at this message`} className={cn(doorway, "transition-colors hover:border-subtle hover:bg-secondary/60")}>{place}</button>
+      ) : place ? (
+        <span className={doorway}>{place}</span>
+      ) : null}
+      <time dateTime={origin.createdAt} title={fullTime(origin.createdAt)} className="tabular-nums text-subtle">{listTime(Date.parse(origin.createdAt))}</time>
+    </div>
+  );
+}
+
 export type DeliveryStatus = "sent" | "read";
 
 export interface MessageRowProps {
@@ -94,6 +139,12 @@ export interface MessageRowProps {
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
   /** Opens the sender's profile page. Without it the avatar and name are plain. */
   onOpenPerson?: (userId: string) => void;
+  /** Adds the message to Saved messages. Without it the menu does not offer that. */
+  onSave?: (message: ChatMessage) => void;
+  /** Opens the chat a copy came from, at the original. */
+  onOpenSource?: (conversationId: string, seq: number) => void;
+  /** Saved messages has one reader, so there is one way to delete. */
+  inSaved?: boolean;
   /** Draws mentions; without it they show as unknown. */
   mentions?: MentionContext;
 }
@@ -163,8 +214,9 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const attachments = !deleted ? message.attachments ?? [] : [];
   const hasText = message.body.trim() !== "";
   // Pictures with nothing to say about them stand on their own, without a bubble.
-  const bareEmoji = !deleted && attachments.length === 0 && !reply && emojiOnlyCount(message.body) > 0;
-  const bare = bareEmoji || (attachments.length > 0 && !hasText && !reply && onlyPictures(attachments));
+  const origin = !deleted ? message.origin : undefined;
+  const bareEmoji = !deleted && !origin && attachments.length === 0 && !reply && emojiOnlyCount(message.body) > 0;
+  const bare = bareEmoji || (!origin && attachments.length > 0 && !hasText && !reply && onlyPictures(attachments));
   const shown = attachments.filter(canShow);
   const savable = shown.length === 1 && shown[0].kind === "image" ? shown[0] : null;
 
@@ -262,6 +314,12 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               Reply
             </DropdownMenuItem>
           ) : null}
+          {props.onSave && !deleted ? (
+            <DropdownMenuItem onSelect={() => props.onSave!(message)}>
+              <Bookmark className="text-muted-foreground" />
+              Add to Saved messages
+            </DropdownMenuItem>
+          ) : null}
           {!deleted && savable ? (
             <DropdownMenuItem onSelect={save}>
               <Download className="text-muted-foreground" />
@@ -281,14 +339,16 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             </DropdownMenuItem>
           ) : null}
           {!deleted ? <DropdownMenuSeparator /> : null}
-          <DropdownMenuItem onSelect={() => props.onRemoveForMe(message)}>
-            <EyeOff className="text-muted-foreground" />
-            Remove for me
-          </DropdownMenuItem>
+          {!props.inSaved ? (
+            <DropdownMenuItem onSelect={() => props.onRemoveForMe(message)}>
+              <EyeOff className="text-muted-foreground" />
+              Remove for me
+            </DropdownMenuItem>
+          ) : null}
           {props.canDeleteForEveryone && !deleted ? (
             <DropdownMenuItem destructive onSelect={() => props.onDeleteForEveryone(message)}>
               <Trash2 />
-              Delete for everyone
+              {props.inSaved ? "Delete" : "Delete for everyone"}
             </DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>
@@ -324,13 +384,13 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             {bareEmoji ? <>
               <MessageText body={message.body} mentions={props.mentions} />
               {hasChips ? <div className="mt-1">{chips(mine ? "end" : "start")}</div> : null}
-              <MessageMeta message={message} mine={mine} deleted={deleted} status={status} alignStart={!mine} />
+              <MessageMeta message={message} mine={mine && !props.inSaved} deleted={deleted} status={status} alignStart={!mine} />
             </> : <MessageAttachments
               conversationId={message.conversationId}
               attachments={attachments}
               senderName={mine ? "you" : message.senderName}
               onOpen={(attachment) => props.onOpenImage(message, attachment)}
-              footer={<MessageMeta message={message} mine={mine} deleted={deleted} status={status} overImage />}
+              footer={<MessageMeta message={message} mine={mine && !props.inSaved} deleted={deleted} status={status} overImage />}
             />}
             {!bareEmoji && hasChips ? <div className="mt-1">{chips(mine ? "end" : "start")}</div> : null}
           </div>
@@ -345,6 +405,7 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             )}
           >
             {showSender && !mine ? <div className="truncate text-caption font-medium text-muted-foreground"><PersonLink message={message} onOpenPerson={props.onOpenPerson} className="max-w-full truncate hover:underline"><bdi>{message.senderName}</bdi></PersonLink></div> : null}
+            {origin ? <ForwardedFrom origin={origin} onOpenPerson={props.onOpenPerson} onOpenSource={props.onOpenSource} /> : null}
             {reply && !deleted ? <ReplyQuote reply={reply} onOpen={reply.seq ? () => props.onOpenReply(reply.seq!) : undefined} /> : null}
             {attachments.length > 0 ? (
               <div className="-mx-1.5 mb-1 mt-0.5">
@@ -365,10 +426,10 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               // Reactions share the last line with the time, as in a printed note's footer.
               <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
                 {chips("start")}
-                <MessageMeta message={message} mine={mine} deleted={deleted} status={status} className="ml-auto mt-0 h-7" />
+                <MessageMeta message={message} mine={mine && !props.inSaved} deleted={deleted} status={status} className="ml-auto mt-0 h-7" />
               </div>
             ) : (
-              <MessageMeta message={message} mine={mine} deleted={deleted} status={status} />
+              <MessageMeta message={message} mine={mine && !props.inSaved} deleted={deleted} status={status} />
             )}
           </div>
         )}

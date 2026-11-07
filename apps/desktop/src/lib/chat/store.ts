@@ -835,6 +835,19 @@ export class ChatStore {
     return this.take(await this.api.openDM(userId));
   }
 
+  /** Returns my Saved messages, creating it if there is none. */
+  async openSaved() {
+    return this.take(await this.api.openSaved());
+  }
+
+  /** Copies a message into Saved messages and returns the copy, new or already there. */
+  async saveMessage(messageId: string) {
+    const { conversationId, saved, alreadySaved } = await this.api.saveMessages([messageId]);
+    // The copy itself arrives as an event; a Saved messages this store has not met needs its row.
+    if (!this.state.conversations[conversationId]) await this.fetchSummary(conversationId);
+    return { conversationId, copy: saved[0] ?? alreadySaved[0], already: saved.length === 0 };
+  }
+
   async createGroup(name: string, memberIds: string[]) {
     return this.take(await this.api.createGroup(name, memberIds));
   }

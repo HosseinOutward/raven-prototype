@@ -1,7 +1,7 @@
 // What the server sends for text chat, and what the client keeps about it.
 // The wire shapes mirror services/api/internal/http/chat.go.
 
-export type ChatKind = "dm" | "group" | "nest";
+export type ChatKind = "dm" | "group" | "nest" | "saved";
 
 export interface ChatUser {
   id: string;
@@ -71,6 +71,23 @@ export interface ChatReaction {
   userIds: string[];
 }
 
+/** Where a copied message came from. The server decides per viewer what is shown. */
+export interface ChatOrigin {
+  senderId?: string;
+  senderName?: string;
+  createdAt: string;
+  /** The chat it came from, only while the viewer can read it or it is public. */
+  source?: {
+    conversationId: string;
+    kind: ChatKind;
+    name: string;
+    treeId?: string;
+    /** The other person, when the source is a direct message. */
+    peerId?: string;
+    seq: number;
+  };
+}
+
 export interface ChatMessage {
   id: string;
   conversationId: string;
@@ -88,6 +105,8 @@ export interface ChatMessage {
   reactions?: ChatReaction[];
   replyTo?: ChatReplyRef;
   system?: ChatSystemPayload;
+  /** Set on a copy: a message saved or forwarded from elsewhere. */
+  origin?: ChatOrigin;
   createdAt: string;
   editedAt?: string;
   deletedAt?: string;

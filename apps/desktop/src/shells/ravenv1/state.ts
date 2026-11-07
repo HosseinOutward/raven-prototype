@@ -54,7 +54,8 @@ export type RavenView =
   | { kind: "waiting"; id: string }
   | { kind: "nest"; id: string }
   /** One conversation: a direct message, a group, or a text nest. */
-  | { kind: "chat"; id: string }
+  /** `at` is the seq of a message to open at. */
+  | { kind: "chat"; id: string; at?: number }
   /** Every direct message and group, including archived ones. */
   | { kind: "messages" }
   | { kind: "mixer" }

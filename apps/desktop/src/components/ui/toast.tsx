@@ -9,6 +9,12 @@ interface ToastItem {
   tone: ToastTone;
   title: string;
   description?: string;
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
 }
 
 const DISMISS_AFTER_MS: Record<ToastTone, number> = { neutral: 4000, success: 3000, error: 8000 };
@@ -22,11 +28,11 @@ function emit() {
 }
 
 /** Show a short, non-blocking message. The current view is never replaced. */
-export function toast(input: { title: string; description?: string; tone?: ToastTone }) {
+export function toast(input: { title: string; description?: string; tone?: ToastTone; action?: ToastAction }) {
   const tone = input.tone ?? "neutral";
   // The same message twice in a row is one message.
   if (items.some((item) => item.title === input.title && item.description === input.description)) return;
-  const item: ToastItem = { id: nextId++, tone, title: input.title, description: input.description };
+  const item: ToastItem = { id: nextId++, tone, title: input.title, description: input.description, action: input.action };
   items = [...items.slice(-2), item];
   emit();
   window.setTimeout(() => dismissToast(item.id), DISMISS_AFTER_MS[tone]);
@@ -69,6 +75,18 @@ export function Toaster({ className }: { className?: string }) {
             <div className="text-small font-medium">{item.title}</div>
             {item.description ? <p className="mt-0.5 text-caption text-muted-foreground">{item.description}</p> : null}
           </div>
+          {item.action ? (
+            <button
+              type="button"
+              onClick={() => {
+                dismissToast(item.id);
+                item.action!.onClick();
+              }}
+              className="-my-0.5 shrink-0 rounded-chip px-1.5 py-0.5 text-small font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              {item.action.label}
+            </button>
+          ) : null}
           <button
             type="button"
             aria-label="Dismiss"

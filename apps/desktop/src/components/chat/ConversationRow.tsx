@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { BellOff, UserRound, Users } from "lucide-react";
+import { BellOff, Bookmark, UserRound, Users } from "lucide-react";
 import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { Avatar } from "@/components/ui/avatar";
 import { api } from "@/lib/api";
@@ -54,8 +54,21 @@ export function MutedIndicator({ conversation }: { conversation?: ChatConversati
   return conversation?.kind !== "nest" && conversation?.notify === "off" ? <BellOff role="img" aria-label="Muted" className="h-3 w-3 shrink-0 text-subtle" /> : null;
 }
 
+/** Saved messages: your own face with a small bookmark on it. */
+export function SavedAvatar({ userId, name, className }: { userId: string; name: string; className?: string }) {
+  return (
+    <span className="relative shrink-0">
+      <Avatar name={name} src={api.userAvatarUrl(userId)} className={className} />
+      <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-secondary text-foreground outline outline-2 outline-background">
+        <Bookmark className="h-2.5 w-2.5" aria-hidden />
+      </span>
+    </span>
+  );
+}
+
 /** The picture for a conversation: the other person, the group's initials, or a text nest's mark. */
-export function ConversationAvatar({ conversation, className }: { conversation: ChatConversation; className?: string }) {
+export function ConversationAvatar({ conversation, me, className }: { conversation: ChatConversation; /** Whose Saved messages this would be. */ me?: string; className?: string }) {
+  if (conversation.kind === "saved" && me) return <SavedAvatar userId={me} name={conversation.name} className={className} />;
   if (conversation.kind === "nest") {
     return (
       <span className={cn("flex shrink-0 items-center justify-center text-subtle", className)} aria-hidden>
@@ -119,7 +132,7 @@ export const ConversationRow = memo(function ConversationRow({
   const unread = conversation.unreadCount > 0;
   return (
     <button type="button" onClick={() => onOpen(conversation.id)} className="flex h-16 w-full items-center gap-3 px-3.5 text-left transition-colors hover:bg-secondary">
-      <ConversationAvatar conversation={conversation} className="h-9 w-9" />
+      <ConversationAvatar conversation={conversation} me={me} className="h-9 w-9" />
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
           <span className={cn("min-w-0 flex-1 truncate text-body", unread ? "font-semibold" : "font-medium")}><bdi>{conversation.name}</bdi></span>

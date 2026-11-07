@@ -86,6 +86,8 @@ const LIST_PARTS = { Header: ListHeader, Footer: ListFooter };
 
 export interface MessageListHandle {
   scrollToLatest: () => void;
+  /** Brings a message into view and marks it for a moment, loading that part if needed. */
+  goTo: (seq: number) => void;
 }
 
 export interface MessageListProps {
@@ -103,6 +105,10 @@ export interface MessageListProps {
   onDeleteForEveryone: (message: ChatMessage) => void;
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
   onOpenPerson: (userId: string) => void;
+  /** Adds a message to Saved messages. Absent inside Saved messages. */
+  onSave?: (message: ChatMessage) => void;
+  /** Opens the chat a copied message came from, at the original. */
+  onOpenSource?: (conversationId: string, seq: number) => void;
   mentions?: MentionContext;
 }
 
@@ -112,7 +118,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, mentions },
+  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, onSave, onOpenSource, mentions },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -127,9 +133,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
   // A message to open the window on, after jumping to it.
   const [focusSeq, setFocusSeq] = useState<number | null>(null);
 
+  const inSaved = summary.kind === "saved";
   const rows = useMemo(
-    () => buildRows({ messages, pending, me, dividerAfterSeq, hasMoreBefore: conversation.hasMoreBefore, hasMoreAfter: conversation.hasMoreAfter }),
-    [messages, pending, me, dividerAfterSeq, conversation.hasMoreBefore, conversation.hasMoreAfter],
+    // Saved messages keep no trace of what was deleted: a copy goes with its original.
+    () => buildRows({ messages: inSaved ? messages.filter((message) => !message.deletedAt) : messages, pending, me, dividerAfterSeq, hasMoreBefore: conversation.hasMoreBefore, hasMoreAfter: conversation.hasMoreAfter }),
+    [inSaved, messages, pending, me, dividerAfterSeq, conversation.hasMoreBefore, conversation.hasMoreAfter],
   );
 
   const keys = useMemo(() => rows.map((row) => row.key), [rows]);
@@ -180,8 +188,6 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     virtuoso.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
   }, [conversation.hasMoreAfter, store, id]);
 
-  useImperativeHandle(ref, () => ({ scrollToLatest }), [scrollToLatest]);
-
   const openReply = useCallback(
     (seq: number) => {
       const at = rows.findIndex((row) => row.kind === "message" && row.message.seq === seq);
@@ -204,6 +210,8 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
     },
     [rows, store, id],
   );
+
+  useImperativeHandle(ref, () => ({ scrollToLatest, goTo: openReply }), [scrollToLatest, openReply]);
 
   const retry = useCallback((item: PendingMessage) => store.retry(id, item.clientMessageId), [store, id]);
   const discard = useCallback((item: PendingMessage) => store.discard(id, item.clientMessageId), [store, id]);
@@ -269,10 +277,11 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
           }
           const { message } = row;
           const mine = message.senderId === me;
-          const status: DeliveryStatus | undefined = mine
+          const status: DeliveryStatus | undefined = mine && !inSaved
             ? message.seq <= (summary.kind === "dm" ? (summary.peerReadSeq ?? 0) : (conversation.seen?.readSeq ?? 0)) ? "read" : "sent"
             : undefined;
-          const editable = mine && summary.canSend && Date.now() - Date.parse(message.createdAt) < EDIT_WINDOW_MS;
+          // A copy stays as it was saved; your own notes in Saved messages have no time limit.
+          const editable = mine && summary.canSend && !message.origin && (inSaved || Date.now() - Date.parse(message.createdAt) < EDIT_WINDOW_MS);
           return (
             <div className="mx-auto w-full max-w-3xl px-6">
               <MessageRow
@@ -300,9 +309,12 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onOpenReply={openReply}
                 onOpenImage={onOpenImage}
                 onOpenPerson={onOpenPerson}
+                onSave={onSave}
+                onOpenSource={onOpenSource}
+                inSaved={inSaved}
                 mentions={mentions}
               />
-              {message.seq === summary.lastSeq && !message.deletedAt && (mine || summary.kind !== "dm") ? (
+              {message.seq === summary.lastSeq && !message.deletedAt && !inSaved && (mine || summary.kind !== "dm") ? (
                 <SeenBy
                   onOpenPerson={onOpenPerson}
                   direct={summary.kind === "dm"}

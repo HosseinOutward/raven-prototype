@@ -39,6 +39,7 @@ type Confirmation =
 /** One conversation: a direct message, a group, or a text nest. */
 export function ChatView({
   conversationId,
+  at,
   chat,
   data,
   media,
@@ -47,6 +48,8 @@ export function ChatView({
   onBack,
 }: {
   conversationId: string;
+  /** The seq of a message to open at. */
+  at?: number;
   chat: ChatStore | null;
   data: RavenShellData;
   media: RavenMediaAdapterState;
@@ -76,7 +79,7 @@ export function ChatView({
       <Unavailable title="This conversation isn’t available" text="It may have been deleted, or you may no longer be part of it." onNavigate={onNavigate} />
     );
   }
-  return <OpenConversation key={conversationId} conversation={conversation} chat={chat} data={data} media={media} entry={entry} onNavigate={onNavigate} onBack={onBack} />;
+  return <OpenConversation key={conversationId} conversation={conversation} at={at} chat={chat} data={data} media={media} entry={entry} onNavigate={onNavigate} onBack={onBack} />;
 }
 
 function Unavailable({ title, text, onNavigate }: { title: string; text: string; onNavigate: (view: RavenView) => void }) {
@@ -91,6 +94,7 @@ function Unavailable({ title, text, onNavigate }: { title: string; text: string;
 
 function OpenConversation({
   conversation,
+  at,
   chat,
   data,
   media,
@@ -99,6 +103,7 @@ function OpenConversation({
   onBack,
 }: {
   conversation: ConversationState;
+  at?: number;
   chat: ChatStore;
   data: RavenShellData;
   media: RavenMediaAdapterState;
@@ -113,6 +118,14 @@ function OpenConversation({
   const connection = useChatSelector(chat, (state) => state.connection, "connecting");
   const sharesReadStatus = useChatSelector(chat, (state) => state.settings.readDm, true);
   const list = useRef<MessageListHandle>(null);
+
+  // Opened at a message: go there once the list has something to show.
+  const loaded = conversation.loaded;
+  useEffect(() => {
+    if (at === undefined || !loaded) return;
+    const frame = requestAnimationFrame(() => list.current?.goTo(at));
+    return () => cancelAnimationFrame(frame);
+  }, [at, loaded]);
 
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
@@ -201,11 +214,12 @@ function OpenConversation({
       },
     };
   }, [people, textNests, voiceNests, data]);
-  const mentionCandidates = useMemo<MentionCandidate[]>(() => [
+  // Saved messages has nobody to mention.
+  const mentionCandidates = useMemo<MentionCandidate[]>(() => summary.kind === "saved" ? [] : [
     ...people.filter((person) => person.id !== me).map((person) => ({ target: "user" as const, id: person.id, name: person.name, username: person.username })),
     ...voiceNests.map((nest) => ({ target: "nest" as const, id: nest.id, name: nest.name })),
     ...textNests.filter((nest) => nest.id !== id).map((nest) => ({ target: "text" as const, id: nest.id, name: nest.name })),
-  ], [people, voiceNests, textNests, me, id]);
+  ], [summary.kind, people, voiceNests, textNests, me, id]);
   const mentions = useMemo(() => ({
     resolve: mentionResolver,
     me,
@@ -229,6 +243,16 @@ function OpenConversation({
   const askRemove = useCallback((message: ChatMessage) => setConfirming({ kind: "remove-message", message }), []);
   const askDelete = useCallback((message: ChatMessage) => setConfirming({ kind: "delete-message", message }), []);
 
+  const saveMessage = useCallback((message: ChatMessage) => {
+    void chat.saveMessage(message.id).then(({ conversationId, copy, already }) => {
+      toast({
+        title: already ? "Already in Saved messages" : "Added to Saved messages",
+        action: { label: "Open", onClick: () => onNavigate({ kind: "chat", id: conversationId, at: copy?.seq }) },
+      });
+    }, report("Couldn’t add that to Saved messages."));
+  }, [chat, onNavigate, report]);
+  const openSource = useCallback((conversationId: string, seq: number) => onNavigate({ kind: "chat", id: conversationId, at: seq }), [onNavigate]);
+
   const openImage = useCallback((message: ChatMessage, attachment: ChatAttachment) => setViewing({ messageId: message.id, attachmentId: attachment.id }), []);
 
   // The viewer follows the message as it is now: deleting it closes the viewer.
@@ -244,7 +268,7 @@ function OpenConversation({
   };
 
   const editLast = () => {
-    const mine = [...conversation.messages].reverse().find((message) => message.senderId === me && message.kind === "text" && !message.deletedAt);
+    const mine = [...conversation.messages].reverse().find((message) => message.senderId === me && message.kind === "text" && !message.deletedAt && !message.origin);
     if (mine && summary.canSend) startEdit(mine);
   };
 
@@ -290,13 +314,17 @@ function OpenConversation({
     ? <span className="text-warning">Reconnecting… Messages you send will go when Raven is back online.</span>
     : summary.kind === "dm"
       ? status
-      : summary.kind === "group"
+      : summary.kind === "saved"
+        ? undefined
+        : summary.kind === "group"
         ? `${summary.memberCount} ${summary.memberCount === 1 ? "person" : "people"}`
         : [tree?.name, summary.topic].filter(Boolean).join(" · ") || undefined;
 
   const intro = summary.kind === "dm"
     ? `Messages here are between you and ${name}.${summary.peerReadSeq !== undefined && sharesReadStatus && !summary.peerDeleted ?" You can each see when the other has read them; Settings › Messages turns that off." : ""}`
-    : summary.kind === "group"
+    : summary.kind === "saved"
+      ? "Only you can see this. Keep notes here, or add messages from any conversation."
+      : summary.kind === "group"
       ? "Only people in this group can read it. Anyone added later sees messages from then on."
       : `Everyone in ${tree?.name ?? "this place"} can read and write here.`;
 
@@ -309,7 +337,7 @@ function OpenConversation({
           peer && summary.peer ? (
             <PersonAvatar id={summary.peer.id} name={name} presence={peer.presence} className="h-9 w-9" />
           ) : (
-            <ConversationAvatar conversation={summary} className="h-9 w-9" />
+            <ConversationAvatar conversation={summary} me={me} className="h-9 w-9" />
           )
         }
         title={name}
@@ -347,19 +375,19 @@ function OpenConversation({
                     Rename
                   </DropdownMenuItem>
                 ) : null}
-                {summary.kind !== "nest" ? (
+                {summary.kind !== "nest" && summary.kind !== "saved" ? (
                   <DropdownMenuItem onSelect={() => void chat.setArchived(id, !summary.archived).catch(report("Couldn’t change that."))}>
                     {summary.archived ? <ArchiveRestore className="text-muted-foreground" /> : <Archive className="text-muted-foreground" />}
                     {summary.archived ? "Move out of archive" : "Archive"}
                   </DropdownMenuItem>
                 ) : null}
-                {(data.serverProperties.properties?.chat as { notifications?: boolean } | undefined)?.notifications === true ? (
+                {summary.kind !== "saved" && (data.serverProperties.properties?.chat as { notifications?: boolean } | undefined)?.notifications === true ? (
                   <DropdownMenuItem onSelect={() => void chat.setNotify(id, !notifies(summary.kind, summary.notify)).catch(report("Couldn’t change that."))}>
                     {notifies(summary.kind, summary.notify) ? <BellOff className="text-muted-foreground" /> : <Bell className="text-muted-foreground" />}
                     {notifies(summary.kind, summary.notify) ? "Mute notifications" : "Turn on notifications"}
                   </DropdownMenuItem>
                 ) : null}
-                <DropdownMenuSeparator />
+                {summary.kind !== "saved" ? <DropdownMenuSeparator /> : null}
                 <DropdownMenuItem onSelect={() => setConfirming({ kind: "clear" })}>
                   <Eraser className="text-muted-foreground" />
                   Clear for me
@@ -397,13 +425,15 @@ function OpenConversation({
           onDeleteForEveryone={askDelete}
           onOpenImage={openImage}
           onOpenPerson={(userId) => onNavigate({ kind: "user", id: userId })}
+          onSave={summary.kind === "saved" ? undefined : saveMessage}
+          onOpenSource={openSource}
           mentions={mentions}
         />
 
         {summary.canSend ? (
           <Composer
             conversationId={id}
-            name={name}
+            name={summary.kind === "saved" ? "yourself" : name}
             replyingTo={replyingTo}
             editing={editing}
             onCancelReply={() => setReplyingTo(null)}
@@ -415,7 +445,9 @@ function OpenConversation({
                 throw failure;
               })
             }
-            onTyping={() => chat.typing(id)}
+            onTyping={() => {
+              if (summary.kind !== "saved") chat.typing(id);
+            }}
             onEditLast={editLast}
             imageLimits={imageLimits}
             mentionCandidates={mentionCandidates}
@@ -557,6 +589,13 @@ function describeConfirmation(confirming: Confirmation, name: string, kind: Conv
         confirmLabel: "Remove",
       };
     case "delete-message":
+      if (kind === "saved") {
+        return {
+          title: "Delete this message?",
+          description: "It’s erased from Saved messages and can’t be brought back. If you saved it from a conversation, the original stays there.",
+          confirmLabel: "Delete",
+        };
+      }
       return {
         title: "Delete this message for everyone?",
         description: confirming.message.attachments?.length
@@ -575,6 +614,8 @@ function describeConfirmation(confirming: Confirmation, name: string, kind: Conv
         title: `Clear ${name} for you?`,
         description: kind === "dm"
           ? "Everything here disappears from your devices, and the conversation leaves your list until there is a new message. The other person keeps their copy."
+          : kind === "saved"
+          ? "Everything here disappears from your devices and can’t be brought back."
           : "Everything here disappears from your devices. Other people keep their copy, and new messages still arrive.",
         confirmLabel: "Clear",
       };

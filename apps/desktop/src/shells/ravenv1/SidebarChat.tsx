@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Plus, UserPlus, Users } from "lucide-react";
 import { NewGroupDialog } from "@/components/chat/ChatDialogs";
-import { ConversationAvatar, ConversationRowCompact, MentionDot, MutedIndicator, UnreadCount } from "@/components/chat/ConversationRow";
+import { ConversationAvatar, ConversationRowCompact, MentionDot, MutedIndicator, SavedAvatar, UnreadCount } from "@/components/chat/ConversationRow";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip } from "@/components/ui/tooltip";
 import { orderTextNests } from "@/lib/chat/layout";
@@ -14,7 +14,7 @@ import { visibleTextNests, type FriendsAndGroupsRow } from "./friendsAndGroups";
 import { OFFLINE_RANK, personStatus, reachRank } from "./people";
 import { focusGlobalSearch } from "./searchFocus";
 import { PRESENCE, type RavenShellData, type RavenView } from "./state";
-import { useChatState, useFriendsAndGroups, useOpenPerson } from "./useChat";
+import { useChatState, useFriendsAndGroups, useOpenPerson, useOpenSaved } from "./useChat";
 
 /**
  * Friends and groups in one list. A friend's row opens your conversation with them, a
@@ -96,6 +96,7 @@ export function SidebarFriendsAndGroups({
       >
         Friends and groups
       </SectionLabel>
+      {chat && data.user ? <SavedRow chat={chat} data={data} view={view} onNavigate={onNavigate} /> : null}
       {shown.length || offline.length ? (
         <div className="space-y-px">
           {shown.map(row)}
@@ -143,6 +144,25 @@ export function SidebarFriendsAndGroups({
         />
       ) : null}
     </section>
+  );
+}
+
+/** Saved messages, always first: your own face and a bookmark. It never shows a count. */
+function SavedRow({ chat, data, view, onNavigate }: { chat: ChatStore; data: RavenShellData; view: RavenView; onNavigate: (view: RavenView) => void }) {
+  const { open, opening, savedId } = useOpenSaved(chat, onNavigate);
+  const active = view.kind === "chat" && view.id === savedId;
+  return (
+    <button
+      type="button"
+      onClick={open}
+      disabled={opening}
+      aria-busy={opening || undefined}
+      aria-current={active ? "page" : undefined}
+      className={cn("mb-px flex h-9 w-full items-center gap-2.5 rounded-control px-2 text-left transition-colors disabled:cursor-progress", active ? "bg-secondary" : "hover:bg-secondary/60")}
+    >
+      <SavedAvatar userId={data.user!.id} name={data.preferences.displayName || data.user!.username} className="h-6 w-6 text-[10px]" />
+      <span className={cn("min-w-0 flex-1 truncate text-small text-foreground", active && "font-medium")}>Saved messages</span>
+    </button>
   );
 }
 

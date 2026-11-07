@@ -5,7 +5,7 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { api, type LauncherNest } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from "lucide-react";
-import { ConversationAvatar, UnreadDot } from "@/components/chat/ConversationRow";
+import { ConversationAvatar, SavedAvatar, UnreadDot } from "@/components/chat/ConversationRow";
 import type { ChatStore } from "@/lib/chat/store";
 import { AvatarStack, LiveDot, NestGlyph, PersonAvatar, SectionLabel } from "./atoms";
 import { PendingList } from "./Inbox";
@@ -13,7 +13,7 @@ import { OFFLINE_RANK, personStatus, reachRank } from "./people";
 import { rowUnread } from "./friendsAndGroups";
 import { SidebarFriendsAndGroups, TreeTextNests } from "./SidebarChat";
 import { displayNameFor, PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "./state";
-import { useChatSelector, useFriendsAndGroups, useMessagesUnread, useOpenPerson, useTreeChatSummaries } from "./useChat";
+import { useChatSelector, useFriendsAndGroups, useMessagesUnread, useOpenPerson, useOpenSaved, useTreeChatSummaries } from "./useChat";
 import type { RavenMediaAdapterState } from "./useRavenMediaAdapter";
 import type { NestEntryController } from "./useNestEntry";
 import { NameDialog } from "./views/dialogs";
@@ -49,6 +49,7 @@ export function Sidebar({
   const treeChat = useTreeChatSummaries(chat);
   const messagesUnread = useMessagesUnread(chat);
   const people = useFriendsAndGroups(chat, data, view);
+  const saved = useOpenSaved(chat, onNavigate);
   const { open: openPerson, openingId } = useOpenPerson(chat, onNavigate);
   // The tree whose text nest is open: that nest stays listed under it.
   const activeChatId = view.kind === "chat" ? view.id : "";
@@ -173,7 +174,12 @@ export function Sidebar({
               </RailButton>
             );
           })}
-          {railPeople.length ? <div className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
+          {railPeople.length || chat ? <div className="my-1 h-px w-6 shrink-0 bg-border" /> : null}
+          {chat && data.user ? (
+            <RailButton label="Saved messages" active={view.kind === "chat" && view.id === saved.savedId} disabled={saved.opening} onClick={saved.open}>
+              <SavedAvatar userId={data.user.id} name={data.preferences.displayName || data.user.username} className="h-7 w-7" />
+            </RailButton>
+          ) : null}
           {railPeople.map((row) => {
             const unread = rowUnread(row) > 0;
             if (row.kind === "group") {

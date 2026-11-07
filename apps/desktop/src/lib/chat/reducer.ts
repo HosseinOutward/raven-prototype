@@ -261,7 +261,7 @@ function noteInSummary(conversation: ConversationState, message: ChatMessage, se
       next.readSeq = seq;
       next.unreadCount = 0;
       next.mentionCount = 0;
-    } else if (message.kind === "text") {
+    } else if (message.kind === "text" && summary.kind !== "saved") {
       next.unreadCount = Math.min(summary.unreadCount + 1, UNREAD_CAP);
       if (mentionsUser(message.body, me)) next.mentionCount = Math.min((summary.mentionCount ?? 0) + 1, UNREAD_CAP);
       // A message from the other person in a direct message shows they have read up to it.

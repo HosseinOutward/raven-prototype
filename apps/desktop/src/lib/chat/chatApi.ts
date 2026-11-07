@@ -41,6 +41,10 @@ export interface ChatApi {
   listConversations(): Promise<{ conversations: ChatConversation[]; settings: ChatSettings }>;
   getConversation(id: string): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   openDM(userId: string): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
+  /** The person's Saved messages, created the first time it is asked for. */
+  openSaved(): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
+  /** Copies messages into Saved messages. Those already there come back in `alreadySaved`. */
+  saveMessages(messageIds: string[]): Promise<{ conversationId: string; saved: ChatMessage[]; alreadySaved: ChatMessage[] }>;
   createGroup(name: string, memberIds: string[]): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   updateConversation(id: string, patch: { name?: string; topic?: string }): Promise<{ conversation: ChatConversation; members: ChatMember[] }>;
   deleteConversation(id: string): Promise<void>;
@@ -83,6 +87,8 @@ export const chatApi: ChatApi = {
   listConversations: () => api.call("/v1/chat/conversations"),
   getConversation: (id) => api.call(conversationPath(id)),
   openDM: (userId) => api.call("/v1/chat/dms", json({ userId })),
+  openSaved: () => api.call("/v1/chat/saved", { method: "POST" }),
+  saveMessages: (messageIds) => api.call("/v1/chat/saved/messages", json({ messageIds })),
   createGroup: (name, memberIds) => api.call("/v1/chat/groups", json({ name, memberIds })),
   updateConversation: (id, patch) => api.call(`${conversationPath(id)}/settings`, json(patch)),
   deleteConversation: (id) => api.call(conversationPath(id), { method: "DELETE" }),

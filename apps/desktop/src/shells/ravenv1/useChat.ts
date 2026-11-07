@@ -167,7 +167,7 @@ export function useTreeChatSummaries(store: ChatStore | null): Map<string, TreeC
 
 /** Whether any direct message or group that is not archived has something unread. */
 export function useMessagesUnread(store: ChatStore | null): boolean {
-  return useChatSelector(store, (state) => Object.values(state.conversations).some(({ summary }) => summary.kind !== "nest" && !summary.archived && summary.unreadCount > 0), false);
+  return useChatSelector(store, (state) => Object.values(state.conversations).some(({ summary }) => summary.kind !== "nest" && summary.kind !== "saved" && !summary.archived && summary.unreadCount > 0), false);
 }
 
 /**
@@ -235,6 +235,35 @@ export function useOpenPerson(store: ChatStore | null, onNavigate: (view: RavenV
     [store, onNavigate],
   );
   return { open, openingId };
+}
+
+/**
+ * Opens Saved messages, asking the server for it (which creates it) the first time. `savedId`
+ * is empty until then, so the row that opens it is there before the conversation is.
+ */
+export function useOpenSaved(store: ChatStore | null, onNavigate: (view: RavenView) => void) {
+  const savedId = useChatSelector(store, (state) => Object.values(state.conversations).find(({ summary }) => summary.kind === "saved")?.summary.id ?? "", "");
+  const [opening, setOpening] = useState(false);
+  const busy = useRef(false);
+  const open = useCallback(() => {
+    if (!store) return;
+    if (savedId) {
+      onNavigate({ kind: "chat", id: savedId });
+      return;
+    }
+    if (busy.current) return;
+    busy.current = true;
+    setOpening(true);
+    void store
+      .openSaved()
+      .then((conversation) => onNavigate({ kind: "chat", id: conversation.id }))
+      .catch((failure) => toast({ title: failureText(failure, "Couldn’t open Saved messages."), tone: "error" }))
+      .finally(() => {
+        busy.current = false;
+        setOpening(false);
+      });
+  }, [store, savedId, onNavigate]);
+  return { open, opening, savedId };
 }
 
 /**

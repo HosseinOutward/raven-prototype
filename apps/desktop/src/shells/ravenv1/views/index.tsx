@@ -90,7 +90,7 @@ export function MainView({
       return person ? <UserPageView person={person} data={data} chat={chat} onNavigate={onNavigate} /> : <MissingView what="person" onNavigate={onNavigate} />;
     }
     case "chat":
-      return <ChatView conversationId={view.id} chat={chat} data={data} media={media} entry={entry} onNavigate={onNavigate} onBack={onBack} />;
+      return <ChatView conversationId={view.id} at={view.at} chat={chat} data={data} media={media} entry={entry} onNavigate={onNavigate} onBack={onBack} />;
     case "messages":
       return <MessagesView chat={chat} data={data} onNavigate={onNavigate} />;
     case "waiting":

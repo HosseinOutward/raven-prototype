@@ -5,8 +5,9 @@ import type { ChatConversation, ChatKind, ChatMessage } from "./types";
 
 export type NotifyMode = "default" | "on" | "off";
 
-/** Direct messages and groups notify unless muted; text nests only when turned on. */
+/** Direct messages and groups notify unless muted; text nests only when turned on; Saved messages never. */
 export function notifies(kind: ChatKind, mode: NotifyMode | undefined): boolean {
+  if (kind === "saved") return false;
   return mode === "on" || (mode !== "off" && kind !== "nest");
 }
 

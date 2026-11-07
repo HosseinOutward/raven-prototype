@@ -6,6 +6,10 @@ const message = { senderName: "Sara", body: "\n**Hello**   `world`\nSecond line"
 const conversation = (kind: ChatKind) => ({ kind, name: "Crew" }) as ChatConversation;
 
 describe("conversation notification modes", () => {
+  test("Saved messages never notifies, whatever the mode says", () => {
+    for (const mode of [undefined, "default", "on", "off"] as const) expect(notifies("saved", mode)).toBe(false);
+  });
+
   test("defaults match the kind and every choice round-trips", () => {
     for (const kind of ["dm", "group", "nest"] as const) {
       expect(notifies(kind, undefined)).toBe(kind !== "nest");

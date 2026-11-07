@@ -125,6 +125,13 @@ describe("events in order", () => {
     expect(state.conversations[C].summary.unreadCount).toBe(3);
   });
 
+  test("Saved messages never counts as unread", () => {
+    const start = chat({ kind: "saved", unreadCount: 0 }, [message(1), message(2)]);
+    const { state } = applyEvent(start, created(3), NOW);
+    expect(state.conversations[C].summary.unreadCount).toBe(0);
+    expect(seqs(state)).toEqual([1, 2, 3]);
+  });
+
   test("my own message marks the conversation read and is not unread", () => {
     const start = chat({ lastSeq: 2, unreadCount: 2 }, [message(1), message(2)]);
     const { state } = applyEvent(start, created(3, { senderId: ME }), NOW);

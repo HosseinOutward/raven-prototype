@@ -82,7 +82,7 @@ func TestChatSavedIsOnePerPersonEvenWhenOpenedAtOnce(t *testing.T) {
 		t.Fatalf("saved conversations = %d, %v", count, err)
 	}
 	saved := chatFind(chatList(t, s, alice.token), first)
-	if saved == nil || saved.Kind != chatKindSaved || !saved.CanSend || saved.CanManage || saved.MemberCount != 1 {
+	if saved == nil || saved.Kind != chatKindSaved || saved.Name != "Saved messages" || !saved.CanSend || saved.CanManage || saved.MemberCount != 1 {
 		t.Fatalf("summary: %+v", saved)
 	}
 	if chatFind(chatList(t, s, bob.token), first) != nil {

@@ -41,6 +41,7 @@ export function previewLine(conversation: ChatConversation, me: string): string 
   if (!last) return "";
   if (last.kind === "system") return systemLine(last.system, last.senderId, last.senderName, me);
   const text = last.deleted ? "Message deleted" : messageExcerpt(last.excerpt, last.attachments);
+  if (conversation.kind === "saved") return text;
   if (last.senderId === me) return `You: ${text}`;
   return conversation.kind === "dm" ? text : `${last.senderName}: ${text}`;
 }
