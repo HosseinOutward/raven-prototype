@@ -170,12 +170,20 @@ func (s *Server) serveConsumer(conn Conn, ctrl Stream, userID, shareID string) {
 	}
 	go s.consumerDatagrams(conn, share, consumer)
 	go func() { _, _ = io.Copy(io.Discard, ctrl) }()
+	// opening bounds the streams still waiting for their Open frame. They hold no flow
+	// slot yet, and yamux (unlike QUIC) has no cap on open streams of its own.
+	opening := make(chan struct{}, s.reg.Limits().MaxFlows)
 	for {
 		stream, err := conn.AcceptStream(conn.Context())
 		if err != nil {
 			return
 		}
-		go s.openFlow(conn, share, consumer, stream)
+		select {
+		case opening <- struct{}{}:
+			go s.openFlow(conn, share, consumer, stream, opening)
+		default:
+			stream.Abort()
+		}
 	}
 }
 
@@ -221,8 +229,11 @@ func reasonOf(err error) string {
 }
 
 // openFlow starts one TCP connection or UDP flow for a consumer.
-func (s *Server) openFlow(conn Conn, share *Share, c *Consumer, stream Stream) {
+func (s *Server) openFlow(conn Conn, share *Share, c *Consumer, stream Stream, opening chan struct{}) {
+	late := time.AfterFunc(helloTimeout, stream.Abort)
 	open, err := ReadFrame(stream)
+	late.Stop()
+	<-opening
 	if err != nil || open.Type != FrameOpen || open.ShareID != share.ID {
 		reject(stream, "The relay didn’t understand that request.")
 		return

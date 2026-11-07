@@ -295,3 +295,34 @@ func TestClosingDoesNotWaitForASilentClient(t *testing.T) {
 		t.Fatal("Close waited for the client")
 	}
 }
+
+// Streams that never send Open are capped per consumer, so they can't pile up.
+func TestWebSocketCapsStreamsWaitingForOpen(t *testing.T) {
+	h := newHarness(t, testPolicy{})
+	share, err := h.reg.Create(Spec{PublisherID: "alice", PlaceKind: "nest", PlaceID: "n", Name: "x", Protocol: "tcp", Port: 1, Everyone: true}, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := h.dial("alice", RolePublisher, share.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servePublisher(pub, echoServer(t))
+	bob, err := dialWS(t, h.wsURL(), "bob", RoleConsumer, share.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < h.reg.Limits().MaxFlows; i++ {
+		if _, err := bob.sess.OpenStream(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extra, err := bob.sess.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = extra.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := extra.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("stream over the cap: got %v, want the relay to close it", err)
+	}
+}

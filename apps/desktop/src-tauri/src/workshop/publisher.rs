@@ -9,6 +9,7 @@ use std::{
 };
 
 use tokio::{
+    io::AsyncWriteExt,
     net::{TcpStream, UdpSocket},
     task::{AbortHandle, JoinSet},
 };
@@ -111,6 +112,8 @@ async fn serve_flow<L: Link>(
                 let message = format!("Nothing is listening on port {port} on this computer, so someone’s connection was refused.");
                 report(message.clone());
                 let _ = write_frame(&mut tx, &Frame::Refused { reason: format!("Nothing is listening on port {port} on the sharing computer.") }).await;
+                // A dropped yamux stream is reset, and a reset loses the refusal on the relay.
+                let _ = tx.shutdown().await;
                 return;
             };
             if write_frame(&mut tx, &Frame::Accepted { datagram_mtu: 0 }).await.is_err() {
@@ -125,6 +128,7 @@ async fn serve_flow<L: Link>(
         KIND_UDP => {
             let Ok(socket) = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await else {
                 let _ = write_frame(&mut tx, &Frame::Refused { reason: "The sharing computer couldn’t open a UDP socket.".into() }).await;
+                let _ = tx.shutdown().await;
                 return;
             };
             if socket.connect((Ipv4Addr::LOCALHOST, port)).await.is_err()
