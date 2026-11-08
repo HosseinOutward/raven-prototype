@@ -58,12 +58,13 @@ export function HomeView({
   const lastVisited = useMemo(() => (data.user ? readLastVisited(data.user.id) : {}), [data.user]);
   const liveByTree = useMemo(() => {
     const people = new Map<string, number>();
-    for (const nest of data.activeNests) {
+    for (const nest of liveNests) {
       if (nest.treeId) people.set(nest.treeId, (people.get(nest.treeId) ?? 0) + nest.activeParticipantCount);
     }
     return people;
-  }, [data.activeNests]);
-  const liveTreeIds = useMemo(() => new Set(data.activeNests.flatMap((nest) => (nest.treeId ? [nest.treeId] : []))), [data.activeNests]);
+  }, [liveNests]);
+  // Same rule as the Live now cards, so a tree is never marked live with nothing to show.
+  const liveTreeIds = useMemo(() => new Set(liveNests.flatMap((nest) => (nest.treeId ? [nest.treeId] : []))), [liveNests]);
   const trees = useMemo(
     () => orderTrees(data.trees, (id) => liveTreeIds.has(id), (id) => treeChat.get(id)?.unread ?? false, lastVisited.treeId),
     [data.trees, liveTreeIds, treeChat, lastVisited.treeId],

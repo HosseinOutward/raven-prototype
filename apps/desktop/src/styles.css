@@ -481,6 +481,13 @@ textarea {
 }
 
 /* A person or tile leaving: fades and shrinks, then the layout closes the gap. */
+/* The threshold's Join button fills once across the entry countdown. */
+@keyframes raven-fill {
+  from {
+    transform: scaleX(0);
+  }
+}
+
 @keyframes raven-pop-out {
   to {
     opacity: 0;

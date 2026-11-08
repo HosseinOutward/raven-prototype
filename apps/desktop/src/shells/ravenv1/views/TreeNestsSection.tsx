@@ -327,7 +327,7 @@ function VoiceNestRow({
     : others.length ? namesSentence(others) : "Open";
   return (
     <div className="group flex min-h-14 w-full items-center transition-colors hover:bg-secondary">
-      <button type="button" onClick={() => onOpen(nest)} aria-label={`Open ${nest.name}`} className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-3.5 py-2 text-left">
+      <button type="button" onClick={() => onOpen(nest)} className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-3.5 py-2 text-left">
         <NestGlyph kind="voice" live className="text-live" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-body"><bdi>{nest.name}</bdi></span>
