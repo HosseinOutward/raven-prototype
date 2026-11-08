@@ -612,21 +612,14 @@ function PersonActions({
 }) {
   const knock = useProfileKnock(data, person.id);
   const where = personNestAction(person, data, { activeNestId: media.activeNestId, entering: Boolean(entry.pending) || media.phase === "joining" });
-  const join = (nestId: string) => {
-    onNavigate({ kind: "nest", id: nestId });
-    void entry
-      .enter(nestId)
-      .then((result) => {
-        if (result === "waiting") onNavigate({ kind: "waiting", id: nestId });
-      })
-      .catch(() => undefined);
-  };
+  // Joining always passes the threshold, so the person sees what they will reveal first.
+  const join = (nestId: string) => onNavigate({ kind: "nest", id: nestId });
   return (
     <>
       {where?.action === "join" ? (
-        <Button size="sm" onClick={() => join(where.nest.id)} aria-label={`Join ${where.nest.name}`} title={`Join ${person.name} in ${where.nest.name}`}>
+        <Button size="sm" onClick={() => join(where.nest.id)} aria-label={`Join ${where.nest.name}…`} title={`Join ${person.name} in ${where.nest.name}…`}>
           <LogIn className="h-4 w-4" />
-          Join
+          Join…
         </Button>
       ) : where?.action === "open" ? (
         <Button size="sm" variant="secondary" className="max-w-48" onClick={() => onNavigate({ kind: "nest", id: where.nest.id })}>

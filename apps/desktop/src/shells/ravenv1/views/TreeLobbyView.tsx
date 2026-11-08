@@ -16,6 +16,7 @@ import { AddTreeMemberDialog, NameDialog, TREE_ROLE_LABEL } from "./dialogs";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { DoorwayHeader, DoorwayPage, LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
 import { TreeNestsSection } from "./TreeNestsSection";
+import { usePendingActions } from "../usePendingActions";
 
 /** A tree's lobby answers: what is alive in this group right now? */
 export function TreeLobbyView({
@@ -49,6 +50,9 @@ export function TreeLobbyView({
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   // Whose picture is open: this view stays mounted when moving from one tree to another.
   const [viewingPicture, setViewingPicture] = useState<string | null>(null);
+  // One answer per join request at a time, so a double click cannot accept and decline.
+  const requestActions = usePendingActions();
+  const answering = requestActions.isPending;
   const canJoin = !entry.enteringNestId && media.phase !== "joining" && media.phase !== "leaving";
 
   // The launcher list knows who is inside; the tree's own list is the fallback.
@@ -57,15 +61,8 @@ export function TreeLobbyView({
   const memberIds = useMemo(() => new Set(details.members.filter((member) => member.state === "joined").map((member) => member.userId)), [details.members]);
   const members = [...details.members].sort((a, b) => memberRank(a) - memberRank(b) || displayNameFor(a).localeCompare(displayNameFor(b)));
 
-  const join = (nestId: string) => {
-    onNavigate({ kind: "nest", id: nestId });
-    void entry
-      .enter(nestId)
-      .then((result) => {
-        if (result === "waiting") onNavigate({ kind: "waiting", id: nestId });
-      })
-      .catch(() => undefined);
-  };
+  // Joining always passes the threshold, so the person sees what they will reveal first.
+  const join = (nestId: string) => onNavigate({ kind: "nest", id: nestId });
 
   return (
     <>
@@ -144,8 +141,8 @@ export function TreeLobbyView({
                           <PersonAvatar id={request.userId} name={name} className="h-8 w-8" />
                           <span className="min-w-0 truncate text-small font-medium">{name}</span>
                         </button>
-                        <Button size="sm" onClick={() => void data.acceptTreeJoinRequest(tree.id, request.id).catch(() => undefined)}>Accept</Button>
-                        <Button size="sm" variant="ghost" onClick={() => void data.rejectTreeJoinRequest(tree.id, request.id).catch(() => undefined)}>Decline</Button>
+                        <Button size="sm" variant="secondary" disabled={answering(request.id)} onClick={() => requestActions.run(request.id, () => data.acceptTreeJoinRequest(tree.id, request.id))}>Accept</Button>
+                        <Button size="sm" variant="ghost" disabled={answering(request.id)} onClick={() => requestActions.run(request.id, () => data.rejectTreeJoinRequest(tree.id, request.id))}>Decline</Button>
                       </div>
                     );
                   })}

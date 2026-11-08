@@ -43,15 +43,8 @@ export function HomeView({
   // this is the one place it can be seen and withdrawn.
   const quiet = data.pending.length === 0 && liveNests.length === 0 && openPeople.length === 0 && data.outgoingFriendRequests.length === 0;
 
-  const join = (nestId: string) => {
-    onNavigate({ kind: "nest", id: nestId });
-    void entry
-      .enter(nestId)
-      .then((result) => {
-        if (result === "waiting") onNavigate({ kind: "waiting", id: nestId });
-      })
-      .catch(() => undefined);
-  };
+  // Joining always passes the threshold, so the person sees what they will reveal first.
+  const join = (nestId: string) => onNavigate({ kind: "nest", id: nestId });
 
   return (
     <>

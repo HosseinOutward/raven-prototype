@@ -282,7 +282,8 @@ function NestThreshold({
                 ) : (
                   <>
                     <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
-                    <p className="mt-0.5 text-muted-foreground">{media.error}{media.lastError?.action ? ` ${media.lastError.action}` : ""}</p>
+                    {/* A device or connection failure says what to do; the raw engine text stays out of it. A refusal from the server is already written for people. */}
+                    <p className="mt-0.5 text-muted-foreground">{media.lastError ? media.lastError.action : media.error}</p>
                   </>
                 )}
               </div>
@@ -297,9 +298,9 @@ function NestThreshold({
 
           <div className="mt-6 flex items-center gap-2">
             {countdown ? (
-              <Button size="lg" variant="secondary" className="flex-1" onClick={entry.cancel}>
-                Joining in {countdown.secondsLeft}… Cancel
-              </Button>
+              <div role="status" className="flex h-11 flex-1 items-center rounded-control bg-secondary px-5 text-body">
+                Joining in {countdown.secondsLeft}…
+              </div>
             ) : enteringHere ? (
               <Button size="lg" className="flex-1" disabled>
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -310,8 +311,8 @@ function NestThreshold({
                 {failed ? "Try again" : requested ? "Ask again" : `Join ${nestLabel}`}
               </Button>
             )}
-            {enteringHere ? (
-              countdown ? null : <Button size="lg" variant="ghost" onClick={entry.cancel}>Cancel</Button>
+            {enteringHere || countdown ? (
+              <Button size="lg" variant="ghost" onClick={entry.cancel}>Cancel</Button>
             ) : (
               <Button size="lg" variant="ghost" onClick={onBack}>Not now</Button>
             )}

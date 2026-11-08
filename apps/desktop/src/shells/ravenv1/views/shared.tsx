@@ -162,7 +162,7 @@ export function LiveNestCard({
         {here ? (
           <Button size="sm" variant="secondary" className="pointer-events-auto relative" onClick={onOpen}>Return</Button>
         ) : (
-          <Button size="sm" className="pointer-events-auto relative" disabled={!canJoin} onClick={onJoin}>Join</Button>
+          <Button size="sm" className="pointer-events-auto relative" disabled={!canJoin} onClick={onJoin}>Join…</Button>
         )}
       </div>
     </div>

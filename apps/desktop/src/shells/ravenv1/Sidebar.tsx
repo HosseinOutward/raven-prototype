@@ -113,15 +113,8 @@ export function Sidebar({
   const openNest = (nest: LauncherNest) =>
     onNavigate(nest.type === "temporary" && nest.lifecycleState !== "active" ? { kind: "waiting", id: nest.id } : { kind: "nest", id: nest.id });
 
-  const joinNest = (nest: LauncherNest) => {
-    onNavigate({ kind: "nest", id: nest.id });
-    void entry
-      .enter(nest.id)
-      .then((result) => {
-        if (result === "waiting") onNavigate({ kind: "waiting", id: nest.id });
-      })
-      .catch(() => undefined);
-  };
+  // Joining always passes the threshold, so the person sees what they will reveal first.
+  const joinNest = (nest: LauncherNest) => onNavigate({ kind: "nest", id: nest.id });
 
   const nestRow = (nest: LauncherNest, nested: boolean) => (
     <NestRow
@@ -131,7 +124,7 @@ export function Sidebar({
       active={(view.kind === "nest" || view.kind === "waiting") && view.id === nest.id}
       here={media.activeNestId === nest.id}
       joinable={!media.activeNestId && !entry.pending && media.phase !== "joining" && nest.lifecycleState === "active"}
-      joinLabel={`Join ${nest.name}`}
+      joinLabel={`Join ${nest.name}…`}
       onOpen={() => openNest(nest)}
       onJoin={() => joinNest(nest)}
     />
@@ -427,7 +420,7 @@ function NestRow({
           onClick={onJoin}
           className="absolute right-1.5 hidden h-6 items-center rounded-chip bg-primary px-2 text-caption font-medium text-primary-foreground hover:bg-primary/90 group-focus-within:flex group-hover:flex"
         >
-          Join
+          Join…
         </button>
       ) : null}
     </div>
