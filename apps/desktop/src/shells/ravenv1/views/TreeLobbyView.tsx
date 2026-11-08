@@ -62,9 +62,6 @@ export function TreeLobbyView({
   const memberIds = useMemo(() => new Set(details.members.filter((member) => member.state === "joined").map((member) => member.userId)), [details.members]);
   const members = [...details.members].sort((a, b) => memberRank(a) - memberRank(b) || displayNameFor(a).localeCompare(displayNameFor(b)));
 
-  // Joining always passes the threshold, so the person sees what they will reveal first.
-  const join = (nestId: string) => onNavigate({ kind: "nest", id: nestId });
-
   return (
     <>
       {viewingPicture === tree.id ? <ProfilePictureViewer src={api.treeAvatarUrl(tree.id, tree.updatedAt)} alt={`${tree.name}’s picture`} onClose={() => setViewingPicture(null)} /> : null}
@@ -164,7 +161,6 @@ export function TreeLobbyView({
                       here={media.activeNestId === nest.id}
                       canJoin={canJoin}
                       onOpen={() => onNavigate(nestView(nest))}
-                      onJoin={() => join(nest.id)}
                     />
                   ))}
                 </div>
