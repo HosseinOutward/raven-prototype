@@ -219,6 +219,7 @@ export function Sidebar({
           type="button"
           onClick={() => onNavigate({ kind: "home" })}
           aria-current={view.kind === "home" ? "page" : undefined}
+          aria-label={`Home, ${serverName}`}
           title={data.serverProperties.description || serverName}
           className={cn(
             "flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-control px-2 text-left transition-colors",

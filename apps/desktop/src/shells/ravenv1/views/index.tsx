@@ -63,7 +63,7 @@ export function MainView({
 
   switch (view.kind) {
     case "home":
-      return <HomeView data={data} media={media} entry={entry} onNavigate={onNavigate} />;
+      return <HomeView data={data} media={media} entry={entry} chat={chat} onNavigate={onNavigate} />;
     case "tree": {
       const details = data.getTreeDetails(view.id);
       return details ? (

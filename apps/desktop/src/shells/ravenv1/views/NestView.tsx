@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { AlertCircle, ChevronLeft, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AlertCircle, ChevronLeft, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
 import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
 import { usePushToTalk } from "../usePushToTalk";
 import { groupAudioSatellites, type SatelliteActions } from "@/components/media/audioSatellites";
@@ -7,18 +7,21 @@ import { LiveMediaStage } from "@/components/media/LiveMediaStage";
 import type { VoiceModeration } from "@/components/media/VoiceModeration";
 import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { PortsControl } from "@/components/workshop/PortsPanel";
 import { api, type LauncherNest, type Nest } from "@/lib/api";
 import { knownConnectedPeerIds } from "@/lib/callArrivals";
 import { callStatesByUser, callStateSupported, voiceModerationSupported } from "@/lib/callState";
 import { canModerateVoice } from "@/lib/permissions";
 import { toast } from "@/components/ui/toast";
-import { AvatarStack, GroupedList, LiveDot } from "../atoms";
+import { cn } from "@/lib/utils";
+import { AvatarStack, GroupedList, LiveDot, SectionLabel } from "../atoms";
+import { reachRank } from "../people";
+import { joinSummary } from "../threshold";
 import { formatRelativeTime, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import type { NestEntryController } from "../useNestEntry";
-import { DoorwayHeader, DoorwayPage, DoorwayRow, namesSentence, nestPeople, treeNameFor } from "./shared";
+import { DoorwayHeader, DoorwayPage, namesSentence, nestPeople, treeNameFor } from "./shared";
+import { ReachableRow } from "./HomeView";
 
 /**
  * A nest is either a threshold (you are looking in, deciding whether to enter)
@@ -156,10 +159,53 @@ function NestThreshold({
 
   const joinsMuted = data.preferences.alwaysJoinMuted;
   const joinsCameraOff = data.preferences.joinWithCameraOff;
-  const micOn = media.localMicOn;
   const pushToTalk = usePushToTalk().settings;
-  const cameraOn = media.localCameraEnabled && !joinsCameraOff;
+  // "Join muted" holds the mic outside a call (`joinMutedHoldsMic`), so the chip shows the setting rather than a choice.
+  const micOn = media.audioSupported && !joinsMuted && media.localMicOn;
+  const cameraOn = media.cameraSupported && !joinsCameraOff && media.localCameraEnabled;
   const sharing = media.screenSharing && !data.preferences.joinWithoutScreenSharing;
+  const summary = joinSummary({
+    micOn,
+    pushToTalkKey: pushToTalk?.supported && pushToTalk.enabled ? pushToTalkKeyLabel(pushToTalk.key) : null,
+    cameraOn,
+    sharing,
+    treeName: tree?.name,
+  });
+  const settingNote = !media.audioSupported
+    ? "No microphone found."
+    : joinsMuted && joinsCameraOff
+      ? "Your settings are to join muted with your camera off."
+      : joinsMuted
+        ? "Your setting is to join muted."
+        : joinsCameraOff
+          ? "Your setting is to join with your camera off."
+          : null;
+
+  // An empty room in a tree: offer the people who are open to talk, so the room does not stay empty.
+  const treeDetails = nest.treeId ? data.getTreeDetails(nest.treeId) : undefined;
+  const askable = useMemo(() => {
+    if (!treeDetails) return null;
+    const memberIds = new Set(treeDetails.members.filter((member) => member.state === "joined").map((member) => member.userId));
+    return data.people
+      .filter((person) => person.id !== selfId && person.presence === "open" && memberIds.has(person.id))
+      .sort((a, b) => reachRank(a) - reachRank(b) || a.name.localeCompare(b.name))
+      .slice(0, 3);
+  }, [data.people, selfId, treeDetails]);
+
+  // The fill runs once across the whole countdown, so it needs the number it started from.
+  const [countdownFrom, setCountdownFrom] = useState<number | null>(null);
+  const secondsLeft = countdown?.secondsLeft ?? null;
+  useEffect(() => {
+    setCountdownFrom((from) => (secondsLeft === null ? null : from ?? secondsLeft));
+  }, [secondsLeft]);
+
+  // Enter joins, unless the person was typing somewhere or a dialog is open.
+  const joinRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body && (active.closest("[role='dialog']") || active.matches("input, textarea, [contenteditable='true']"))) return;
+    joinRef.current?.focus({ preventScroll: true });
+  }, [nest.id]);
 
   const settingsLink = (
     <button type="button" onClick={() => onNavigate({ kind: "settings", section: "audio-video" })} className="rounded-chip text-foreground underline underline-offset-4 transition-colors hover:text-muted-foreground">
@@ -175,6 +221,19 @@ function NestThreshold({
       })
       .catch(() => undefined);
   };
+
+  const waiting = Boolean(countdown) || enteringHere;
+  const joinLabel = countdown
+    ? `Joining in ${countdown.secondsLeft}…`
+    : enteringHere
+      ? "Connecting…"
+      : failed
+        ? "Try again"
+        : requested
+          ? "Ask again"
+          : otherNest
+            ? "Move here"
+            : `Join ${nest.name}`;
 
   return (
     <DoorwayPage>
@@ -213,129 +272,139 @@ function NestThreshold({
         )}
       </div>
 
-      {closed ? null : (
+      {closed ? (
+        <div className="mt-6">
+          <Button size="lg" variant="secondary" onClick={() => (tree ? onNavigate({ kind: "tree", id: tree.id }) : onBack())}>
+            {tree ? <>Back to <bdi className="truncate">{tree.name}</bdi></> : "Back"}
+          </Button>
+        </div>
+      ) : (
         <>
-          <GroupedList className="mt-6">
-            <DoorwayRow
+          <div className="mt-6 flex flex-wrap gap-2" role="group" aria-label="What you will share">
+            <JoinChip
+              on={micOn}
               icon={micOn ? <Mic /> : <MicOff />}
-              label="Microphone"
-              value={
-                !media.audioSupported
-                  ? "No microphone found"
-                  : joinsMuted
-                    ? <>You join muted. {settingsLink}</>
-                    : !micOn
-                      ? "Muted. Nobody will hear you."
-                      : pushToTalk?.supported && pushToTalk.enabled
-                        ? `On. People hear you while you hold ${pushToTalkKeyLabel(pushToTalk.key)}.`
-                        : "On. People will hear you."
-              }
-              control={
-                media.audioSupported && !joinsMuted ? (
-                  <Switch aria-label="Microphone" checked={micOn} disabled={media.busy} onCheckedChange={() => void media.toggleMic().catch(() => undefined)} />
-                ) : null
-              }
+              label="Mic"
+              name="Microphone"
+              disabled={!media.audioSupported || joinsMuted || media.busy}
+              onToggle={() => void media.toggleMic().catch(() => undefined)}
             />
-            <DoorwayRow
+            <JoinChip
+              on={cameraOn}
               icon={cameraOn ? <Video /> : <VideoOff />}
               label="Camera"
-              value={
-                !media.cameraSupported
-                  ? "No camera found"
-                  : joinsCameraOff
-                    ? <>You join with it off. {settingsLink}</>
-                    : cameraOn
-                      ? media.cameraStatus === "live" ? "On. People will see you." : "It turns on when you join. People will see you."
-                      : "Off. Nobody will see you."
-              }
-              control={
-                media.cameraSupported && !joinsCameraOff ? (
-                  <Switch aria-label="Camera" checked={media.localCameraEnabled} disabled={media.busy} onCheckedChange={() => void media.toggleCamera().catch(() => undefined)} />
-                ) : null
-              }
+              name="Camera"
+              disabled={!media.cameraSupported || joinsCameraOff || media.busy}
+              onToggle={() => void media.toggleCamera().catch(() => undefined)}
             />
             {sharing ? (
-              <DoorwayRow
-                icon={<MonitorUp />}
-                label="Screen"
-                value={
-                  media.screenShareStatus === "live"
-                    ? "You are sharing. People here will see it as soon as you join."
-                    : "Ready to share. People will see it as soon as you join."
-                }
-                control={<Button size="xs" variant="secondary" onClick={() => void media.stopScreenShare().catch(() => undefined)}>Stop</Button>}
-              />
+              <JoinChip on icon={<MonitorUp />} label="Screen" name="Screen share. Press to stop sharing" onToggle={() => void media.stopScreenShare().catch(() => undefined)} />
             ) : null}
-            <DoorwayRow
-              icon={<Eye />}
-              label="Who sees you here"
-              value={
-                tree
-                  ? `Members of ${tree.name} can see that you are in this ${nestLabel}.`
-                  : `Only people invited or let in can see that you are in this ${nestLabel}.`
-              }
-            />
-          </GroupedList>
-
-          {failed ? (
-            <div role="alert" className="mt-4 flex items-start gap-2.5 rounded-card bg-destructive/10 px-3.5 py-3 text-small">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-              <div className="min-w-0">
-                {votedOut ? (
-                  <>
-                    <div className="font-medium">You were voted out of this call.</div>
-                    <p className="mt-0.5 text-muted-foreground">{votedOut}</p>
-                  </>
-                ) : (
-                  <>
-                    <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
-                    {/* A device or connection failure says what to do; the raw engine text stays out of it. A refusal from the server is already written for people. */}
-                    <p className="mt-0.5 text-muted-foreground">{media.lastError ? media.lastError.action : media.error}</p>
-                  </>
-                )}
-              </div>
-            </div>
+          </div>
+          <p className="mt-3 text-small text-muted-foreground">
+            {summary.reveal} {summary.audience}
+          </p>
+          {settingNote ? (
+            <p className="mt-1 text-small text-muted-foreground">
+              {settingNote} {media.audioSupported ? settingsLink : null}
+            </p>
           ) : null}
 
-          {requested && !enteringHere ? (
-            <div role="status" className="mt-4 rounded-card bg-secondary/60 px-3.5 py-3 text-small text-muted-foreground">
-              You asked to join. Someone inside needs to let you in.
-            </div>
+          {otherNest && !waiting ? (
+            <p role="status" className="mt-6 text-small text-muted-foreground">
+              You’re in <bdi>{otherNest.name}</bdi>. Joining here leaves it.
+            </p>
           ) : null}
 
-          <div className="mt-6 flex items-center gap-2">
-            {countdown ? (
-              <div role="status" className="flex h-11 flex-1 items-center rounded-control bg-secondary px-5 text-body">
-                Joining in {countdown.secondsLeft}…
-              </div>
-            ) : enteringHere ? (
-              <Button size="lg" className="flex-1" disabled>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Connecting…
-              </Button>
-            ) : (
-              <Button size="lg" className="flex-1" disabled={busyElsewhere} onClick={join}>
-                {failed ? "Try again" : requested ? "Ask again" : `Join ${nestLabel}`}
-              </Button>
-            )}
-            {enteringHere || countdown ? (
+          <div className={cn("flex items-center gap-2", otherNest && !waiting ? "mt-2" : "mt-6")}>
+            <Button
+              ref={joinRef}
+              size="lg"
+              className="relative min-w-0 flex-1 overflow-hidden"
+              disabled={busyElsewhere || enteringHere}
+              aria-disabled={countdown ? true : undefined}
+              onClick={waiting ? undefined : join}
+            >
+              {countdown && countdownFrom ? (
+                <span
+                  aria-hidden
+                  className="absolute inset-0 origin-left bg-primary-foreground/10 motion-reduce:hidden"
+                  style={{ animation: `raven-fill ${countdownFrom}s linear forwards` }}
+                />
+              ) : null}
+              {enteringHere ? <Loader2 className="relative h-4 w-4 animate-spin" /> : null}
+              <span className="relative truncate" aria-live="polite">{joinLabel}</span>
+            </Button>
+            {waiting ? (
               <Button size="lg" variant="ghost" onClick={entry.cancel}>Cancel</Button>
             ) : (
-              <Button size="lg" variant="ghost" onClick={onBack}>Not now</Button>
+              <Button size="lg" variant="ghost" onClick={onBack}>Back</Button>
             )}
           </div>
 
-          <p className="mt-3 text-caption text-subtle">
-            {countdown
-              ? "People inside have been told you are coming."
-              : otherNest
-                ? `You are in ${otherNest.name}. Joining here leaves it.`
-                : people.length
-                  ? "People inside get a few seconds’ notice before you enter."
-                  : tree ? `Others in this ${treeLabel} will see it come alive.` : ""}
-          </p>
+          {/* Room for one notice under the button, so it appearing does not move the page. */}
+          <div className="mt-3 min-h-10">
+            {failed ? (
+              <div role="alert" className="flex items-start gap-2.5 rounded-card bg-destructive/10 px-3.5 py-3 text-small">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <div className="min-w-0">
+                  {votedOut ? (
+                    <>
+                      <div className="font-medium">You were voted out of this call.</div>
+                      <p className="mt-0.5 text-muted-foreground">{votedOut}</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
+                      {/* A device or connection failure says what to do; the raw engine text stays out of it. A refusal from the server is already written for people. */}
+                      <p className="mt-0.5 text-muted-foreground">{media.lastError ? media.lastError.action : media.error}</p>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : requested && !enteringHere ? (
+              <p role="status" className="text-small text-muted-foreground">You asked to join. Someone inside needs to let you in.</p>
+            ) : countdown ? (
+              <p className="text-small text-muted-foreground">People inside have been told you are coming.</p>
+            ) : people.length ? (
+              <p className="text-small text-muted-foreground">People inside get a few seconds’ notice before you enter.</p>
+            ) : null}
+          </div>
+
+          {!people.length && askable ? (
+            <section className="mt-4">
+              <SectionLabel className="mb-1">Ask someone to join</SectionLabel>
+              {askable.length ? (
+                <GroupedList>
+                  {askable.map((person) => (
+                    <ReachableRow key={person.id} person={person} data={data} onNavigate={onNavigate} />
+                  ))}
+                </GroupedList>
+              ) : (
+                <p className="text-small text-muted-foreground">Nobody is reachable right now. They’ll see it come alive when you join.</p>
+              )}
+            </section>
+          ) : null}
         </>
       )}
     </DoorwayPage>
+  );
+}
+
+/** A choice made before joining. Pressed shows the choice, not what the engine sends: that is only known inside. */
+function JoinChip({ on, icon, label, name, disabled, onToggle }: { on: boolean; icon: ReactNode; label: string; name: string; disabled?: boolean; onToggle: () => void }) {
+  return (
+    <Button
+      size="sm"
+      variant={on ? "outline" : "ghost"}
+      aria-pressed={on}
+      aria-label={name}
+      disabled={disabled}
+      onClick={onToggle}
+      className={cn(!on && "text-muted-foreground")}
+    >
+      <span className="[&>svg]:h-4 [&>svg]:w-4" aria-hidden>{icon}</span>
+      {label}
+    </Button>
   );
 }

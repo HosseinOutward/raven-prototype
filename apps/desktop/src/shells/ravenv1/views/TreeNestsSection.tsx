@@ -9,18 +9,18 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
-import type { Nest, TreeDetails } from "@/lib/api";
+import type { LauncherNest, Nest, TreeDetails } from "@/lib/api";
 import { failureText } from "@/lib/chat/errors";
 import { canMoveCategory, entryKey, layoutSections, moveCategory, moveEntry, toEntries, toLayoutRequest, type ArrangeEntry, type NestRef } from "@/lib/chat/layout";
 import { textNestsOfTree } from "@/lib/chat/reducer";
 import type { ChatStore } from "@/lib/chat/store";
 import type { TreeCategory } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
-import { GroupedList, NestGlyph, SectionLabel } from "../atoms";
+import { AvatarStack, GroupedList, NestGlyph, SectionLabel } from "../atoms";
 import { lifecycleLabel, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useChatState } from "../useChat";
-import { nestView } from "./shared";
+import { namesSentence, nestPeople, nestView } from "./shared";
 
 /**
  * A tree's nests as its owners arranged them: categories, with text and voice nests in
@@ -34,6 +34,7 @@ export function TreeNestsSection({
   media,
   chat,
   canManage,
+  canJoin,
   arranging,
   onArrangingChange,
   onNavigate,
@@ -43,6 +44,8 @@ export function TreeNestsSection({
   media: RavenMediaAdapterState;
   chat: ChatStore;
   canManage: boolean;
+  /** Nothing is being entered or left, so a Join can start. */
+  canJoin: boolean;
   arranging: boolean;
   onArrangingChange: (arranging: boolean) => void;
   onNavigate: (view: RavenView) => void;
@@ -93,13 +96,13 @@ export function TreeNestsSection({
   }
 
   const hasCategories = sections.length > 1;
-  // A live voice nest is already a card under "Live now"; listing it here too reads as a second room.
-  const isLive = (ref: NestRef) => ref.kind === "voice" && voiceById.get(ref.id)?.lifecycleState === "active";
+  // The launcher list knows who is inside a live nest; the tree's own list is the fallback.
+  const withPeople = (nest: Nest): Nest | LauncherNest => data.activeNests.find((candidate) => candidate.id === nest.id) ?? nest;
   return (
     <>
       {sections.map((section) => {
-        const items = section.items.filter((ref) => !isLive(ref));
-        if (items.length === 0 && (section.items.length > 0 || !section.category || !canManage)) return null;
+        const items = section.items;
+        if (items.length === 0 && (!section.category || !canManage)) return null;
         return (
           <section key={section.category?.id ?? "top"}>
             <SectionLabel
@@ -143,7 +146,10 @@ export function TreeNestsSection({
                   ) : (
                     <VoiceNestRow
                       key={`voice:${ref.id}`}
-                      nest={voiceById.get(ref.id)!}
+                      nest={withPeople(voiceById.get(ref.id)!)}
+                      data={data}
+                      here={media.activeNestId === ref.id}
+                      canJoin={canJoin}
                       onOpen={(nest) => onNavigate(nestView(nest))}
                       menu={canManage ? <NestRowMenu name={nameOf(ref)} onRename={() => setRenamingNest(ref)} onDelete={() => setDeletingNest(ref)} /> : undefined}
                     />
@@ -284,16 +290,56 @@ function TextNestRow({ name, unread, mentions, onOpen, menu }: { name: string; u
   );
 }
 
-function VoiceNestRow({ nest, onOpen, menu }: { nest: Nest; onOpen: (nest: Nest) => void; menu?: ReactNode }) {
+/** A quiet voice nest is one line. A live one keeps its place and shows who is inside, with a way in. */
+function VoiceNestRow({
+  nest,
+  data,
+  here,
+  canJoin,
+  onOpen,
+  menu,
+}: {
+  nest: Nest | LauncherNest;
+  data: RavenShellData;
+  here: boolean;
+  canJoin: boolean;
+  onOpen: (nest: Nest | LauncherNest) => void;
+  menu?: ReactNode;
+}) {
   const live = nest.lifecycleState === "active";
   const state = lifecycleLabel(nest);
+  if (!live) {
+    return (
+      <div className={rowClassName}>
+        <button type="button" onClick={() => onOpen(nest)} className={rowButtonClassName}>
+          <NestGlyph kind="voice" className="text-subtle" />
+          <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
+          {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
+        </button>
+        {menu}
+      </div>
+    );
+  }
+  const people = nestPeople(nest, data);
+  const others = people.filter((person) => person.id !== data.user?.id).map((person) => person.name);
+  const sentence = here
+    ? others.length ? `You and ${namesSentence(others)}` : "Only you so far"
+    : others.length ? namesSentence(others) : "Open";
   return (
-    <div className={rowClassName}>
-      <button type="button" onClick={() => onOpen(nest)} className={rowButtonClassName}>
-        <NestGlyph kind="voice" live={live} className={live ? "text-live" : "text-subtle"} />
-        <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
-        {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
+    <div className="group flex min-h-14 w-full items-center transition-colors hover:bg-secondary">
+      <button type="button" onClick={() => onOpen(nest)} className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-3.5 py-2 text-left">
+        <NestGlyph kind="voice" live className="text-live" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-body"><bdi>{nest.name}</bdi></span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-2">
+            <AvatarStack people={people} max={4} size="sm" surface="card" />
+            <span className="min-w-0 truncate text-caption text-muted-foreground">{sentence}</span>
+          </span>
+        </span>
       </button>
+      <Button size="xs" variant={here ? "secondary" : "default"} className="mr-2 shrink-0" disabled={!here && !canJoin} onClick={() => onOpen(nest)}>
+        {here ? "Return" : "Join…"}
+      </Button>
       {menu}
     </div>
   );

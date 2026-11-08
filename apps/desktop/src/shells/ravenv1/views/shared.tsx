@@ -130,15 +130,14 @@ export function LiveNestCard({
   canJoin,
   showTree = true,
   onOpen,
-  onJoin,
 }: {
   nest: Nest | LauncherNest;
   data: RavenShellData;
   here: boolean;
   canJoin: boolean;
   showTree?: boolean;
+  /** The card and its Join button are one target: joining always passes the threshold. */
   onOpen: () => void;
-  onJoin: () => void;
 }) {
   const people = nestPeople(nest, data);
   const selfId = data.user?.id;
@@ -162,7 +161,7 @@ export function LiveNestCard({
         {here ? (
           <Button size="sm" variant="secondary" className="pointer-events-auto relative" onClick={onOpen}>Return</Button>
         ) : (
-          <Button size="sm" className="pointer-events-auto relative" disabled={!canJoin} onClick={onJoin}>Join…</Button>
+          <Button size="sm" className="pointer-events-auto relative" disabled={!canJoin} onClick={onOpen}>Join…</Button>
         )}
       </div>
     </div>

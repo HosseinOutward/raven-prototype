@@ -9,6 +9,7 @@ import { callVoteHeadline } from "@/lib/callVote";
 import { UpdatesSettingsPanel } from "@/components/updates/UpdatesSettings";
 import { AccountSummary, Island } from "./ravenv1/atoms";
 import { DeviceDock } from "./ravenv1/DeviceDock";
+import { writeLastVisited } from "./ravenv1/lastVisited";
 import { PasswordChangeForm } from "./ravenv1/PasswordChangeForm";
 import { Sidebar } from "./ravenv1/Sidebar";
 import { SidebarResizeHandle } from "./ravenv1/SidebarResizeHandle";
@@ -119,6 +120,13 @@ export function RavenShellV1() {
   const entryToasts = useEntryToasts(activeEntryNotices, activeConnectedPeers);
   const view = history.entries[history.index] ?? { kind: "home" };
   useMessageNotifications(chat, data, view);
+  // Home's "Pick up" and the order of its trees come from the last nest and tree looked at.
+  const signedInId = data.user?.id;
+  useEffect(() => {
+    if (!signedInId) return;
+    if (view.kind === "nest") writeLastVisited(signedInId, { nestId: view.id });
+    else if (view.kind === "tree") writeLastVisited(signedInId, { treeId: view.id });
+  }, [signedInId, view]);
   // The stage shows a vote. Looking at something else, you still have to hear of it.
   const callVote = media.callVote.vote;
   const callVoteElsewhere = callVote?.outcome === "open" && !(view.kind === "nest" && view.id === callVote.nestId);
