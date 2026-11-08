@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
+import { ArrowUpDown, ChevronDown, ChevronRight, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { Tooltip } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, type Nest, type TreeDetails, type TreeMember, type TreeSearchResult } from "@/lib/api";
 import type { ChatStore } from "@/lib/chat/store";
@@ -12,10 +12,11 @@ import { EmptyState, GroupedList, NestGlyph, PersonAvatar, SectionLabel } from "
 import { displayNameFor, lifecycleLabel, PRESENCE, presenceFromApi, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useTreeChatSummaries } from "../useChat";
+import { groupMembers, lobbyMenus, treeSubtitleParts } from "../treeLobby";
 import type { NestEntryController } from "../useNestEntry";
 import { AddTreeMemberDialog, NameDialog, TREE_ROLE_LABEL } from "./dialogs";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
-import { DoorwayHeader, DoorwayPage, LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
+import { DoorwayHeader, DoorwayPage, DoorwayRow, LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
 import { TreeNestsSection } from "./TreeNestsSection";
 import { usePendingActions } from "../usePendingActions";
 
@@ -60,7 +61,17 @@ export function TreeLobbyView({
   const liveNests: Nest[] = details.activeNests.map((nest) => data.activeNests.find((candidate) => candidate.id === nest.id) ?? nest);
   const quietNests = details.inactiveNests;
   const memberIds = useMemo(() => new Set(details.members.filter((member) => member.state === "joined").map((member) => member.userId)), [details.members]);
-  const members = [...details.members].sort((a, b) => memberRank(a) - memberRank(b) || displayNameFor(a).localeCompare(displayNameFor(b)));
+  const members = details.members;
+  const menus = lobbyMenus({ canRooms: canManage, canMembers: canManageMembers, hasChat: Boolean(chat) });
+  const peopleInside = data.activeNests.filter((nest) => nest.treeId === tree.id).reduce((sum, nest) => sum + nest.activeParticipantCount, 0);
+  const subtitle = treeSubtitleParts({ visibility: tree.visibility, members: members.length, inside: peopleInside, nestSingular });
+  const hasNests = liveNests.length > 0 || quietNests.length > 0 || textNestCount > 0;
+  const setup = [
+    canManage ? "voice" : null,
+    canManage && chat ? "text" : null,
+    canManageMembers ? "invite" : null,
+  ].filter((row): row is "voice" | "text" | "invite" => row !== null);
+  const membersList = <MembersList members={members} selfId={data.user?.id} data={data} onNavigate={onNavigate} />;
 
   return (
     <>
@@ -71,16 +82,61 @@ export function TreeLobbyView({
         subtitle={
           <span className="inline-flex items-center gap-1.5">
             {tree.visibility === "public" ? <Globe2 className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
-            {tree.visibility === "public" ? "Public" : "Private"}
+            {subtitle.visibility}
+            <span aria-hidden>·</span>
+            <span className="hidden min-[1100px]:inline">{subtitle.members}</span>
+            {/* The members column needs a wide window; below that the count opens the same list. */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <button type="button" className="rounded-chip underline-offset-4 transition-colors hover:text-foreground hover:underline min-[1100px]:hidden">
+                  {subtitle.members}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="max-h-[60vh] w-72 overflow-y-auto p-2">
+                {membersList}
+              </PopoverContent>
+            </Popover>
+            {subtitle.inside ? (
+              <>
+                <span aria-hidden>·</span>
+                {subtitle.inside}
+              </>
+            ) : null}
           </span>
         }
         actions={
-          canManage ? (
-            <>
+          <>
+            {menus.create.length > 1 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm">
+                    <Plus className="h-4 w-4" />
+                    New
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => setCreateNestOpen(true)}>
+                    <NestGlyph kind="voice" className="text-muted-foreground" />
+                    Voice {nestSingular}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setCreateTextNestOpen(true)}>
+                    <NestGlyph kind="text" className="text-muted-foreground" />
+                    Text {nestSingular}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setCreateCategoryOpen(true)}>
+                    <FolderPlus className="text-muted-foreground" />
+                    Category
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : menus.create.length === 1 ? (
               <Button size="sm" onClick={() => setCreateNestOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New {nestSingular}
               </Button>
+            ) : null}
+            {menus.more.length ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="icon-sm" variant="ghost" aria-label={`More for ${tree.name}`}>
@@ -88,39 +144,31 @@ export function TreeLobbyView({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  {chat ? (
-                    <>
-                      <DropdownMenuItem onSelect={() => setCreateTextNestOpen(true)}>
-                        <NestGlyph kind="text" className="text-muted-foreground" />
-                        New text {nestSingular}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setCreateCategoryOpen(true)}>
-                        <FolderPlus className="text-muted-foreground" />
-                        New category
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => setArranging(true)}>
-                        <ArrowUpDown className="text-muted-foreground" />
-                        Arrange {nestPlural}
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                    </>
+                  {menus.more.includes("arrange") ? (
+                    <DropdownMenuItem onSelect={() => setArranging(true)}>
+                      <ArrowUpDown className="text-muted-foreground" />
+                      Arrange {nestPlural}
+                    </DropdownMenuItem>
                   ) : null}
-                  <DropdownMenuItem onSelect={() => setAddMemberOpen(true)}>
-                    <UserPlus className="text-muted-foreground" />
-                    Add a person
-                  </DropdownMenuItem>
+                  {menus.more.includes("addPerson") ? (
+                    <DropdownMenuItem onSelect={() => setAddMemberOpen(true)}>
+                      <UserPlus className="text-muted-foreground" />
+                      Add a person
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={() => onNavigate({ kind: "tree-settings", id: tree.id })}>
                     <Settings className="text-muted-foreground" />
                     {data.labels.treeSingular} settings
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </>
-          ) : (
-            <Button size="icon-sm" variant="ghost" aria-label={`${data.labels.treeSingular} settings`} onClick={() => onNavigate({ kind: "tree-settings", id: tree.id })}>
-              <Settings className="h-4 w-4" />
-            </Button>
-          )
+            ) : (
+              <Button size="icon-sm" variant="ghost" aria-label={`${data.labels.treeSingular} settings`} onClick={() => onNavigate({ kind: "tree-settings", id: tree.id })}>
+                <Settings className="h-4 w-4" />
+              </Button>
+            )}
+          </>
         }
       />
       <ViewBody>
@@ -148,7 +196,8 @@ export function TreeLobbyView({
               </section>
             ) : null}
 
-            {liveNests.length ? (
+            {/* With text chat the nests list below shows live rooms in place; without it this is the only place. */}
+            {liveNests.length && !chat ? (
               <section>
                 <SectionLabel className="mb-1">Live now</SectionLabel>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -174,6 +223,7 @@ export function TreeLobbyView({
                 media={media}
                 chat={chat}
                 canManage={canManage}
+                canJoin={canJoin}
                 arranging={arranging}
                 onArrangingChange={setArranging}
                 onNavigate={onNavigate}
@@ -201,35 +251,44 @@ export function TreeLobbyView({
               </section>
             ) : null}
 
-            {!liveNests.length && !quietNests.length && !textNestCount ? (
-              <EmptyState
-                title={`No ${nestPlural} yet`}
-                text={canManage ? `A ${nestSingular} is a room people in this ${treeSingular} can drop into.` : `An owner or moderator can add the first ${nestSingular}.`}
-              >
-                {canManage ? (
-                  <Button onClick={() => setCreateNestOpen(true)}>
-                    <Plus className="h-4 w-4" />
-                    New {nestSingular}
-                  </Button>
-                ) : null}
-              </EmptyState>
+            {!hasNests && setup.length ? (
+              <section>
+                <SectionLabel className="mb-1">Get {tree.name} going</SectionLabel>
+                <GroupedList>
+                  {setup.includes("invite") ? (
+                    <DoorwayRow
+                      icon={<UserPlus />}
+                      label="Invite people"
+                      value={members.length > 1 ? `${members.length} people are here.` : `You are the only one here.`}
+                      control={<Button size="xs" variant="secondary" onClick={() => setAddMemberOpen(true)}>Add a person</Button>}
+                    />
+                  ) : null}
+                  {setup.includes("voice") ? (
+                    <DoorwayRow
+                      icon={<NestGlyph kind="voice" />}
+                      label={`Add a voice ${nestSingular}`}
+                      value={`A room people in this ${treeSingular} can drop into.`}
+                      control={<Button size="xs" variant="secondary" onClick={() => setCreateNestOpen(true)}>Add</Button>}
+                    />
+                  ) : null}
+                  {setup.includes("text") ? (
+                    <DoorwayRow
+                      icon={<NestGlyph kind="text" />}
+                      label={`Add a text ${nestSingular}`}
+                      value="A place to write, for everyone here."
+                      control={<Button size="xs" variant="secondary" onClick={() => setCreateTextNestOpen(true)}>Add</Button>}
+                    />
+                  ) : null}
+                </GroupedList>
+              </section>
+            ) : null}
+
+            {!hasNests && !setup.length ? (
+              <EmptyState title={`No ${nestPlural} yet`} text={`An owner or moderator can add the first ${nestSingular}.`} />
             ) : null}
           </div>
 
-          <aside className="min-w-0">
-            <SectionLabel className="mb-1 px-2">Members · {members.length}</SectionLabel>
-            <div className="space-y-px">
-              {members.map((member) => (
-                <MemberRow
-                  key={member.userId}
-                  member={member}
-                  isSelf={member.userId === data.user?.id}
-                  nestName={member.activeNestId ? data.getNest(member.activeNestId)?.name : undefined}
-                  onOpen={() => onNavigate({ kind: "user", id: member.userId })}
-                />
-              ))}
-            </div>
-          </aside>
+          <aside className="hidden min-w-0 min-[1100px]:block">{membersList}</aside>
         </div>
       </ViewBody>
 
@@ -294,14 +353,58 @@ export function TreeLobbyView({
   );
 }
 
-function memberRank(member: TreeMember) {
-  const presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
-  if (presence === "offline" || presence === "invisible") return 5;
-  if (member.activeNestId) return 0;
-  if (presence === "open") return 1;
-  if (presence === "around") return 2;
-  if (presence === "focused") return 3;
-  return 4;
+/** Members as the lobby shows them: who is in a nest, who is online, and who is away behind a disclosure. */
+function MembersList({ members, selfId, data, onNavigate }: { members: TreeMember[]; selfId?: string; data: RavenShellData; onNavigate: (view: RavenView) => void }) {
+  // The member list can say you are offline while you are looking at it; your own status is what the dock shows.
+  const groups = useMemo(
+    () => groupMembers(members.map((member) => (member.userId === selfId && data.presence ? { ...member, presenceState: data.presence.state, reachability: data.presence.reachability } : member))),
+    [members, selfId, data.presence],
+  );
+  const [showOffline, setShowOffline] = useState(false);
+  const onlyAway = groups.here.length === 0 && groups.online.length === 0;
+  const row = (member: TreeMember) => (
+    <MemberRow
+      key={member.userId}
+      member={member}
+      isSelf={member.userId === selfId}
+      nestName={member.activeNestId ? data.getNest(member.activeNestId)?.name : undefined}
+      onOpen={() => onNavigate({ kind: "user", id: member.userId })}
+    />
+  );
+  return (
+    <div className="space-y-4">
+      {groups.here.length ? (
+        <section>
+          <SectionLabel className="mb-1 px-2">Here now · {groups.here.length}</SectionLabel>
+          <div className="space-y-px">{groups.here.map(row)}</div>
+        </section>
+      ) : null}
+      {groups.online.length ? (
+        <section>
+          <SectionLabel className="mb-1 px-2">Online · {groups.online.length}</SectionLabel>
+          <div className="space-y-px">{groups.online.map(row)}</div>
+        </section>
+      ) : null}
+      {groups.offline.length ? (
+        <section className="space-y-px">
+          {onlyAway ? (
+            <SectionLabel className="mb-1 px-2">Offline · {groups.offline.length}</SectionLabel>
+          ) : (
+            <button
+              type="button"
+              aria-expanded={showOffline}
+              onClick={() => setShowOffline((open) => !open)}
+              className="flex h-7 w-full items-center gap-1 rounded-control px-2 text-left text-caption font-medium text-subtle transition-colors hover:text-foreground"
+            >
+              {showOffline ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              Offline · {groups.offline.length}
+            </button>
+          )}
+          {onlyAway || showOffline ? groups.offline.map(row) : null}
+        </section>
+      ) : null}
+    </div>
+  );
 }
 
 function MemberRow({
@@ -320,19 +423,17 @@ function MemberRow({
   const status = away ? null : nestName ? `In ${nestName}` : presence === "around" ? null : PRESENCE[presence].label;
   const tags = [isSelf ? "You" : null, member.role !== "member" ? TREE_ROLE_LABEL[member.role] : null].filter(Boolean).join(" · ");
   return (
-    <Tooltip label={`${displayNameFor(member)} · ${PRESENCE[presence].label}`} side="left">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex min-h-10 w-full items-center gap-2.5 rounded-control px-2 py-1 text-left transition-colors hover:bg-secondary"
-      >
-        <PersonAvatar id={member.userId} name={displayNameFor(member)} presence={presence} className={cn("h-7 w-7", away && "opacity-60")} />
-        <span className="min-w-0 flex-1">
-          <span className={cn("block truncate text-small", away ? "text-muted-foreground" : "text-foreground")}>{displayNameFor(member)}</span>
-          {status || tags ? <span className="block truncate text-caption text-muted-foreground">{[status, tags].filter(Boolean).join(" · ")}</span> : null}
-        </span>
-      </button>
-    </Tooltip>
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex min-h-10 w-full items-center gap-2.5 rounded-control px-2 py-1 text-left transition-colors hover:bg-secondary"
+    >
+      <PersonAvatar id={member.userId} name={displayNameFor(member)} presence={presence} className={cn("h-7 w-7", away && "opacity-60")} />
+      <span className="min-w-0 flex-1">
+        <span className={cn("block truncate text-small", away ? "text-muted-foreground" : "text-foreground")}>{displayNameFor(member)}</span>
+        {status || tags ? <span className="block truncate text-caption text-muted-foreground">{[status, tags].filter(Boolean).join(" · ")}</span> : null}
+      </span>
+    </button>
   );
 }
 
