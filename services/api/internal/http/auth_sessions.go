@@ -37,7 +37,7 @@ func (s *Server) logout(c *fiber.Ctx) error {
 	if err := s.sessions.Delete(sessionID); err != nil {
 		return err
 	}
-	s.events.closeSession(sessionID)
+	s.endSessionStreams(sessionID)
 	// Signing out is also leaving: show the account offline now rather than after the
 	// heartbeat window. Another signed-in device restores it with its next heartbeat.
 	if user := currentUser(c); user.ID != "" {
@@ -98,7 +98,7 @@ func (s *Server) revokeAuthSession(c *fiber.Ctx) error {
 		return err
 	}
 	// A signed-out device must stop receiving at once, not at its next request.
-	s.events.closeSession(sessionID)
+	s.endSessionStreams(sessionID)
 	currentID, _ := c.Locals("authSessionID").(string)
 	return c.JSON(fiber.Map{"revoked": true, "current": sessionID == currentID})
 }

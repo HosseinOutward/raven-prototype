@@ -599,7 +599,7 @@ func (s *Server) startSession(c *fiber.Ctx, user User) error {
 	}
 	if previousID != "" {
 		_, _ = s.db.Exec(`UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, database.Now(), previousID)
-		s.events.closeSession(previousID)
+		s.endSessionStreams(previousID)
 	}
 	sessionID := sess.ID()
 	now := database.Now()

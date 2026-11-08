@@ -131,9 +131,12 @@ async fn serve_flow<L: Link>(
                 let _ = tx.shutdown().await;
                 return;
             };
-            if socket.connect((Ipv4Addr::LOCALHOST, port)).await.is_err()
-                || write_frame(&mut tx, &Frame::Accepted { datagram_mtu: 0 }).await.is_err()
-            {
+            if socket.connect((Ipv4Addr::LOCALHOST, port)).await.is_err() {
+                let _ = write_frame(&mut tx, &Frame::Refused { reason: format!("The sharing computer couldn’t reach UDP port {port}.") }).await;
+                let _ = tx.shutdown().await;
+                return;
+            }
+            if write_frame(&mut tx, &Frame::Accepted { datagram_mtu: 0 }).await.is_err() {
                 return;
             }
             let socket = Arc::new(socket);

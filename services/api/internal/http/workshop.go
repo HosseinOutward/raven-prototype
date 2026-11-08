@@ -429,19 +429,51 @@ func workshopAccessLost(err error) bool {
 // revalidateWorkshop ends every share or consumer whose person no longer has access. It
 // runs from the places someone loses access (leaving a call, being removed from a tree
 // or a room, an archived nest) and from the maintenance sweep, which catches the rest.
-func (s *Server) revalidateWorkshop() {
+// With a userID it checks only what that person publishes or uses; "" checks everyone.
+func (s *Server) revalidateWorkshop(userID string) {
 	if s.workshop == nil || !s.workshop.Limits().Enabled {
 		return
 	}
 	for _, share := range s.workshop.Snapshot() {
-		if err := s.workshopMayPublish(share.PublisherID, share.PlaceKind, share.PlaceID); workshopAccessLost(err) {
-			s.workshop.End(share.ID, relay.ReasonLeftPlace)
-			continue
+		if userID == "" || share.PublisherID == userID {
+			if err := s.workshopMayPublish(share.PublisherID, share.PlaceKind, share.PlaceID); workshopAccessLost(err) {
+				s.workshop.End(share.ID, relay.ReasonLeftPlace)
+				continue
+			}
 		}
 		for _, consumerID := range share.Consumers {
+			if userID != "" && consumerID != userID {
+				continue
+			}
 			if err := s.workshopMayConsume(consumerID, share.PlaceKind, share.PlaceID); workshopAccessLost(err) {
 				s.workshop.EndConsumer(share.ID, consumerID, relay.ReasonLeftPlace)
 			}
+		}
+	}
+}
+
+// endSessionStreams cuts what a sign-in that just ended still has open: its live event
+// stream and its port sharing connections.
+func (s *Server) endSessionStreams(sessionID string) {
+	s.events.closeSession(sessionID)
+	if s.relayServer != nil {
+		s.relayServer.EndSession(sessionID)
+	}
+}
+
+// sweepWorkshopSessions cuts relay connections whose sign-in expired or was revoked by a
+// path that did not cut them itself.
+func (s *Server) sweepWorkshopSessions() {
+	if s.relayServer == nil {
+		return
+	}
+	for _, token := range s.relayServer.Sessions() {
+		var expiresAt string
+		err := s.db.QueryRow(`SELECT expires_at FROM auth_sessions WHERE id = ? AND revoked_at IS NULL`, token).Scan(&expiresAt)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && sessionExpired(expiresAt)) {
+			s.relayServer.EndSession(token)
+		} else if err != nil {
+			log.Printf("workshop: check session: %v", err)
 		}
 	}
 }

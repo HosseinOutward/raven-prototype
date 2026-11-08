@@ -35,6 +35,7 @@ export function setPortSharingEnabled(enabled: boolean) {
     // Without storage the switch simply stays off.
   }
   for (const listener of preferenceListeners) listener();
+  if (!enabled) stopAllSessions();
 }
 
 export function usePortSharingEnabled(): boolean {
@@ -255,6 +256,18 @@ export async function connectShare(config: WorkshopConfig, share: WorkshopShare)
 export async function disconnectShare(shareId: string) {
   await invoke("workshop_disconnect", { shareId }).catch(() => undefined);
   setSession(null, sessionKey("consumer", shareId));
+}
+
+/**
+ * Stops everything this device publishes or uses, for whichever account started it. Runs
+ * when the switch goes off and whenever the signed-in account changes, including at
+ * startup, where anything still running belongs to a page that is gone.
+ */
+export function stopAllSessions() {
+  void invoke("workshop_stop_all").catch(() => undefined);
+  if (sessions.size === 0) return;
+  sessions = new Map();
+  for (const listener of sessionListeners) listener();
 }
 
 /** Forgets a finished session once the person has seen how it ended. */

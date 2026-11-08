@@ -17,7 +17,7 @@ pub mod wss;
 #[cfg(test)]
 mod live;
 
-use std::{collections::HashMap, sync::{atomic::Ordering, Arc, Mutex}, time::Duration};
+use std::{collections::HashMap, future::Future, sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex}, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -41,6 +41,8 @@ pub fn new_workshop_state() -> SharedWorkshopState {
 }
 
 struct Session {
+    /// Tells this run apart from a later one under the same key.
+    id: u64,
     link: Arc<RelayLink>,
     task: tauri::async_runtime::JoinHandle<()>,
     ticker: tauri::async_runtime::JoinHandle<()>,
@@ -140,15 +142,48 @@ fn report_for(app: &AppHandle, share_id: &str, role: &'static str) -> publisher:
     })
 }
 
-fn finish(app: &AppHandle, state: &WorkshopState, share_id: &str, role: &'static str, counters: &Counters, reason: String) {
-    // If the session was already stopped by the user it is gone from the map and the
-    // stop command has said so.
-    let removed = state.sessions.lock().unwrap().remove(&key(role, share_id));
+fn finish(app: &AppHandle, state: &WorkshopState, id: u64, share_id: &str, role: &'static str, counters: &Counters, reason: String) {
+    // If the session was already stopped by the user, or replaced by a newer run, it is
+    // gone from the map (or someone else's entry) and whoever did that has said so.
+    let removed = {
+        let mut sessions = state.sessions.lock().unwrap();
+        match sessions.get(&key(role, share_id)) {
+            Some(session) if session.id == id => sessions.remove(&key(role, share_id)),
+            _ => None,
+        }
+    };
     if let Some(session) = removed {
         session.ticker.abort();
         let mut event = snapshot(share_id, role, "ended", counters);
         event.reason = Some(reason);
         emit(app, event);
+    }
+}
+
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
+/// Runs `serve` for a share and keeps it in the map until it ends or is stopped. The map
+/// is locked while the task is spawned and inserted, so the task's own `finish` always
+/// finds its entry, however fast the link ends.
+fn start<F>(app: &AppHandle, shared: &SharedWorkshopState, role: &'static str, share_id: &str, link: Arc<RelayLink>, counters: Arc<Counters>, serve: F)
+where
+    F: Future<Output = String> + Send + 'static,
+{
+    let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+    let previous = {
+        let mut sessions = shared.sessions.lock().unwrap();
+        let task = {
+            let (app, shared, share_id, counters) = (app.clone(), shared.clone(), share_id.to_string(), counters.clone());
+            tauri::async_runtime::spawn(async move {
+                let reason = serve.await;
+                finish(&app, &shared, id, &share_id, role, &counters, reason);
+            })
+        };
+        let ticker = spawn_ticker(app.clone(), share_id.to_string(), role, counters);
+        sessions.insert(key(role, share_id), Session { id, link, task, ticker })
+    };
+    if let Some(previous) = previous {
+        previous.end();
     }
 }
 
@@ -166,21 +201,9 @@ pub async fn workshop_publish(
     let endpoint = link.endpoint.clone();
     let counters = Arc::new(Counters::default());
     let share_id = args.share_id.clone();
-    let shared = state.inner().clone();
-    let task = {
-        let (app, link, counters, shared, share_id) = (app.clone(), link.clone(), counters.clone(), shared.clone(), share_id.clone());
-        let report = report_for(&app, &share_id, "publisher");
-        let port = args.port;
-        tauri::async_runtime::spawn(async move {
-            let reason = publisher::run(link, port, counters.clone(), report).await;
-            finish(&app, &shared, &share_id, "publisher", &counters, reason);
-        })
-    };
-    let ticker = spawn_ticker(app.clone(), share_id.clone(), "publisher", counters);
-    let previous = shared.sessions.lock().unwrap().insert(key("publisher", &share_id), Session { link, task, ticker });
-    if let Some(previous) = previous {
-        previous.end();
-    }
+    let report = report_for(&app, &share_id, "publisher");
+    let serve = publisher::run(link.clone(), args.port, counters.clone(), report);
+    start(&app, state.inner(), "publisher", &share_id, link, counters, serve);
     Ok(Started { route, endpoint, local_port: None, notice: None })
 }
 
@@ -210,20 +233,9 @@ pub async fn workshop_connect(
     let endpoint = link.endpoint.clone();
     let counters = Arc::new(Counters::default());
     let share_id = args.share_id.clone();
-    let shared = state.inner().clone();
-    let task = {
-        let (app, link, counters, shared, share_id) = (app.clone(), link.clone(), counters.clone(), shared.clone(), share_id.clone());
-        let report = report_for(&app, &share_id, "consumer");
-        tauri::async_runtime::spawn(async move {
-            let reason = consumer::run(link, share_id.clone(), listeners, counters.clone(), report).await;
-            finish(&app, &shared, &share_id, "consumer", &counters, reason);
-        })
-    };
-    let ticker = spawn_ticker(app.clone(), share_id.clone(), "consumer", counters);
-    let previous = shared.sessions.lock().unwrap().insert(key("consumer", &share_id), Session { link, task, ticker });
-    if let Some(previous) = previous {
-        previous.end();
-    }
+    let report = report_for(&app, &share_id, "consumer");
+    let serve = consumer::run(link.clone(), share_id.clone(), listeners, counters.clone(), report);
+    start(&app, state.inner(), "consumer", &share_id, link, counters, serve);
     Ok(Started { route, endpoint, local_port: Some(local_port), notice })
 }
 
@@ -245,4 +257,14 @@ pub fn workshop_stop(app: AppHandle, state: State<'_, SharedWorkshopState>, shar
 #[tauri::command]
 pub fn workshop_disconnect(app: AppHandle, state: State<'_, SharedWorkshopState>, share_id: String) {
     stop(&app, state.inner(), "consumer", &share_id);
+}
+
+/// Stops everything this device publishes or uses: on sign-out, on switching account, and
+/// when the port sharing switch is turned off.
+#[tauri::command]
+pub fn workshop_stop_all(state: State<'_, SharedWorkshopState>) {
+    let sessions: Vec<Session> = state.sessions.lock().unwrap().drain().map(|(_, session)| session).collect();
+    for session in sessions {
+        session.end();
+    }
 }

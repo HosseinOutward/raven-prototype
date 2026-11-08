@@ -194,7 +194,7 @@ func (s *Server) removeTreeMemberCore(treeID, userID, state string) error {
 		return err
 	}
 	s.evictFromTree(treeID, userID)
-	s.revalidateWorkshop()
+	s.revalidateWorkshop(userID)
 	textNestIDs, err := s.stringColumn(`SELECT id FROM chat_conversations WHERE tree_id = ? AND kind = 'nest' AND status = 'active'`, treeID)
 	if err != nil {
 		return err
@@ -311,7 +311,7 @@ func (s *Server) archiveNestCore(nestID, actorID string) error {
 		return err
 	}
 	s.closeCall(nestID)
-	s.revalidateWorkshop()
+	s.revalidateWorkshop("")
 	if sessionID != "" {
 		s.events.publishTo(LiveUpdate{Type: "session.ended", TreeID: treeID, NestID: nestID, SessionID: sessionID, At: database.Now()}, audience)
 	}

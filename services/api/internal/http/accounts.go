@@ -314,7 +314,7 @@ func (s *Server) revokeSession(sessionID, now string) error {
 	if err := s.sessions.Delete(sessionID); err != nil {
 		return err
 	}
-	s.events.closeSession(sessionID)
+	s.endSessionStreams(sessionID)
 	return nil
 }
 

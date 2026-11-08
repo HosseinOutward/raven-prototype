@@ -215,7 +215,8 @@ pub fn run() {
             workshop::workshop_publish,
             workshop::workshop_stop,
             workshop::workshop_connect,
-            workshop::workshop_disconnect
+            workshop::workshop_disconnect,
+            workshop::workshop_stop_all
         ])
         .setup(|app| {
             attachments::initialize(app.handle());

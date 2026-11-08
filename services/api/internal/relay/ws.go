@@ -57,6 +57,8 @@ func (s *Server) ServeWebSocket(ws WebSocket) {
 	}
 	s.Serve(conn)
 	conn.Close("")
+	// Returning closes the socket, so wait out the close handshake here, not in Close.
+	<-conn.closed
 }
 
 // YamuxConfig is the session configuration both ends of the WebSocket route use.
@@ -68,10 +70,12 @@ func YamuxConfig() *yamux.Config {
 }
 
 type wsConn struct {
-	ws      WebSocket
-	sess    *yamux.Session
-	ctx     context.Context
-	cancel  context.CancelFunc
+	ws     WebSocket
+	sess   *yamux.Session
+	ctx    context.Context
+	cancel context.CancelFunc
+	// closed is closed once Close has finished the close handshake.
+	closed  chan struct{}
 	streams chan Stream
 	dgIn    chan []byte
 	dgOut   chan []byte
@@ -89,6 +93,7 @@ func newWSConn(ws WebSocket) (*wsConn, error) {
 		sess:    sess,
 		ctx:     ctx,
 		cancel:  cancel,
+		closed:  make(chan struct{}),
 		streams: make(chan Stream),
 		dgIn:    make(chan []byte, wsDatagramQueue),
 		dgOut:   make(chan []byte, wsDatagramQueue),
@@ -243,13 +248,17 @@ func (c *wsConn) Close(reason string) {
 		_ = c.ws.WriteControl(wsCloseMessage, msg, time.Now().Add(time.Second))
 		// Wait for the client's close reply, which ends the session's read loop. Cutting the
 		// connection first can drop the close frame before the client reads it (Windows
-		// discards unread data on a reset), and the reason with it.
-		select {
-		case <-c.sess.CloseChan():
-		case <-time.After(wsCloseGrace):
-		}
-		_ = c.sess.Close()
-		c.cancel()
+		// discards unread data on a reset), and the reason with it. The wait runs on its
+		// own so that whoever closes (ending a share closes many) is not held up by it.
+		go func() {
+			select {
+			case <-c.sess.CloseChan():
+			case <-time.After(wsCloseGrace):
+			}
+			_ = c.sess.Close()
+			c.cancel()
+			close(c.closed)
+		}()
 	})
 }
 

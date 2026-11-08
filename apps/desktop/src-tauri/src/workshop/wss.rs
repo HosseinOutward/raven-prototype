@@ -46,7 +46,7 @@ type Ended = watch::Receiver<Option<String>>;
 
 pub struct WssSession {
     open: mpsc::Sender<oneshot::Sender<io::Result<yamux::Stream>>>,
-    inbound: tokio::sync::Mutex<mpsc::Receiver<yamux::Stream>>,
+    inbound: tokio::sync::Mutex<mpsc::UnboundedReceiver<yamux::Stream>>,
     ended: Ended,
     stop: Mutex<Option<oneshot::Sender<()>>>,
     dg_out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
@@ -66,7 +66,9 @@ pub async fn open(url: &str, tls: Arc<rustls::ClientConfig>) -> io::Result<WssSe
     let io = WsIo { ws, pending: Vec::new(), pos: 0, reason: reason.clone() };
     let conn = yamux::Connection::new(io, yamux::Config::default(), yamux::Mode::Client);
     let (open_tx, open_rx) = mpsc::channel(8);
-    let (in_tx, in_rx) = mpsc::channel(64);
+    // Unbounded: the relay caps how many flows it opens, and dropping one here would
+    // refuse a consumer's connection for no reason.
+    let (in_tx, in_rx) = mpsc::unbounded_channel();
     let (ended_tx, ended_rx) = watch::channel(None);
     let (stop_tx, stop_rx) = oneshot::channel();
     tokio::spawn(async move {
@@ -100,7 +102,7 @@ enum Stopped {
 async fn drive(
     mut conn: yamux::Connection<WsIo>,
     mut opens: mpsc::Receiver<oneshot::Sender<io::Result<yamux::Stream>>>,
-    inbound: mpsc::Sender<yamux::Stream>,
+    inbound: mpsc::UnboundedSender<yamux::Stream>,
     mut stop: oneshot::Receiver<()>,
 ) -> Result<Stopped, yamux::ConnectionError> {
     let mut pending: Option<oneshot::Sender<io::Result<yamux::Stream>>> = None;
@@ -124,8 +126,8 @@ async fn drive(
         }
         match conn.poll_next_inbound(cx) {
             Poll::Ready(Some(Ok(stream))) => {
-                // A full queue means nobody accepts streams on this link; drop the stream.
-                let _ = inbound.try_send(stream);
+                // Fails only once the session is gone, and then the stream goes with it.
+                let _ = inbound.send(stream);
             }
             Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
             Poll::Ready(None) => return Poll::Ready(Ok(false)),

@@ -7,6 +7,7 @@ import { ENTRY_CONNECTING_TTL_MS } from "@/lib/callArrivals";
 import { rememberActiveNest } from "@/lib/crashRecovery";
 import { forgetUnsentMessages } from "@/lib/chat/outbox";
 import { subscribeNestUpdates } from "@/lib/eventStream";
+import { stopAllSessions } from "@/lib/workshop";
 import { knockAge, loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
 import type { NestEntryNotice, PendingItem, RavenShellData, SelectablePresence, ShellPerson, UILabelCopy } from "./state";
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
@@ -396,6 +397,13 @@ export function useRavenShellData(): RavenShellData {
     }, Math.max(0, oldest + ENTRY_NOTICE_TTL_MS - Date.now()) + 20);
     return () => window.clearTimeout(timer);
   }, [entryNotices]);
+
+  // Port shares belong to the account that started them: stop them whenever the signed-in
+  // account changes, and at startup, where anything still running outlived its page.
+  const signedInUserId = home?.user.id ?? "";
+  useEffect(() => {
+    stopAllSessions();
+  }, [signedInUserId]);
 
   // The server stopped accepting this session while the app was open (it expired, or it
   // was signed out from another device). Same outcome as finding that out at startup.

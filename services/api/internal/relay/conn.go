@@ -27,10 +27,59 @@ type Server struct {
 	policy Policy
 	ln     *quic.Listener // nil until Listen; WebSocket clients come through the API
 	flowID atomic.Uint32
+
+	// The connections each sign-in (session token) holds, so they can be cut when the
+	// sign-in ends.
+	mu       sync.Mutex
+	sessions map[string]map[Conn]struct{}
 }
 
 func NewServer(reg *Registry, policy Policy) *Server {
-	return &Server{reg: reg, policy: policy}
+	return &Server{reg: reg, policy: policy, sessions: map[string]map[Conn]struct{}{}}
+}
+
+func (s *Server) track(token string, conn Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions[token] == nil {
+		s.sessions[token] = map[Conn]struct{}{}
+	}
+	s.sessions[token][conn] = struct{}{}
+}
+
+func (s *Server) untrack(token string, conn Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions[token], conn)
+	if len(s.sessions[token]) == 0 {
+		delete(s.sessions, token)
+	}
+}
+
+// Sessions lists the sign-ins that hold connections, for a sweep that checks they are
+// still valid.
+func (s *Server) Sessions() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tokens := make([]string, 0, len(s.sessions))
+	for token := range s.sessions {
+		tokens = append(tokens, token)
+	}
+	return tokens
+}
+
+// EndSession closes every connection a sign-in holds: it was signed out, revoked or
+// expired. A publisher's share ends with its connection.
+func (s *Server) EndSession(token string) {
+	s.mu.Lock()
+	conns := make([]Conn, 0, len(s.sessions[token]))
+	for conn := range s.sessions[token] {
+		conns = append(conns, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range conns {
+		conn.Close("signed_out")
+	}
 }
 
 // Conn is one client connection to the relay, over QUIC or over WebSocket. The first
@@ -75,7 +124,10 @@ func (s *Server) Serve(conn Conn) {
 		refuse(ctrl, conn, "unauthenticated", err.Error())
 		return
 	}
+	s.track(hello.Token, conn)
+	defer s.untrack(hello.Token, conn)
 	if err := WriteFrame(ctrl, Frame{Type: FrameHelloOK, UserID: userID}); err != nil {
+		conn.Close("hello")
 		return
 	}
 	attach, err := ReadFrame(ctrl)
@@ -113,6 +165,7 @@ func (s *Server) servePublisher(conn Conn, ctrl Stream, userID, shareID string) 
 	}
 	defer s.reg.Detach(shareID, conn)
 	if err := WriteFrame(ctrl, Frame{Type: FrameAttachOK, DatagramMTU: DatagramHint}); err != nil {
+		conn.Close("attach")
 		return
 	}
 	// Datagrams from the publisher carry the relay's flow id and go to that flow's consumer.
@@ -127,8 +180,7 @@ func (s *Server) servePublisher(conn Conn, ctrl Stream, userID, shareID string) 
 				continue
 			}
 			f := s.reg.UDPByRelayID(share, flowID)
-			if f == nil || !s.reg.Usage.Add(share.PublisherID, int64(len(payload))) ||
-				!s.reg.Usage.Add(f.consumer.UserID, int64(len(payload))) || !share.Bucket.TryTake(len(payload)) {
+			if f == nil || !s.mayCarry(share, f.consumer.UserID, len(payload)) {
 				share.UDPDropped.Add(1)
 				continue
 			}
@@ -137,6 +189,7 @@ func (s *Server) servePublisher(conn Conn, ctrl Stream, userID, shareID string) 
 				share.UDPDropped.Add(1)
 				continue
 			}
+			s.carried(share, f.consumer.UserID, len(payload))
 			share.BytesDown.Add(uint64(len(payload)))
 		}
 	}()
@@ -166,6 +219,7 @@ func (s *Server) serveConsumer(conn Conn, ctrl Stream, userID, shareID string) {
 	}
 	defer s.reg.Leave(shareID, consumer)
 	if err := WriteFrame(ctrl, Frame{Type: FrameAttachOK, DatagramMTU: DatagramHint}); err != nil {
+		conn.Close("attach")
 		return
 	}
 	go s.consumerDatagrams(conn, share, consumer)
@@ -199,8 +253,7 @@ func (s *Server) consumerDatagrams(conn Conn, share *Share, c *Consumer) {
 		}
 		relayID, f := s.reg.UDPFor(share, c, cflow)
 		pub := s.reg.Publisher(share)
-		if f == nil || pub == nil || !s.reg.Usage.Add(share.PublisherID, int64(len(payload))) ||
-			!s.reg.Usage.Add(c.UserID, int64(len(payload))) || !share.Bucket.TryTake(len(payload)) {
+		if f == nil || pub == nil || !s.mayCarry(share, c.UserID, len(payload)) {
 			share.UDPDropped.Add(1)
 			continue
 		}
@@ -210,8 +263,20 @@ func (s *Server) consumerDatagrams(conn Conn, share *Share, c *Consumer) {
 			share.UDPDropped.Add(1)
 			continue
 		}
+		s.carried(share, c.UserID, len(payload))
 		share.BytesUp.Add(uint64(len(payload)))
 	}
+}
+
+// mayCarry reports whether a datagram fits both people's day and the share's rate. Only
+// datagrams that are then sent count toward the day, through carried.
+func (s *Server) mayCarry(share *Share, consumerID string, n int) bool {
+	return !s.reg.Usage.Exhausted(share.PublisherID) && !s.reg.Usage.Exhausted(consumerID) && share.Bucket.TryTake(n)
+}
+
+func (s *Server) carried(share *Share, consumerID string, n int) {
+	s.reg.Usage.Add(share.PublisherID, int64(n))
+	s.reg.Usage.Add(consumerID, int64(n))
 }
 
 // reject answers an Open with a reason and drops the stream.
@@ -232,9 +297,10 @@ func reasonOf(err error) string {
 func (s *Server) openFlow(conn Conn, share *Share, c *Consumer, stream Stream, opening chan struct{}) {
 	late := time.AfterFunc(helloTimeout, stream.Abort)
 	open, err := ReadFrame(stream)
-	late.Stop()
+	// Stop reports false once the timer has fired: the stream is already aborted.
+	timedOut := !late.Stop()
 	<-opening
-	if err != nil || open.Type != FrameOpen || open.ShareID != share.ID {
+	if timedOut || err != nil || open.Type != FrameOpen || open.ShareID != share.ID {
 		reject(stream, "The relay didn’t understand that request.")
 		return
 	}

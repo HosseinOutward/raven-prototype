@@ -48,7 +48,8 @@ func (s *Server) runMaintenance(now time.Time) {
 	if err := s.expireEmptyTemporaryNests(); err != nil {
 		log.Printf("maintenance: expire empty temporary nests: %v", err)
 	}
-	s.revalidateWorkshop()
+	s.revalidateWorkshop("")
+	s.sweepWorkshopSessions()
 	lapsed, err := s.sweepPresence(now)
 	if err != nil {
 		log.Printf("maintenance: sweep presence: %v", err)
