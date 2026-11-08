@@ -109,10 +109,10 @@ export function TreeLobbyView({
             {menus.create.length > 1 ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button size="sm">
+                  <Button className="gap-1.5 pl-3 pr-2.5">
                     <Plus className="h-4 w-4" />
                     New
-                    <ChevronDown className="h-3.5 w-3.5" />
+                    <ChevronDown className="h-4 w-4 opacity-70" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -131,7 +131,7 @@ export function TreeLobbyView({
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : menus.create.length === 1 ? (
-              <Button size="sm" onClick={() => setCreateNestOpen(true)}>
+              <Button onClick={() => setCreateNestOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New {nestSingular}
               </Button>
