@@ -96,6 +96,12 @@ func TestSpaceNameFollowsRank(t *testing.T) {
 	}
 	// The owner can rename a moderator.
 	postJSON(t, server, ownerToken, spacePath(treeID, mod.ID), name("Captain"), http.StatusOK)
+	// Nobody may take a name someone else in the space goes by, or their username.
+	postJSON(t, server, memToken, spacePath(treeID, mem.ID), name("captain"), http.StatusConflict)
+	postJSON(t, server, memToken, spacePath(treeID, mem.ID), name("Alice"), http.StatusConflict)
+	if display, _ := memberNames(t, server, treeID, mem.ID); display != "Mem By Mod" {
+		t.Fatalf("refused name was kept: %q", display)
+	}
 	// Outsiders get nothing, and cannot reach an outsider either.
 	postJSON(t, server, outsiderToken, spacePath(treeID, mem.ID), name("x"), http.StatusNotFound)
 	postJSON(t, server, ownerToken, spacePath(treeID, outsider.ID), name("x"), http.StatusNotFound)

@@ -983,7 +983,8 @@ export function derivePeople(home: HomeState | null, treeDetails: Record<string,
   for (const details of Object.values(treeDetails)) {
     for (const member of details.members) {
       if (member.userId === home.user.id) continue;
-      const person = ensure(member.userId, displayNameFor(member), member.username);
+      // A space nickname stays in its space: people everywhere else go by their usual name.
+      const person = ensure(member.userId, member.usualName || displayNameFor(member), member.username);
       located.add(person.id);
       if (person.relationship !== "friend") {
         person.presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });

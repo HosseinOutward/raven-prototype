@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log"
 	"strings"
 
@@ -20,8 +22,8 @@ func spaceNameSQL(memberAlias, prefAlias, userAlias string) string {
 
 // normalizeSpaceName tidies a nickname. Blank means none: the global name shows again.
 func normalizeSpaceName(name string) (string, error) {
-	name = strings.Join(strings.Fields(name), " ")
-	if len([]rune(name)) > 80 {
+	name, err := normalizeDisplayName(name, "")
+	if err != nil {
 		return "", fiber.NewError(fiber.StatusBadRequest, "A name must be 80 characters or fewer.")
 	}
 	return name, nil
@@ -30,16 +32,44 @@ func normalizeSpaceName(name string) (string, error) {
 // spaceNameOf is the name someone goes by in a space, for places that hold a User rather
 // than a query: their nickname there, else their global name.
 func (s *Server) spaceNameOf(treeID string, user User) string {
+	return spaceNameIn(s.db, treeID, user)
+}
+
+// spaceNameIn is spaceNameSQL for one person, read through q (the database or a
+// transaction). Outside a space, or if the read fails, it is their global name.
+func spaceNameIn(q chatQuerier, treeID string, user User) string {
 	if treeID == "" {
 		return user.DisplayName
 	}
-	var nickname string
-	if err := s.db.QueryRow(
-		`SELECT display_name FROM tree_members WHERE tree_id = ? AND user_id = ?`, treeID, user.ID,
-	).Scan(&nickname); err != nil || strings.TrimSpace(nickname) == "" {
+	var name string
+	err := q.QueryRow(
+		`SELECT `+spaceNameSQL("tm", "up", "u")+`
+		 FROM users u
+		 LEFT JOIN user_preferences up ON up.user_id = u.id
+		 LEFT JOIN tree_members tm ON tm.tree_id = ? AND tm.user_id = u.id
+		 WHERE u.id = ?`,
+		treeID, user.ID,
+	).Scan(&name)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("space names: name of %s in %s: %v", user.ID, treeID, err)
+		}
 		return user.DisplayName
 	}
-	return nickname
+	return name
+}
+
+// chatSpaceNameIn is the name someone goes by in a conversation: their space name in a
+// space's room, else their global name.
+func chatSpaceNameIn(q chatQuerier, conversationID string, user User) string {
+	var treeID string
+	if err := q.QueryRow(`SELECT COALESCE(tree_id, '') FROM chat_conversations WHERE id = ?`, conversationID).Scan(&treeID); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("space names: space of conversation %s: %v", conversationID, err)
+		}
+		return user.DisplayName
+	}
+	return spaceNameIn(q, treeID, user)
 }
 
 // setTreeMemberNameCore sets or clears a member's nickname in a space and renames them in
@@ -48,6 +78,23 @@ func (s *Server) setTreeMemberNameCore(treeID, userID, name string) (TreeMember,
 	name, err := normalizeSpaceName(name)
 	if err != nil {
 		return TreeMember{}, err
+	}
+	if name != "" {
+		// Nobody may take a name another member of the space goes by, or their username.
+		var taken int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM tree_members tm
+			 JOIN users u ON u.id = tm.user_id
+			 LEFT JOIN user_preferences up ON up.user_id = u.id
+			 WHERE tm.tree_id = ? AND tm.user_id <> ? AND tm.state = 'joined'
+			   AND (LOWER(u.username) = LOWER(?) OR LOWER(`+spaceNameSQL("tm", "up", "u")+`) = LOWER(?))`,
+			treeID, userID, name, name,
+		).Scan(&taken); err != nil {
+			return TreeMember{}, err
+		}
+		if taken > 0 {
+			return TreeMember{}, fiber.NewError(fiber.StatusConflict, "Someone in this space already goes by that name.")
+		}
 	}
 	result, err := s.db.Exec(
 		`UPDATE tree_members SET display_name = ?, updated_at = ? WHERE tree_id = ? AND user_id = ? AND state = 'joined'`,
@@ -73,7 +120,7 @@ func (s *Server) renameInCalls(treeID string, member TreeMember) {
 	nestIDs, err := s.stringColumn(
 		`SELECT DISTINCT sp.nest_id FROM session_participants sp
 		 JOIN nests n ON n.id = sp.nest_id
-		 WHERE n.tree_id = ? AND n.type = 'persistent' AND sp.user_id = ? AND sp.left_at IS NULL`,
+		 WHERE n.tree_id = ? AND sp.user_id = ? AND sp.left_at IS NULL`,
 		treeID, member.UserID,
 	)
 	if err != nil {

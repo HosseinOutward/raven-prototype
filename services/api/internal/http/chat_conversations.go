@@ -26,7 +26,7 @@ func chatSummarySQL(one bool) string {
 		b.notify, b.member_role, b.visible_from_seq, b.read_seq, b.hide_rev, b.archived, b.listed, b.tree_role,
 		b.peer_id, b.peer_username, b.peer_name, b.peer_read_seq, b.peer_read_at, b.peer_is_friend, b.peer_deleted, b.shares_read,
 		b.member_count, b.preview_seq, b.unread_count, b.mention_count,
-		COALESCE(pm.id, ''), COALESCE(pm.sender_id, ''), COALESCE(NULLIF(TRIM(pmp.display_name), ''), pmu.username, ''),
+		COALESCE(pm.id, ''), COALESCE(pm.sender_id, ''), COALESCE(`+spaceNameSQL("pmt", "pmp", "pmu")+`, ''),
 		COALESCE(pm.kind, ''), COALESCE(pm.body, ''), pm.system_json, COALESCE(pm.created_at, ''),
 		CASE WHEN pm.deleted_at IS NULL THEN 0 ELSE 1 END
 	 FROM (
@@ -85,6 +85,7 @@ func chatSummarySQL(one bool) string {
 	 ) b
 	 LEFT JOIN chat_messages pm ON pm.conversation_id = b.id AND pm.seq = b.preview_seq
 	 LEFT JOIN users pmu ON pmu.id = pm.sender_id
+	 LEFT JOIN tree_members pmt ON pmt.tree_id = b.tree_id AND pmt.user_id = pmu.id
 	 LEFT JOIN user_preferences pmp ON pmp.user_id = pmu.id
 	 ORDER BY b.last_activity_ms DESC, b.id`, chatUnreadCap, filter)
 }
@@ -274,9 +275,11 @@ func (s *Server) chatConversationResponse(c *fiber.Ctx, status int, userID strin
 
 func (s *Server) chatMembers(q chatQuerier, conversationID string) ([]ChatMember, error) {
 	rows, err := q.Query(
-		`SELECT cm.user_id, u.username, COALESCE(NULLIF(TRIM(p.display_name), ''), u.username), cm.role, cm.joined_at
+		`SELECT cm.user_id, u.username, `+spaceNameSQL("rtm", "p", "u")+`, cm.role, cm.joined_at
 		 FROM chat_members cm
 		 JOIN users u ON u.id = cm.user_id
+		 LEFT JOIN chat_conversations rc ON rc.id = cm.conversation_id
+		 LEFT JOIN tree_members rtm ON rtm.tree_id = rc.tree_id AND rtm.user_id = u.id
 		 LEFT JOIN user_preferences p ON p.user_id = u.id
 		 WHERE cm.conversation_id = ? AND cm.state = 'joined'
 		 ORDER BY CASE WHEN cm.role = 'owner' THEN 0 ELSE 1 END, cm.joined_at, cm.user_id`,
@@ -439,7 +442,7 @@ func chatInsertSystemMessage(tx *database.Tx, conversationID string, actor User,
 		Seq:             seq,
 		ChangedSeq:      seq,
 		SenderID:        actor.ID,
-		SenderName:      actor.DisplayName,
+		SenderName:      chatSpaceNameIn(tx, conversationID, actor),
 		ClientMessageID: clientID,
 		Kind:            chatMessageSystem,
 		System:          raw,
@@ -1298,7 +1301,7 @@ func (s *Server) chatTyping(c *fiber.Ctx) error {
 		Type:           "typing",
 		ConversationID: conversationID,
 		UserID:         user.ID,
-		UserName:       user.DisplayName,
+		UserName:       s.spaceNameOf(access.TreeID, user),
 	}, others)
 	return c.SendStatus(fiber.StatusNoContent)
 }

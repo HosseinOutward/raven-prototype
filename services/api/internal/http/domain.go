@@ -33,6 +33,8 @@ type TreeMember struct {
 	Username      string  `json:"username"`
 	DisplayName   string  `json:"displayName"`
 	Nickname      string  `json:"nickname"`
+	// UsualName is their global name, for places outside this space.
+	UsualName     string  `json:"usualName"`
 	Role          string  `json:"role"`
 	State         string  `json:"state"`
 	JoinedAt      *string `json:"joinedAt"`
@@ -1429,7 +1431,7 @@ func (s *Server) findTree(treeID string) (Tree, error) {
 
 func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	rows, err := s.db.Query(
-		`SELECT tm.tree_id, u.id, u.username, `+spaceNameSQL("tm", "pref", "u")+`, tm.display_name, tm.role, tm.state, tm.joined_at, tm.left_at,
+		`SELECT tm.tree_id, u.id, u.username, `+spaceNameSQL("tm", "pref", "u")+`, tm.display_name, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
 		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
@@ -1447,7 +1449,7 @@ func (s *Server) treeMembers(treeID string) ([]TreeMember, error) {
 	for rows.Next() {
 		var member TreeMember
 		var presenceUpdatedAt sql.NullString
-		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt); err != nil {
+		if err := rows.Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.UsualName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt); err != nil {
 			return nil, err
 		}
 		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
@@ -1460,7 +1462,7 @@ func (s *Server) findTreeMember(treeID, userID string) (TreeMember, error) {
 	var member TreeMember
 	var presenceUpdatedAt sql.NullString
 	err := s.db.QueryRow(
-		`SELECT tm.tree_id, u.id, u.username, `+spaceNameSQL("tm", "pref", "u")+`, tm.display_name, tm.role, tm.state, tm.joined_at, tm.left_at,
+		`SELECT tm.tree_id, u.id, u.username, `+spaceNameSQL("tm", "pref", "u")+`, tm.display_name, COALESCE(NULLIF(TRIM(pref.display_name), ''), u.username), tm.role, tm.state, tm.joined_at, tm.left_at,
 		 COALESCE(pres.state, 'offline'), COALESCE(pres.reachability, 'unavailable'), pres.active_nest_id, pres.updated_at
 		 FROM tree_members tm
 		 JOIN users u ON u.id = tm.user_id
@@ -1468,7 +1470,7 @@ func (s *Server) findTreeMember(treeID, userID string) (TreeMember, error) {
 		 LEFT JOIN user_presence pres ON pres.user_id = u.id
 		 WHERE tm.tree_id = ? AND tm.user_id = ? AND tm.state = 'joined'`,
 		treeID, userID,
-	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt)
+	).Scan(&member.TreeID, &member.UserID, &member.Username, &member.DisplayName, &member.Nickname, &member.UsualName, &member.Role, &member.State, &member.JoinedAt, &member.LeftAt, &member.PresenceState, &member.Reachability, &member.ActiveNestID, &presenceUpdatedAt)
 	if err == nil {
 		applyEffectiveTreeMemberPresence(&member, presenceUpdatedAt.String)
 	}

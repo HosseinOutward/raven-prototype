@@ -315,6 +315,8 @@ export interface TreeMember {
   displayName: string;
   /** The name they chose in this space, empty when they use their usual one. */
   nickname?: string;
+  /** Their usual (global) name, for places outside this space. */
+  usualName?: string;
   role: TreeRole;
   state: TreeMembershipState;
   joinedAt?: string | null;

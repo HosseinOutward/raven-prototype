@@ -965,7 +965,8 @@ func (s *Server) liveKitToken(c *fiber.Ctx) error {
 	}
 
 	displayName := user.DisplayName
-	if nestBelongsToTree(nest) {
+	if nest.TreeID != nil {
+		// Same rule as the participant list: any nest of a space shows the space name.
 		displayName = s.spaceNameOf(*nest.TreeID, user)
 	}
 	token, err := auth.SignLiveKitToken(auth.LiveKitTokenInput{
