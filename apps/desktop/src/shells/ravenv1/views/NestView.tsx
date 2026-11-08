@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { AlertCircle, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
+import { AlertCircle, ChevronLeft, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
 import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
 import { usePushToTalk } from "../usePushToTalk";
 import { groupAudioSatellites, type SatelliteActions } from "@/components/media/audioSatellites";
@@ -161,6 +161,12 @@ function NestThreshold({
   const cameraOn = media.localCameraEnabled && !joinsCameraOff;
   const sharing = media.screenSharing && !data.preferences.joinWithoutScreenSharing;
 
+  const settingsLink = (
+    <button type="button" onClick={() => onNavigate({ kind: "settings", section: "audio-video" })} className="rounded-chip text-foreground underline underline-offset-4 transition-colors hover:text-muted-foreground">
+      Change this in Settings
+    </button>
+  );
+
   const join = () => {
     void entry
       .enter(nest.id)
@@ -178,9 +184,10 @@ function NestThreshold({
             <button
               type="button"
               onClick={() => onNavigate({ kind: "tree", id: tree.id })}
-              className="min-w-0 truncate rounded-chip transition-colors hover:text-foreground"
+              className="inline-flex min-w-0 items-center gap-0.5 rounded-chip transition-colors hover:text-foreground"
             >
-              <bdi>{tree.name}</bdi>
+              <ChevronLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              <bdi className="truncate">{tree.name}</bdi>
             </button>
           ) : (
             <span className="truncate">
@@ -216,7 +223,7 @@ function NestThreshold({
                 !media.audioSupported
                   ? "No microphone found"
                   : joinsMuted
-                    ? "You join muted. Change this in Settings."
+                    ? <>You join muted. {settingsLink}</>
                     : !micOn
                       ? "Muted. Nobody will hear you."
                       : pushToTalk?.supported && pushToTalk.enabled
@@ -236,7 +243,7 @@ function NestThreshold({
                 !media.cameraSupported
                   ? "No camera found"
                   : joinsCameraOff
-                    ? "You join with it off. Change this in Settings."
+                    ? <>You join with it off. {settingsLink}</>
                     : cameraOn
                       ? media.cameraStatus === "live" ? "On. People will see you." : "It turns on when you join. People will see you."
                       : "Off. Nobody will see you."

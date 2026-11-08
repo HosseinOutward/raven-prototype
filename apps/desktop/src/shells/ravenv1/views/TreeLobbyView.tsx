@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowUpDown, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, type Nest, type TreeDetails, type TreeMember, type TreeSearchResult } from "@/lib/api";
 import type { ChatStore } from "@/lib/chat/store";
@@ -74,7 +75,6 @@ export function TreeLobbyView({
           <span className="inline-flex items-center gap-1.5">
             {tree.visibility === "public" ? <Globe2 className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
             {tree.visibility === "public" ? "Public" : "Private"}
-            {tree.description ? ` · ${tree.description}` : ""}
           </span>
         }
         actions={
@@ -129,6 +129,7 @@ export function TreeLobbyView({
       <ViewBody>
         <div className="grid max-w-5xl gap-8 min-[1100px]:grid-cols-[minmax(0,1fr)_264px]">
           <div className="min-w-0 space-y-8">
+            {tree.description ? <p className="max-w-prose text-small text-muted-foreground">{tree.description}</p> : null}
             {canManageMembers && details.joinRequests.length ? (
               <section>
                 <SectionLabel className="mb-1">Asking to join</SectionLabel>
@@ -183,7 +184,7 @@ export function TreeLobbyView({
               />
             ) : quietNests.length ? (
               <section>
-                <SectionLabel className="mb-1">{liveNests.length ? `Quiet ${nestPlural}` : data.labels.nestPlural}</SectionLabel>
+                <SectionLabel className="mb-1">{data.labels.nestPlural}</SectionLabel>
                 <GroupedList>
                   {quietNests.map((nest) => {
                     const state = lifecycleLabel(nest);
@@ -194,7 +195,7 @@ export function TreeLobbyView({
                         onClick={() => onNavigate(nestView(nest))}
                         className="group flex h-11 w-full items-center gap-3 px-3.5 text-left transition-colors hover:bg-secondary"
                       >
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-subtle/60" aria-hidden />
+                        <NestGlyph kind="voice" className="text-subtle" />
                         <span className="min-w-0 flex-1 truncate text-body">{nest.name}</span>
                         {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
                       </button>
@@ -323,18 +324,19 @@ function MemberRow({
   const status = away ? null : nestName ? `In ${nestName}` : presence === "around" ? null : PRESENCE[presence].label;
   const tags = [isSelf ? "You" : null, member.role !== "member" ? TREE_ROLE_LABEL[member.role] : null].filter(Boolean).join(" · ");
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title={`${displayNameFor(member)} · ${PRESENCE[presence].label}`}
-      className="flex min-h-10 w-full items-center gap-2.5 rounded-control px-2 py-1 text-left transition-colors hover:bg-secondary"
-    >
-      <PersonAvatar id={member.userId} name={displayNameFor(member)} presence={presence} className={cn("h-7 w-7", away && "opacity-60")} />
-      <span className="min-w-0 flex-1">
-        <span className={cn("block truncate text-small", away ? "text-muted-foreground" : "text-foreground")}>{displayNameFor(member)}</span>
-        {status || tags ? <span className="block truncate text-caption text-muted-foreground">{[status, tags].filter(Boolean).join(" · ")}</span> : null}
-      </span>
-    </button>
+    <Tooltip label={`${displayNameFor(member)} · ${PRESENCE[presence].label}`} side="left">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex min-h-10 w-full items-center gap-2.5 rounded-control px-2 py-1 text-left transition-colors hover:bg-secondary"
+      >
+        <PersonAvatar id={member.userId} name={displayNameFor(member)} presence={presence} className={cn("h-7 w-7", away && "opacity-60")} />
+        <span className="min-w-0 flex-1">
+          <span className={cn("block truncate text-small", away ? "text-muted-foreground" : "text-foreground")}>{displayNameFor(member)}</span>
+          {status || tags ? <span className="block truncate text-caption text-muted-foreground">{[status, tags].filter(Boolean).join(" · ")}</span> : null}
+        </span>
+      </button>
+    </Tooltip>
   );
 }
 
