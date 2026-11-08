@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, ChevronRight, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
+import { ArrowUpDown, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -73,7 +73,7 @@ export function TreeLobbyView({
         subtitle={
           <span className="inline-flex items-center gap-1.5">
             {tree.visibility === "public" ? <Globe2 className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
-            {tree.visibility === "public" ? "Public" : "Private"} · {details.members.length} {details.members.length === 1 ? "member" : "members"}
+            {tree.visibility === "public" ? "Public" : "Private"}
             {tree.description ? ` · ${tree.description}` : ""}
           </span>
         }
@@ -197,7 +197,6 @@ export function TreeLobbyView({
                         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-subtle/60" aria-hidden />
                         <span className="min-w-0 flex-1 truncate text-body">{nest.name}</span>
                         {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
-                        <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
                       </button>
                     );
                   })}

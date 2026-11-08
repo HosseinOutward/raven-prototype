@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDown, ArrowUp, ChevronRight, GripVertical, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, GripVertical, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { RenameDialog } from "@/components/chat/ChatDialogs";
 import { MentionDot, UnreadCount } from "@/components/chat/ConversationRow";
 import { Button } from "@/components/ui/button";
@@ -93,10 +93,13 @@ export function TreeNestsSection({
   }
 
   const hasCategories = sections.length > 1;
+  // A live voice nest is already a card under "Live now"; listing it here too reads as a second room.
+  const isLive = (ref: NestRef) => ref.kind === "voice" && voiceById.get(ref.id)?.lifecycleState === "active";
   return (
     <>
       {sections.map((section) => {
-        if (section.items.length === 0 && (!section.category || !canManage)) return null;
+        const items = section.items.filter((ref) => !isLive(ref));
+        if (items.length === 0 && (section.items.length > 0 || !section.category || !canManage)) return null;
         return (
           <section key={section.category?.id ?? "top"}>
             <SectionLabel
@@ -125,9 +128,9 @@ export function TreeNestsSection({
             >
               {section.category ? <bdi>{section.category.name}</bdi> : hasCategories ? "No category" : nestPlural}
             </SectionLabel>
-            {section.items.length ? (
+            {items.length ? (
               <GroupedList>
-                {section.items.map((ref) =>
+                {items.map((ref) =>
                   ref.kind === "text" ? (
                     <TextNestRow
                       key={`text:${ref.id}`}
@@ -275,7 +278,6 @@ function TextNestRow({ name, unread, mentions, onOpen, menu }: { name: string; u
         <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 && "font-medium")}><bdi>{name}</bdi></span>
         <MentionDot count={mentions} />
         <UnreadCount count={unread} />
-        <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
       </button>
       {menu}
     </div>
@@ -291,7 +293,6 @@ function VoiceNestRow({ nest, onOpen, menu }: { nest: Nest; onOpen: (nest: Nest)
         <NestGlyph kind="voice" live={live} className={live ? "text-live" : "text-subtle"} />
         <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
         {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
-        <ChevronRight className="h-4 w-4 shrink-0 text-subtle transition-colors group-hover:text-foreground" />
       </button>
       {menu}
     </div>
