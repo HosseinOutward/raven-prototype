@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Info, MoreHorizontal, Shield, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/dialog";
+import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input, Textarea } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -226,6 +226,64 @@ function AccessSettings({ details, data }: { details: TreeDetails; data: RavenSh
   );
 }
 
+/** A name that applies inside one space only. Blank goes back to the usual name. */
+function SpaceNameDialog({
+  member,
+  isSelf,
+  treeName,
+  onClose,
+  onSave,
+}: {
+  member: TreeMember | null;
+  isSelf: boolean;
+  treeName: string;
+  onClose: () => void;
+  onSave: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [working, setWorking] = useState(false);
+  useEffect(() => {
+    if (member) setName(member.nickname ?? "");
+  }, [member]);
+  const save = (next: string) => {
+    if (working) return;
+    setWorking(true);
+    void onSave(next)
+      .catch(() => undefined)
+      .finally(() => setWorking(false));
+  };
+  const who = member ? (isSelf ? "your" : `${member.username}’s`) : "";
+  return (
+    <Dialog
+      open={member != null}
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      title={isSelf ? `Your name in ${treeName}` : `${member ? displayNameFor(member) : ""}’s name in ${treeName}`}
+      description={`Everyone in ${treeName} sees this instead of ${who} usual name. Nowhere else changes.`}
+      widthClassName="max-w-sm"
+    >
+      <form
+        className="space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save(name.trim());
+        }}
+      >
+        <label className="block space-y-1.5 text-small text-muted-foreground">
+          Name
+          <Input value={name} onChange={(event) => setName(event.currentTarget.value)} placeholder={member?.nickname ? member.username : member ? displayNameFor(member) : ""} maxLength={80} autoFocus />
+        </label>
+        <div className="flex justify-between gap-2">
+          <Button variant="ghost" disabled={working || !member?.nickname} onClick={() => save("")}>Use usual name</Button>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={working}>{working ? "Saving…" : "Save"}</Button>
+          </div>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
 function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; data: RavenShellData; onNavigate: (view: RavenView) => void }) {
   const tree = details.tree;
   const treeLabel = data.labels.treeSingular.toLowerCase();
@@ -235,6 +293,7 @@ function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; d
   const canLeave = treeCan(details, "leave");
   const isOwner = details.viewer?.role === "owner";
   const [removing, setRemoving] = useState<TreeMember | null>(null);
+  const [renaming, setRenaming] = useState<TreeMember | null>(null);
   const [transferring, setTransferring] = useState<TreeMember | null>(null);
   const [leaving, setLeaving] = useState(false);
   const members = [...details.members].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || displayNameFor(a).localeCompare(displayNameFor(b)));
@@ -250,6 +309,7 @@ function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; d
             const canChangeRole = canAssignRoles && member.role !== "owner";
             const canRemove = !isSelf && treeCan(details, "members.remove") && treeOutranks(details, member.role);
             const canMakeOwner = canTransfer && !isSelf;
+            const canRename = isSelf || (treeCan(details, "members.rename") && treeOutranks(details, member.role));
             return (
               <div key={member.userId} className="flex items-center gap-3 px-4 py-2.5">
                 <button type="button" onClick={() => onNavigate({ kind: "user", id: member.userId })} className="flex min-w-0 flex-1 items-center gap-3 text-left">
@@ -274,7 +334,7 @@ function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; d
                 ) : (
                   <span className="shrink-0 text-small text-muted-foreground">{TREE_ROLE_LABEL[member.role]}</span>
                 )}
-                {canRemove || canMakeOwner ? (
+                {canRename || canRemove || canMakeOwner ? (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button size="icon-sm" variant="ghost" aria-label={`More for ${name}`}>
@@ -282,6 +342,7 @@ function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; d
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      {canRename ? <DropdownMenuItem onSelect={() => setRenaming(member)}>{isSelf ? "Set your name here…" : "Set name here…"}</DropdownMenuItem> : null}
                       {canMakeOwner ? <DropdownMenuItem onSelect={() => setTransferring(member)}>Make owner…</DropdownMenuItem> : null}
                       {canRemove ? <DropdownMenuItem onSelect={() => setRemoving(member)}>Remove from {treeLabel}…</DropdownMenuItem> : null}
                     </DropdownMenuContent>
@@ -309,6 +370,17 @@ function MemberSettings({ details, data, onNavigate }: { details: TreeDetails; d
         </div>
       </SettingsSection>
 
+      <SpaceNameDialog
+        member={renaming}
+        isSelf={renaming?.userId === data.user?.id}
+        treeName={tree.name}
+        onClose={() => setRenaming(null)}
+        onSave={async (name) => {
+          if (!renaming) return;
+          await data.updateTreeMemberName(tree.id, renaming.userId, name);
+          setRenaming(null);
+        }}
+      />
       <ConfirmDialog
         open={removing != null}
         onOpenChange={(open) => { if (!open) setRemoving(null); }}

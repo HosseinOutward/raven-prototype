@@ -264,6 +264,10 @@ export class AdminApi {
     return this.request("POST", `/v1/admin/spaces/${id(spaceId)}/members/${id(userId)}/role`, { role });
   }
 
+  setMemberName(spaceId: string, userId: string, displayName: string): Promise<SpaceDetail> {
+    return this.request("POST", `/v1/admin/spaces/${id(spaceId)}/members/${id(userId)}/name`, { displayName });
+  }
+
   removeMember(spaceId: string, userId: string): Promise<SpaceDetail> {
     return this.request("DELETE", `/v1/admin/spaces/${id(spaceId)}/members/${id(userId)}`);
   }

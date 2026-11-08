@@ -313,6 +313,8 @@ export interface TreeMember {
   userId: string;
   username: string;
   displayName: string;
+  /** The name they chose in this space, empty when they use their usual one. */
+  nickname?: string;
   role: TreeRole;
   state: TreeMembershipState;
   joinedAt?: string | null;
@@ -1019,6 +1021,13 @@ export class ApiClient {
     return this.request<{ member: TreeMember }>(`/v1/trees/${treeId}/members/${userId}/role`, {
       method: "POST",
       body: JSON.stringify({ role }),
+    });
+  }
+
+  updateTreeMemberName(treeId: string, userId: string, displayName: string) {
+    return this.request<{ member: TreeMember }>(`/v1/trees/${treeId}/members/${userId}/name`, {
+      method: "POST",
+      body: JSON.stringify({ displayName }),
     });
   }
 
