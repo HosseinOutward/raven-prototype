@@ -14,7 +14,7 @@ import { useTreeChatSummaries } from "../useChat";
 import type { NestEntryController } from "../useNestEntry";
 import { AddTreeMemberDialog, NameDialog, TREE_ROLE_LABEL } from "./dialogs";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
-import { LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
+import { DoorwayHeader, DoorwayPage, LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
 import { TreeNestsSection } from "./TreeNestsSection";
 
 /** A tree's lobby answers: what is alive in this group right now? */
@@ -382,25 +382,28 @@ export function PublicTreePreviewView({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
-      <div className="w-full max-w-sm text-center">
-        <Avatar name={result.tree.name} src={api.treeAvatarUrl(result.tree.id, result.tree.updatedAt)} className="mx-auto h-16 w-16 rounded-card text-title" />
-        <h1 className="mt-4 text-display font-semibold">{result.tree.name}</h1>
-        <p className="mt-1 text-small text-muted-foreground">{result.tree.description || `A public ${treeLabel}.`}</p>
-        <p className="mt-5 text-small text-muted-foreground">
-          {pending
-            ? "Your request was sent. An owner or moderator will let you in."
-            : free
-              ? `Anyone on this server can join. Members will see that you joined.`
-              : `Joining needs approval from an owner or moderator.`}
-        </p>
-        {pending ? null : (
-          <Button className="mt-5" size="lg" disabled={working} onClick={() => void act()}>
+    <DoorwayPage>
+      <DoorwayHeader
+        leading={<Avatar name={result.tree.name} src={api.treeAvatarUrl(result.tree.id, result.tree.updatedAt)} className="h-16 w-16 shrink-0 rounded-card text-title" />}
+        context={`Public ${treeLabel}`}
+        title={result.tree.name}
+      />
+      {result.tree.description ? <p className="mt-4 text-body text-muted-foreground">{result.tree.description}</p> : null}
+      {pending ? null : (
+        <div className="mt-6 flex">
+          <Button size="lg" className="flex-1" disabled={working} onClick={() => void act()}>
             {joined || free ? <LogIn className="h-4 w-4" /> : <Hand className="h-4 w-4" />}
             {joined ? `Open ${treeLabel}` : free ? `Join ${treeLabel}` : "Ask to join"}
           </Button>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+      <p role="status" className={cn(pending ? "mt-6 text-small text-muted-foreground" : "mt-3 text-caption text-subtle")}>
+        {pending
+          ? "Your request was sent. An owner or moderator will let you in."
+          : free
+            ? "Anyone on this server can join. Members will see that you joined."
+            : "Joining needs approval from an owner or moderator."}
+      </p>
+    </DoorwayPage>
   );
 }

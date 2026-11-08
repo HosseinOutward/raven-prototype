@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { Bookmark, Check, ChevronDown, Hand, LogIn, MessageSquare, Settings, UserPlus, X } from "lucide-react";
+import { Bookmark, Hand, LogIn, MessageSquare, Settings, UserCheck, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import { failureText } from "@/lib/chat/errors";
@@ -12,7 +11,7 @@ import { GroupedList, PresenceDot, SectionLabel } from "../atoms";
 import { personStatus } from "../people";
 import { PRESENCE, type RavenShellData, type RavenView, type ShellPerson } from "../state";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
-import { namesSentence } from "./shared";
+import { DoorwayHeader, DoorwayPage, DoorwayRow, namesSentence } from "./shared";
 import { useOpenSaved } from "../useChat";
 import { useProfileKnock } from "../useProfileKnock";
 import { usePendingActions } from "../usePendingActions";
@@ -64,114 +63,155 @@ export function UserPageView({
         ? `You can see ${person.name} because they are in ${activeNest.name}.`
         : `You and ${person.name} do not share a ${data.labels.treeSingular.toLowerCase()} yet.`;
 
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-md px-6 py-12">
-        <div className="text-center">
-          <Avatar name={person.name} src={api.userAvatarUrl(person.id)} className="mx-auto h-20 w-20 text-display" onOpen={() => setViewingPicture(person.id)} />
-          <h1 className="mt-4 truncate text-display font-semibold">{person.name}</h1>
-          {person.username ? <p className="mt-0.5 truncate text-small text-muted-foreground">@<bdi>{person.username}</bdi></p> : null}
-          {person.presenceUnknown ? null : (
-            <p className="mt-1 inline-flex items-center gap-2 text-small text-muted-foreground">
-              <PresenceDot presence={person.presence} />
-              {personStatus(person, data) ?? PRESENCE[person.presence].label}
-            </p>
-          )}
-        </div>
+  const knockButton = (primary: boolean) => (
+    <Button
+      size="lg"
+      variant={primary ? "default" : "secondary"}
+      className={primary ? "min-w-0 flex-1" : "shrink-0"}
+      disabled={profileKnock.disabled}
+      onClick={profileKnock.knock}
+      aria-describedby="profile-knock-help"
+    >
+      <Hand className="h-4 w-4" />
+      <span className="truncate">{profileKnock.label}</span>
+    </Button>
+  );
 
-        {isSelf ? (
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-            <Button variant="secondary" onClick={() => onNavigate({ kind: "settings", section: "profile" })}>
-              <Settings className="h-4 w-4" />
-              Edit your profile
-            </Button>
-            {chat ? (
-              <Button variant="secondary" disabled={saved.opening} onClick={saved.open}>
-                <Bookmark className="h-4 w-4" />
-                Saved messages
-              </Button>
+  return (
+    <DoorwayPage>
+      <DoorwayHeader
+        leading={<Avatar name={person.name} src={api.userAvatarUrl(person.id)} className="h-16 w-16 shrink-0 text-title" onOpen={() => setViewingPicture(person.id)} />}
+        title={person.name}
+        meta={
+          <>
+            {person.username ? (
+              <span className="min-w-0 truncate">
+                @<bdi>{person.username}</bdi>
+              </span>
             ) : null}
-          </div>
-        ) : (
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+            {person.presenceUnknown ? null : (
+              <span className="inline-flex shrink-0 items-center gap-1.5">
+                <PresenceDot presence={person.presence} />
+                {personStatus(person, data) ?? PRESENCE[person.presence].label}
+              </span>
+            )}
+          </>
+        }
+      />
+
+      {incoming && !isSelf ? (
+        <div role="status" className="mt-6 flex items-center gap-3 rounded-card bg-secondary/60 px-3.5 py-3">
+          <p className="min-w-0 flex-1 text-small">
+            <bdi>{person.name}</bdi> asked to be your friend.
+          </p>
+          <Button size="sm" disabled={answering} onClick={() => actions.run("friend", () => data.acceptFriendRequest(incoming.id))}>
+            Accept
+          </Button>
+          <Button size="sm" variant="ghost" disabled={answering} onClick={() => actions.run("friend", () => data.declineFriendRequest(incoming.id))}>
+            Decline
+          </Button>
+        </div>
+      ) : null}
+
+      {isSelf ? (
+        <div className="mt-6 flex items-center gap-2">
+          <Button size="lg" variant="secondary" className="flex-1" onClick={() => onNavigate({ kind: "settings", section: "profile" })}>
+            <Settings className="h-4 w-4" />
+            Edit your profile
+          </Button>
+          {chat ? (
+            <Button size="lg" variant="secondary" className="flex-1" disabled={saved.opening} onClick={saved.open}>
+              <Bookmark className="h-4 w-4" />
+              Saved messages
+            </Button>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <div className="mt-6 flex items-center gap-2">
             {activeNest ? (
-              <Button onClick={() => onNavigate({ kind: "nest", id: activeNest.id })}>
+              <Button size="lg" className="min-w-0 flex-1" onClick={() => onNavigate({ kind: "nest", id: activeNest.id })}>
                 <LogIn className="h-4 w-4" />
-                Go to {activeNest.name}
+                <span className="truncate">Go to {activeNest.name}</span>
               </Button>
-            ) : null}
-            <Button variant={activeNest ? "secondary" : "default"} disabled={profileKnock.disabled} onClick={profileKnock.knock} aria-describedby="profile-knock-help">
-              <Hand className="h-4 w-4" />
-              {profileKnock.label}
-            </Button>
+            ) : (
+              knockButton(true)
+            )}
+            {activeNest ? knockButton(false) : null}
             {chat && isFriend ? (
-              <Button variant="secondary" disabled={openingChat} onClick={message}>
+              <Button size="lg" variant="secondary" className="shrink-0" disabled={openingChat} onClick={message}>
                 <MessageSquare className="h-4 w-4" />
                 Message
               </Button>
             ) : null}
-            {isFriend ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost">
-                    <Check className="h-4 w-4" />
-                    Friends
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="center">
-                  <DropdownMenuItem destructive onSelect={() => setConfirmRemove(true)}>Remove friend</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : incoming ? (
-              <>
-                <Button variant="secondary" disabled={answering} onClick={() => actions.run("friend", () => data.acceptFriendRequest(incoming.id))}>
-                  <Check className="h-4 w-4" />
-                  Accept friend request
-                </Button>
-                <Button variant="ghost" disabled={answering} onClick={() => actions.run("friend", () => data.declineFriendRequest(incoming.id))}>Decline</Button>
-              </>
-            ) : outgoing ? (
-              <Button variant="ghost" disabled={answering} onClick={() => actions.run("friend", () => data.cancelFriendRequest(outgoing.id))}>
-                <X className="h-4 w-4" />
-                Cancel friend request
-              </Button>
-            ) : (
-              <Button variant="secondary" disabled={answering} onClick={() => actions.run("friend", () => data.sendFriendRequest(person.id))}>
-                <UserPlus className="h-4 w-4" />
-                Add friend
-              </Button>
-            )}
           </div>
-        )}
-
-        {isSelf ? null : (
-          <p id="profile-knock-help" className="mt-6 text-center text-small text-muted-foreground" role="status">
+          <p id="profile-knock-help" className="mt-3 text-caption text-subtle" role="status">
             {profileKnock.description}
           </p>
-        )}
 
-        {sharedTrees.length ? (
-          <section className="mt-10">
-            <SectionLabel className="mb-1">{isSelf ? `${data.labels.treePlural} you’re in` : `${data.labels.treePlural} you share`}</SectionLabel>
-            <GroupedList>
-              {sharedTrees.map((tree) => (
-                <button
-                  key={tree.id}
-                  type="button"
-                  onClick={() => onNavigate({ kind: "tree", id: tree.id })}
-                  className="flex h-11 w-full items-center gap-3 px-3 text-left transition-colors hover:bg-secondary"
-                >
-                  <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-6 w-6 rounded-chip text-[10px]" />
-                  <span className="min-w-0 flex-1 truncate text-small">{tree.name}</span>
-                </button>
-              ))}
+          {incoming ? null : (
+            <GroupedList className="mt-8">
+              {isFriend ? (
+                <DoorwayRow
+                  icon={<UserCheck />}
+                  label="Friends"
+                  value={chat ? "You can message each other." : `You and ${person.name} are friends.`}
+                  control={
+                    <Button size="xs" variant="ghost" onClick={() => setConfirmRemove(true)}>
+                      Remove
+                    </Button>
+                  }
+                />
+              ) : outgoing ? (
+                <DoorwayRow
+                  icon={<UserPlus />}
+                  label="Friend request sent"
+                  value={`Waiting for ${person.name} to answer.`}
+                  control={
+                    <Button size="xs" variant="ghost" disabled={answering} onClick={() => actions.run("friend", () => data.cancelFriendRequest(outgoing.id))}>
+                      Cancel
+                    </Button>
+                  }
+                />
+              ) : (
+                <DoorwayRow
+                  icon={<UserPlus />}
+                  label="Not friends yet"
+                  value={chat ? "Friends can message each other." : `${person.name} decides whether to accept.`}
+                  control={
+                    <Button size="xs" variant="secondary" disabled={answering} onClick={() => actions.run("friend", () => data.sendFriendRequest(person.id))}>
+                      Add friend
+                    </Button>
+                  }
+                />
+              )}
             </GroupedList>
-          </section>
-        ) : null}
+          )}
+        </>
+      )}
 
-        {isSelf ? null : <p className="mt-6 text-center text-caption text-subtle">{visibleBecause}</p>}
-      </div>
+      {sharedTrees.length ? (
+        <section className="mt-8">
+          <SectionLabel className="mb-1">{isSelf ? `${data.labels.treePlural} you’re in` : `${data.labels.treePlural} you share`}</SectionLabel>
+          <GroupedList>
+            {sharedTrees.map((tree) => (
+              <button
+                key={tree.id}
+                type="button"
+                onClick={() => onNavigate({ kind: "tree", id: tree.id })}
+                className="flex h-11 w-full items-center gap-3 px-3.5 text-left transition-colors hover:bg-secondary"
+              >
+                <Avatar name={tree.name} src={api.treeAvatarUrl(tree.id, tree.updatedAt)} className="h-6 w-6 rounded-chip text-[10px]" />
+                <span className="min-w-0 flex-1 truncate text-small">
+                  <bdi>{tree.name}</bdi>
+                </span>
+              </button>
+            ))}
+          </GroupedList>
+        </section>
+      ) : null}
+
+      {isSelf ? null : <p className="mt-6 text-caption text-subtle">{visibleBecause}</p>}
 
       {viewingPicture === person.id ? <ProfilePictureViewer src={api.userAvatarUrl(person.id)} alt={`${person.name}’s profile picture`} onClose={() => setViewingPicture(null)} /> : null}
       <ConfirmDialog
@@ -186,6 +226,6 @@ export function UserPageView({
           setConfirmRemove(false);
         }}
       />
-    </div>
+    </DoorwayPage>
   );
 }

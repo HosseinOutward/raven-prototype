@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import { AlertCircle, Eye, Loader2, Mic, MicOff, MonitorUp, Video, VideoOff } from "lucide-react";
 import { pushToTalkKeyLabel } from "@/lib/pushToTalk";
 import { usePushToTalk } from "../usePushToTalk";
@@ -18,7 +18,7 @@ import { AvatarStack, GroupedList, LiveDot } from "../atoms";
 import { formatRelativeTime, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import type { NestEntryController } from "../useNestEntry";
-import { namesSentence, nestPeople, treeNameFor } from "./shared";
+import { DoorwayHeader, DoorwayPage, DoorwayRow, namesSentence, nestPeople, treeNameFor } from "./shared";
 
 /**
  * A nest is either a threshold (you are looking in, deciding whether to enter)
@@ -171,174 +171,163 @@ function NestThreshold({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
-      <div className="w-full max-w-[420px]">
-        {tree ? (
-          <button
-            type="button"
-            onClick={() => onNavigate({ kind: "tree", id: tree.id })}
-            className="rounded-chip text-small text-muted-foreground transition-colors hover:text-foreground"
-          >
-            {tree.name}
-          </button>
-        ) : (
-          <div className="text-small text-muted-foreground">
-            {data.labels.temporaryNest}
-            {nest.expiresAt && !closed ? ` · closes ${formatRelativeTime(nest.expiresAt)}` : ""}
-          </div>
-        )}
-        <h1 className="mt-1 text-display font-semibold">{nest.name}</h1>
-
-        <div className="mt-4 flex min-h-7 items-center gap-3">
-          {people.length ? (
-            <>
-              <AvatarStack people={people} max={5} size="md" />
-              <span className="flex min-w-0 items-center gap-2 text-small text-muted-foreground">
-                <LiveDot />
-                <span className="truncate">{namesSentence(people.map((person) => person.name), 3)} {people.length === 1 ? "is" : "are"} here</span>
-              </span>
-            </>
+    <DoorwayPage>
+      <DoorwayHeader
+        context={
+          tree ? (
+            <button
+              type="button"
+              onClick={() => onNavigate({ kind: "tree", id: tree.id })}
+              className="min-w-0 truncate rounded-chip transition-colors hover:text-foreground"
+            >
+              <bdi>{tree.name}</bdi>
+            </button>
           ) : (
-            <span className="text-small text-muted-foreground">{closed ? `This ${nestLabel} has closed.` : "Nobody is here yet. You would be the first."}</span>
-          )}
-        </div>
+            <span className="truncate">
+              {data.labels.temporaryNest}
+              {nest.expiresAt && !closed ? ` · closes ${formatRelativeTime(nest.expiresAt)}` : ""}
+            </span>
+          )
+        }
+        title={nest.name}
+      />
 
-        {closed ? null : (
+      <div className="mt-4 flex min-h-7 items-center gap-3">
+        {people.length ? (
           <>
-            <GroupedList className="mt-6">
-              <RevealRow
-                icon={micOn ? <Mic /> : <MicOff />}
-                label="Microphone"
-                value={
-                  !media.audioSupported
-                    ? "No microphone found"
-                    : joinsMuted
-                      ? "You join muted. Change this in Settings."
-                      : !micOn
-                        ? "Muted. Nobody will hear you."
-                        : pushToTalk?.supported && pushToTalk.enabled
-                          ? `On. People hear you while you hold ${pushToTalkKeyLabel(pushToTalk.key)}.`
-                          : "On. People will hear you."
-                }
-                control={
-                  media.audioSupported && !joinsMuted ? (
-                    <Switch aria-label="Microphone" checked={micOn} disabled={media.busy} onCheckedChange={() => void media.toggleMic().catch(() => undefined)} />
-                  ) : null
-                }
-              />
-              <RevealRow
-                icon={cameraOn ? <Video /> : <VideoOff />}
-                label="Camera"
-                value={
-                  !media.cameraSupported
-                    ? "No camera found"
-                    : joinsCameraOff
-                      ? "You join with it off. Change this in Settings."
-                      : cameraOn
-                        ? media.cameraStatus === "live" ? "On. People will see you." : "It turns on when you join. People will see you."
-                        : "Off. Nobody will see you."
-                }
-                control={
-                  media.cameraSupported && !joinsCameraOff ? (
-                    <Switch aria-label="Camera" checked={media.localCameraEnabled} disabled={media.busy} onCheckedChange={() => void media.toggleCamera().catch(() => undefined)} />
-                  ) : null
-                }
-              />
-              {sharing ? (
-                <RevealRow
-                  icon={<MonitorUp />}
-                  label="Screen"
-                  value={
-                    media.screenShareStatus === "live"
-                      ? "You are sharing. People here will see it as soon as you join."
-                      : "Ready to share. People will see it as soon as you join."
-                  }
-                  control={<Button size="xs" variant="secondary" onClick={() => void media.stopScreenShare().catch(() => undefined)}>Stop</Button>}
-                />
-              ) : null}
-              <RevealRow
-                icon={<Eye />}
-                label="Who sees you here"
-                value={
-                  tree
-                    ? `Members of ${tree.name} can see that you are in this ${nestLabel}.`
-                    : `Only people invited or let in can see that you are in this ${nestLabel}.`
-                }
-              />
-            </GroupedList>
-
-            {failed ? (
-              <div role="alert" className="mt-4 flex items-start gap-2.5 rounded-card bg-destructive/10 px-3.5 py-3 text-small">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-                <div className="min-w-0">
-                  {votedOut ? (
-                    <>
-                      <div className="font-medium">You were voted out of this call.</div>
-                      <p className="mt-0.5 text-muted-foreground">{votedOut}</p>
-                    </>
-                  ) : (
-                    <>
-                      <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
-                      <p className="mt-0.5 text-muted-foreground">{media.error}{media.lastError?.action ? ` ${media.lastError.action}` : ""}</p>
-                    </>
-                  )}
-                </div>
-              </div>
-            ) : null}
-
-            {requested && !enteringHere ? (
-              <div role="status" className="mt-4 rounded-card bg-secondary/60 px-3.5 py-3 text-small text-muted-foreground">
-                You asked to join. Someone inside needs to let you in.
-              </div>
-            ) : null}
-
-            <div className="mt-6 flex items-center gap-2">
-              {countdown ? (
-                <Button size="lg" variant="secondary" className="flex-1" onClick={entry.cancel}>
-                  Joining in {countdown.secondsLeft}… Cancel
-                </Button>
-              ) : enteringHere ? (
-                <Button size="lg" className="flex-1" disabled>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Connecting…
-                </Button>
-              ) : (
-                <Button size="lg" className="flex-1" disabled={busyElsewhere} onClick={join}>
-                  {failed ? "Try again" : requested ? "Ask again" : `Join ${nestLabel}`}
-                </Button>
-              )}
-              {enteringHere ? (
-                countdown ? null : <Button size="lg" variant="ghost" onClick={entry.cancel}>Cancel</Button>
-              ) : (
-                <Button size="lg" variant="ghost" onClick={onBack}>Not now</Button>
-              )}
-            </div>
-
-            <p className="mt-3 text-caption text-subtle">
-              {countdown
-                ? "People inside have been told you are coming."
-                : otherNest
-                  ? `You are in ${otherNest.name}. Joining here leaves it.`
-                  : people.length
-                    ? "People inside get a few seconds’ notice before you enter."
-                    : tree ? `Others in this ${treeLabel} will see it come alive.` : ""}
-            </p>
+            <AvatarStack people={people} max={5} size="md" />
+            <span className="flex min-w-0 items-center gap-2 text-small text-muted-foreground">
+              <LiveDot />
+              <span className="truncate">{namesSentence(people.map((person) => person.name), 3)} {people.length === 1 ? "is" : "are"} here</span>
+            </span>
           </>
+        ) : (
+          <span className="text-small text-muted-foreground">{closed ? `This ${nestLabel} has closed.` : "Nobody is here yet. You would be the first."}</span>
         )}
       </div>
-    </div>
-  );
-}
 
-function RevealRow({ icon, label, value, control }: { icon: ReactNode; label: string; value: string; control?: ReactNode }) {
-  return (
-    <div className="flex items-center gap-3 px-3.5 py-3">
-      <span className="shrink-0 text-muted-foreground [&>svg]:h-[18px] [&>svg]:w-[18px]">{icon}</span>
-      <div className="min-w-0 flex-1">
-        <div className="text-small font-medium">{label}</div>
-        <div className="text-caption text-muted-foreground">{value}</div>
-      </div>
-      {control}
-    </div>
+      {closed ? null : (
+        <>
+          <GroupedList className="mt-6">
+            <DoorwayRow
+              icon={micOn ? <Mic /> : <MicOff />}
+              label="Microphone"
+              value={
+                !media.audioSupported
+                  ? "No microphone found"
+                  : joinsMuted
+                    ? "You join muted. Change this in Settings."
+                    : !micOn
+                      ? "Muted. Nobody will hear you."
+                      : pushToTalk?.supported && pushToTalk.enabled
+                        ? `On. People hear you while you hold ${pushToTalkKeyLabel(pushToTalk.key)}.`
+                        : "On. People will hear you."
+              }
+              control={
+                media.audioSupported && !joinsMuted ? (
+                  <Switch aria-label="Microphone" checked={micOn} disabled={media.busy} onCheckedChange={() => void media.toggleMic().catch(() => undefined)} />
+                ) : null
+              }
+            />
+            <DoorwayRow
+              icon={cameraOn ? <Video /> : <VideoOff />}
+              label="Camera"
+              value={
+                !media.cameraSupported
+                  ? "No camera found"
+                  : joinsCameraOff
+                    ? "You join with it off. Change this in Settings."
+                    : cameraOn
+                      ? media.cameraStatus === "live" ? "On. People will see you." : "It turns on when you join. People will see you."
+                      : "Off. Nobody will see you."
+              }
+              control={
+                media.cameraSupported && !joinsCameraOff ? (
+                  <Switch aria-label="Camera" checked={media.localCameraEnabled} disabled={media.busy} onCheckedChange={() => void media.toggleCamera().catch(() => undefined)} />
+                ) : null
+              }
+            />
+            {sharing ? (
+              <DoorwayRow
+                icon={<MonitorUp />}
+                label="Screen"
+                value={
+                  media.screenShareStatus === "live"
+                    ? "You are sharing. People here will see it as soon as you join."
+                    : "Ready to share. People will see it as soon as you join."
+                }
+                control={<Button size="xs" variant="secondary" onClick={() => void media.stopScreenShare().catch(() => undefined)}>Stop</Button>}
+              />
+            ) : null}
+            <DoorwayRow
+              icon={<Eye />}
+              label="Who sees you here"
+              value={
+                tree
+                  ? `Members of ${tree.name} can see that you are in this ${nestLabel}.`
+                  : `Only people invited or let in can see that you are in this ${nestLabel}.`
+              }
+            />
+          </GroupedList>
+
+          {failed ? (
+            <div role="alert" className="mt-4 flex items-start gap-2.5 rounded-card bg-destructive/10 px-3.5 py-3 text-small">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <div className="min-w-0">
+                {votedOut ? (
+                  <>
+                    <div className="font-medium">You were voted out of this call.</div>
+                    <p className="mt-0.5 text-muted-foreground">{votedOut}</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="font-medium">Couldn’t connect. You are not in the {nestLabel}.</div>
+                    <p className="mt-0.5 text-muted-foreground">{media.error}{media.lastError?.action ? ` ${media.lastError.action}` : ""}</p>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {requested && !enteringHere ? (
+            <div role="status" className="mt-4 rounded-card bg-secondary/60 px-3.5 py-3 text-small text-muted-foreground">
+              You asked to join. Someone inside needs to let you in.
+            </div>
+          ) : null}
+
+          <div className="mt-6 flex items-center gap-2">
+            {countdown ? (
+              <Button size="lg" variant="secondary" className="flex-1" onClick={entry.cancel}>
+                Joining in {countdown.secondsLeft}… Cancel
+              </Button>
+            ) : enteringHere ? (
+              <Button size="lg" className="flex-1" disabled>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Connecting…
+              </Button>
+            ) : (
+              <Button size="lg" className="flex-1" disabled={busyElsewhere} onClick={join}>
+                {failed ? "Try again" : requested ? "Ask again" : `Join ${nestLabel}`}
+              </Button>
+            )}
+            {enteringHere ? (
+              countdown ? null : <Button size="lg" variant="ghost" onClick={entry.cancel}>Cancel</Button>
+            ) : (
+              <Button size="lg" variant="ghost" onClick={onBack}>Not now</Button>
+            )}
+          </div>
+
+          <p className="mt-3 text-caption text-subtle">
+            {countdown
+              ? "People inside have been told you are coming."
+              : otherNest
+                ? `You are in ${otherNest.name}. Joining here leaves it.`
+                : people.length
+                  ? "People inside get a few seconds’ notice before you enter."
+                  : tree ? `Others in this ${treeLabel} will see it come alive.` : ""}
+          </p>
+        </>
+      )}
+    </DoorwayPage>
   );
 }

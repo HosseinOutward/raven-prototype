@@ -50,6 +50,51 @@ export function ViewHeader({
   );
 }
 
+/**
+ * A page you stand at before going further: a person, a nest before you join, a tree
+ * before you join it. One narrow column, centred while it fits and scrolling when it
+ * does not, so these pages read alike whichever of them you land on.
+ */
+export function DoorwayPage({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-8">
+      <div className="m-auto w-full max-w-[420px]">{children}</div>
+    </div>
+  );
+}
+
+/** The top of a doorway page: where it is, what it is called, and one line about it. */
+export function DoorwayHeader({ leading, context, title, meta }: { leading?: ReactNode; context?: ReactNode; title: string; meta?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-4">
+      {leading}
+      <div className="min-w-0 flex-1">
+        {context ? <div className="flex min-w-0 text-small text-muted-foreground">{context}</div> : null}
+        <h1 className="truncate text-display font-semibold">
+          <bdi>{title}</bdi>
+        </h1>
+        {meta ? <div className="mt-0.5 flex min-w-0 items-center gap-2 text-small text-muted-foreground">{meta}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+/** One fact on a doorway page, said as what other people will notice, with the control that changes it. */
+export function DoorwayRow({ icon, label, value, control }: { icon: ReactNode; label: string; value: ReactNode; control?: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 px-3.5 py-3">
+      <span className="shrink-0 text-muted-foreground [&>svg]:h-[18px] [&>svg]:w-[18px]" aria-hidden>
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-small font-medium">{label}</div>
+        <div className="text-caption text-muted-foreground">{value}</div>
+      </div>
+      {control}
+    </div>
+  );
+}
+
 export function ViewBody({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn("min-h-0 flex-1 overflow-y-auto px-6 py-6", className)}>{children}</div>;
 }
