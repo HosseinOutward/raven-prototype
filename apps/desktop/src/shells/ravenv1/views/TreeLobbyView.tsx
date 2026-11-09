@@ -19,9 +19,11 @@ import { AddTreeMemberDialog, NameDialog, SpaceNameDialog, TREE_ROLE_LABEL } fro
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { DoorwayHeader, DoorwayPage, DoorwayRow, LiveNestCard, nestPeople, nestView, ViewBody, ViewHeader } from "./shared";
 import { HouseRules } from "./HouseRules";
-import { PinnedNotes } from "./PinnedNotes";
+import { PinnedNotes, UpcomingEvents } from "./PinnedNotes";
 import { useSpaceMentions } from "../useSpaceMentions";
 import { activeNotes } from "@/lib/notes";
+import { pinnedEvents, upcomingEvents } from "@/lib/events";
+import { useNow } from "../useNow";
 import { TreeNestsSection } from "./TreeNestsSection";
 import { usePendingActions } from "../usePendingActions";
 
@@ -48,7 +50,10 @@ export function TreeLobbyView({
   const [renamingSelf, setRenamingSelf] = useState(false);
   const textNestCount = useTreeChatSummaries(chat).get(details.tree.id)?.count ?? 0;
   const noteMentions = useSpaceMentions(details, data, chat, onNavigate).context;
-  const notes = activeNotes(details.notes);
+  const now = useNow();
+  const notes = activeNotes(details.notes, now);
+  const pinned = pinnedEvents(details.events, now);
+  const upcoming = upcomingEvents(details.events, now);
   const tree = details.tree;
   const treeSingular = data.labels.treeSingular.toLowerCase();
   const nestSingular = data.labels.nestSingular.toLowerCase();
@@ -192,7 +197,12 @@ export function TreeLobbyView({
       <ViewBody>
         <div className="grid max-w-5xl gap-8 min-[1100px]:grid-cols-[minmax(0,1fr)_264px]">
           <div className="min-w-0 space-y-8">
-            <PinnedNotes notes={notes} mentions={noteMentions} />
+            {notes.length || pinned.length || upcoming.length ? (
+              <div className="space-y-2">
+                <PinnedNotes notes={notes} events={pinned} mentions={noteMentions} />
+                <UpcomingEvents events={upcoming} mentions={noteMentions} />
+              </div>
+            ) : null}
             <div className="flex items-center gap-3">
               {summary.kind === "live" || summary.kind === "here" ? <LiveDot /> : null}
               {summaryPeople.length ? <AvatarStack people={summaryPeople} max={4} size="md" surface="card" /> : null}

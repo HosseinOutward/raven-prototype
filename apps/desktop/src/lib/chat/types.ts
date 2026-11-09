@@ -67,6 +67,20 @@ export interface ChatSystemPayload {
   name?: string;
   user?: ChatUser;
   users?: ChatUser[];
+  /** An `event` message: an invitation from a space, with the names as they were when sent. */
+  eventId?: string;
+  treeId?: string;
+  space?: string;
+  title?: string;
+  host?: string;
+  hostUserId?: string;
+  startsAt?: string;
+  endsAt?: string;
+  rrule?: string;
+  target?: { kind?: "voice" | "text" | string; id?: string; name?: string };
+  /** Re-sent after the event was edited. */
+  updated?: boolean;
+  cancelled?: boolean;
 }
 
 export interface ChatReaction {

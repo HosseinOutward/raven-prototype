@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { api, type TreeDetails, type TreeNote } from "@/lib/api";
 import { fromTokens, toTokens, type PickedMention } from "@/lib/chat/mentions";
 import type { ChatStore } from "@/lib/chat/store";
+import { pinnedEvents } from "@/lib/events";
 import { activeNotes, boardTime, fromLocalInput, toLocalInput } from "@/lib/notes";
 import { SettingsRows, SettingsSection } from "../SettingsScaffold";
 import type { RavenShellData } from "../state";
@@ -29,6 +30,8 @@ export function BoardNotes({ details, data, chat }: { details: TreeDetails; data
   const treeLabel = data.labels.treeSingular.toLowerCase();
   const { resolver, context, candidates, members } = useSpaceMentions(details, data, chat);
   const notes = activeNotes(details.notes);
+  // Pinned events share the lobby's pins.
+  const pinsUsed = notes.length + pinnedEvents(details.events).length;
   const [editing, setEditing] = useState<TreeNote | "new" | null>(null);
   const [removing, setRemoving] = useState<TreeNote | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,7 +60,7 @@ export function BoardNotes({ details, data, chat }: { details: TreeDetails; data
   };
 
   return (
-    <SettingsSection title="Pinned notes" description={`Up to ${MAX_NOTES}, at the top of the ${treeLabel}’s lobby. Each can end at a time you pick.`}>
+    <SettingsSection title="Pinned notes" description={`Up to ${MAX_NOTES} with pinned events, at the top of the ${treeLabel}’s lobby. Each can end at a time you pick.`}>
       {notes.length ? (
         <SettingsRows>
           {notes.map((note, index) => (
@@ -82,12 +85,12 @@ export function BoardNotes({ details, data, chat }: { details: TreeDetails; data
           ))}
         </SettingsRows>
       ) : null}
-      {notes.length < MAX_NOTES ? (
+      {pinsUsed < MAX_NOTES ? (
         <Button size="sm" variant="secondary" onClick={() => setEditing("new")}>
           <Plus className="h-4 w-4" /> Pin a note
         </Button>
       ) : (
-        <p className="text-small text-muted-foreground">That is as many notes as fit.</p>
+        <p className="text-small text-muted-foreground">That is as many notes and pinned events as fit.</p>
       )}
       {error ? <p role="alert" className="text-small text-destructive">{error}</p> : null}
       {editing ? (

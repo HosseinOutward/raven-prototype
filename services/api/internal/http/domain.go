@@ -133,6 +133,8 @@ type TreeDetails struct {
 	JoinRequests  []TreeJoinRequest `json:"joinRequests"`
 	Rules         []TreeRule        `json:"rules"`
 	Notes         []TreeNote        `json:"notes"`
+	// Events are the space's scheduled events that are not over, pinned first.
+	Events []TreeEvent `json:"events"`
 	// Viewer is the role of whoever asked and what it lets them do here.
 	Viewer TreeViewer `json:"viewer"`
 }
@@ -351,7 +353,11 @@ func (s *Server) getTree(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(TreeDetails{Tree: tree, Members: members, ActiveNests: active, InactiveNests: inactive, JoinRequests: requests, Rules: rules, Notes: notes, Viewer: treeViewerFor(role)})
+	events, err := s.treeEvents(s.db, treeID, time.Now().UTC(), treeRoleAllows(role, treeActionManageBoard))
+	if err != nil {
+		return err
+	}
+	return c.JSON(TreeDetails{Tree: tree, Members: members, ActiveNests: active, InactiveNests: inactive, JoinRequests: requests, Rules: rules, Notes: notes, Events: events, Viewer: treeViewerFor(role)})
 }
 
 func (s *Server) searchTrees(c *fiber.Ctx) error {

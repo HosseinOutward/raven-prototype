@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { roomEventCaptions } from "@/lib/events";
+import { useNow } from "../useNow";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -62,6 +64,7 @@ export function TreeNestsSection({
   const [renamingNest, setRenamingNest] = useState<NestRef | null>(null);
   const [deletingNest, setDeletingNest] = useState<NestRef | null>(null);
   const nestSingular = data.labels.nestSingular.toLowerCase();
+  const captions = roomEventCaptions(details.events, useNow());
 
   useEffect(() => {
     void chat.loadLayout(treeId).catch(() => undefined);
@@ -140,6 +143,7 @@ export function TreeNestsSection({
                       name={nameOf(ref)}
                       unread={textById.get(ref.id)?.unreadCount ?? 0}
                       mentions={textById.get(ref.id)?.mentionCount ?? 0}
+                      caption={captions.get(ref.id)}
                       onOpen={() => onNavigate({ kind: "chat", id: ref.id })}
                       menu={canManage ? <NestRowMenu name={nameOf(ref)} onRename={() => setRenamingNest(ref)} onDelete={() => setDeletingNest(ref)} /> : undefined}
                     />
@@ -149,6 +153,7 @@ export function TreeNestsSection({
                       nest={voiceById.get(ref.id)!}
                       data={data}
                       here={media.activeNestId === ref.id}
+                      caption={captions.get(ref.id)}
                       canJoin={canJoin}
                       onOpen={(nest) => onNavigate(nestView(nest))}
                       menu={canManage ? <NestRowMenu name={nameOf(ref)} renameLabel="Settings" onRename={() => setRenamingNest(ref)} onDelete={() => setDeletingNest(ref)} /> : undefined}
@@ -287,12 +292,23 @@ function NestRowMenu({ name, renameLabel = "Rename", onRename, onDelete }: { nam
 const rowClassName = "group flex h-11 w-full items-center transition-colors hover:bg-secondary";
 const rowButtonClassName = "flex h-11 min-w-0 flex-1 items-center gap-3 px-3.5 text-left";
 
-function TextNestRow({ name, unread, mentions, onOpen, menu }: { name: string; unread: number; mentions: number; onOpen: () => void; menu?: ReactNode }) {
+/** A room's name, with what is on in it now underneath when an event is. */
+function RowName({ name, caption, strong }: { name: string; caption?: string; strong?: boolean }) {
+  if (!caption) return <span className={cn("min-w-0 flex-1 truncate text-body", strong && "font-medium")}><bdi>{name}</bdi></span>;
   return (
-    <div className={rowClassName}>
-      <button type="button" onClick={onOpen} className={rowButtonClassName}>
+    <span className="min-w-0 flex-1">
+      <span className={cn("block truncate text-body", strong && "font-medium")}><bdi>{name}</bdi></span>
+      <span className="block truncate text-caption text-muted-foreground"><bdi>{caption}</bdi></span>
+    </span>
+  );
+}
+
+function TextNestRow({ name, unread, mentions, caption, onOpen, menu }: { name: string; unread: number; mentions: number; caption?: string; onOpen: () => void; menu?: ReactNode }) {
+  return (
+    <div className={cn(rowClassName, caption && "h-14")}>
+      <button type="button" onClick={onOpen} className={cn(rowButtonClassName, caption && "h-14")}>
         <NestGlyph kind="text" className="text-subtle" />
-        <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 && "font-medium")}><bdi>{name}</bdi></span>
+        <RowName name={name} caption={caption} strong={unread > 0} />
         <MentionDot count={mentions} />
         <UnreadCount count={unread} />
       </button>
@@ -307,6 +323,7 @@ function VoiceNestRow({
   data,
   here,
   canJoin,
+  caption,
   onOpen,
   menu,
 }: {
@@ -314,6 +331,7 @@ function VoiceNestRow({
   data: RavenShellData;
   here: boolean;
   canJoin: boolean;
+  caption?: string;
   onOpen: (nest: Nest | LauncherNest) => void;
   menu?: ReactNode;
 }) {
@@ -321,10 +339,10 @@ function VoiceNestRow({
   const state = lifecycleLabel(nest);
   if (!live) {
     return (
-      <div className={rowClassName}>
-        <button type="button" onClick={() => onOpen(nest)} className={rowButtonClassName}>
+      <div className={cn(rowClassName, caption && "h-14")}>
+        <button type="button" onClick={() => onOpen(nest)} className={cn(rowButtonClassName, caption && "h-14")}>
           <NestGlyph kind="voice" className="text-subtle" />
-          <span className="min-w-0 flex-1 truncate text-body"><bdi>{nest.name}</bdi></span>
+          <RowName name={nest.name} caption={caption} />
           {state !== "Empty" && state !== "Created" ? <span className="shrink-0 text-caption text-muted-foreground">{state}</span> : null}
         </button>
         <DoorMark door={nest.door} />
@@ -343,6 +361,7 @@ function VoiceNestRow({
         <NestGlyph kind="voice" live className="text-live" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-body"><bdi>{nest.name}</bdi></span>
+          {caption ? <span className="block truncate text-caption text-muted-foreground"><bdi>{caption}</bdi></span> : null}
           <span className="mt-0.5 flex min-w-0 items-center gap-2">
             <AvatarStack people={people} max={4} size="sm" surface="card" />
             <span className="min-w-0 truncate text-caption text-muted-foreground">{sentence}</span>

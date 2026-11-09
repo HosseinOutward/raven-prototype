@@ -15,7 +15,19 @@ export function namesSentence(names: string[], max = 2): string {
 
 /** What one of Raven's own messages says, as a single plain line. */
 export function ravenLine(system: ChatSystemPayload): string {
-  return system.type === "admin" ? system.text ?? "" : UNKNOWN_RAVEN_MESSAGE;
+  if (system.type === "admin") return system.text ?? "";
+  if (system.type === "event") return system.cancelled ? eventCancelledLine(system) : eventInviteLine(system);
+  return UNKNOWN_RAVEN_MESSAGE;
+}
+
+/** "Ava invited you to Weekly jam in Design". */
+export function eventInviteLine(system: ChatSystemPayload): string {
+  return `${system.host ?? ""} invited you to ${system.title ?? ""} in ${system.space ?? ""}`;
+}
+
+/** "Weekly jam was cancelled." */
+export function eventCancelledLine(system: ChatSystemPayload): string {
+  return `${system.title ?? ""} was cancelled.`;
 }
 
 export const UNKNOWN_RAVEN_MESSAGE = "This message needs a newer Raven.";

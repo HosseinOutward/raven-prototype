@@ -217,16 +217,20 @@ func (s *Server) createTreeNote(c *fiber.Ctx) error {
 	unlock := s.chatLocks.lock("tree-notes:" + treeID)
 	defer unlock()
 
-	// Pinned events (a later plan) count toward this limit too.
+	// Pinned events count toward the same limit.
+	pins, err := s.boardPinCount(treeID, now)
+	if err != nil {
+		return err
+	}
+	if pins >= treeMaxNotes {
+		return errBoardPinsFull
+	}
 	var count, last int
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*), COALESCE(MAX(position), -1) FROM tree_notes WHERE tree_id = ? AND (ends_at IS NULL OR ends_at > ?)`,
 		treeID, now.UTC().Format(boardTimeLayout),
 	).Scan(&count, &last); err != nil {
 		return err
-	}
-	if count >= treeMaxNotes {
-		return fiber.NewError(fiber.StatusBadRequest, "A space can have at most 5 pinned notes.")
 	}
 	stamp := database.Now()
 	note := TreeNote{ID: auth.NewID(), Title: title, Description: description, EndsAt: ends, Position: count}

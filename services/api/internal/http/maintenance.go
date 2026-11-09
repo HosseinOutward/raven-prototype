@@ -51,6 +51,9 @@ func (s *Server) runMaintenance(now time.Time) {
 	if err := s.expireTreeNotes(now); err != nil {
 		log.Printf("maintenance: expire pinned notes: %v", err)
 	}
+	if err := s.runTreeEvents(now); err != nil {
+		log.Printf("maintenance: scheduled events: %v", err)
+	}
 	s.revalidateWorkshop("")
 	s.sweepWorkshopSessions()
 	lapsed, err := s.sweepPresence(now)

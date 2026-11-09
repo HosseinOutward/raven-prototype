@@ -250,6 +250,7 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	s.registerTreeLayoutRoutes(service)
 	s.registerBoardRoutes(service)
 	s.registerNoteRoutes(service)
+	s.registerEventRoutes(service)
 }
 
 // chatRoute logs a chat request that failed for a reason the caller could not have

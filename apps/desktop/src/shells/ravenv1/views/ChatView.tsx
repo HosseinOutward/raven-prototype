@@ -466,6 +466,7 @@ function OpenConversation({
           onDeleteForEveryone={askDelete}
           onOpenImage={openImage}
           onOpenPerson={(userId) => onNavigate({ kind: "user", id: userId })}
+          onOpenSpace={(treeId) => onNavigate({ kind: "tree", id: treeId })}
           onSave={summary.kind === "saved" ? undefined : saveMessage}
           onOpenSource={openSource}
           onForward={forwardOne}

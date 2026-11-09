@@ -11,9 +11,10 @@ import { BOARD_ICONS, DEFAULT_BOARD_ICON, MAX_RULES, MAX_RULE_LENGTH } from "../
 import { SettingsPage, SettingsRows, SettingsSection } from "../SettingsScaffold";
 import type { RavenShellData } from "../state";
 import { RuleIcon } from "./HouseRules";
+import { BoardEvents } from "./BoardEvents";
 import { BoardNotes } from "./BoardNotes";
 
-/** Settings › Board: the space's pinned notes and house rules. */
+/** Settings › Board: the space's pinned notes, events and house rules. */
 export function BoardSettings({ details, data, chat }: { details: TreeDetails; data: RavenShellData; chat?: ChatStore | null }) {
   const treeId = details.tree.id;
   const treeLabel = data.labels.treeSingular.toLowerCase();
@@ -48,6 +49,7 @@ export function BoardSettings({ details, data, chat }: { details: TreeDetails; d
   return (
     <SettingsPage title="Board" description={`What everyone in this ${treeLabel} sees in its lobby.`}>
       <BoardNotes details={details} data={data} chat={chat} />
+      <BoardEvents details={details} data={data} chat={chat} />
       <SettingsSection title="House rules" description={`Up to ${MAX_RULES}, one line each. Keep them short.`}>
         {rules.length ? (
           <SettingsRows>

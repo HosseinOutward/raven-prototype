@@ -93,6 +93,8 @@ export interface NestLiveUpdate {
   /** On "workshop.share.*" updates: the share, and on "ended" why it ended. */
   share?: WorkshopShare;
   reason?: string;
+  /** On "event.invited" and "event.reminder", which reach the event's invitees only. */
+  event?: EventNotice;
   at?: string;
 }
 
@@ -429,6 +431,68 @@ export interface TreeNoteInput {
   endsAt: string | null;
 }
 
+/** One sitting of a scheduled event, in UTC. */
+export interface TreeEventOccurrence {
+  startsAt: string;
+  endsAt: string;
+}
+
+/** A gathering scheduled in one room of a space. Title and description may hold mention tokens. */
+export interface TreeEvent {
+  id: string;
+  title: string;
+  description: string;
+  hostUserId: string;
+  /** The host's name in this space. */
+  hostName: string;
+  nestId: string | null;
+  conversationId: string | null;
+  roomName: string;
+  /** The first start of the series. */
+  startsAt: string;
+  endsAt: string | null;
+  durationMinutes: number | null;
+  /** RFC 5545 subset, for example "FREQ=WEEKLY;BYDAY=SU". Null for a one-off. */
+  rrule: string | null;
+  /** The IANA zone the series repeats in. */
+  tz: string;
+  inviteAll: boolean;
+  /** Empty for people who cannot manage the board. */
+  inviteeIds: string[];
+  sendInviteMessage: boolean;
+  pinned: boolean;
+  /** The occurrence under way or next. */
+  occurrence: TreeEventOccurrence;
+}
+
+export interface TreeEventInput {
+  title: string;
+  description: string;
+  hostUserId: string;
+  nestId: string | null;
+  conversationId: string | null;
+  startsAt: string;
+  endsAt: string | null;
+  durationMinutes: number | null;
+  rrule: string | null;
+  tz: string;
+  inviteAll: boolean;
+  inviteeIds: string[];
+  sendInviteMessage: boolean;
+  pinned: boolean;
+}
+
+/** Rides on "event.invited" and "event.reminder", which reach invitees only. */
+export interface EventNotice {
+  id: string;
+  treeId: string;
+  title: string;
+  space: string;
+  room: string;
+  host: string;
+  startsAt: string;
+}
+
 export interface TreeDetails {
   tree: Tree;
   members: TreeMember[];
@@ -438,6 +502,8 @@ export interface TreeDetails {
   rules: TreeRule[];
   /** Absent from older servers. */
   notes?: TreeNote[];
+  /** Scheduled events that are not over, pinned first. Absent from older servers. */
+  events?: TreeEvent[];
   /** The asker's role here and what it allows, decided by the server. */
   viewer?: { role: TreeRole; permissions: string[] };
 }
@@ -1045,6 +1111,22 @@ export class ApiClient {
 
   orderTreeNotes(treeId: string, ids: string[]) {
     return this.request<{ notes: TreeNote[] }>(`/v1/trees/${treeId}/notes/order`, { method: "POST", body: JSON.stringify({ ids }) });
+  }
+
+  createTreeEvent(treeId: string, payload: TreeEventInput) {
+    return this.request<{ event: TreeEvent }>(`/v1/trees/${treeId}/events`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  editTreeEvent(treeId: string, eventId: string, payload: TreeEventInput) {
+    return this.request<{ event: TreeEvent }>(`/v1/trees/${treeId}/events/${eventId}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  deleteTreeEvent(treeId: string, eventId: string) {
+    return this.request<void>(`/v1/trees/${treeId}/events/${eventId}`, { method: "DELETE" });
+  }
+
+  pinTreeEvent(treeId: string, eventId: string, pinned: boolean) {
+    return this.request<void>(`/v1/trees/${treeId}/events/${eventId}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
   }
 
   uploadTreeAvatar(treeId: string, file: File) {

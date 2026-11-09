@@ -62,6 +62,7 @@ func migrateVersioned(db *sql.DB, driver string) error {
 		{version: "2026111002_board_rules", statements: boardStatements()},
 		{version: "2026111003_board_notes", statements: boardNoteStatements()},
 		ravenMessagesMigration(driver),
+		{version: "2026111005_board_events", statements: boardEventStatements()},
 	}
 	for _, migration := range migrations {
 		if err := applyUpdateMigration(db, driver, migration); err != nil {

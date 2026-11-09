@@ -468,6 +468,8 @@ export function useRavenShellData(): RavenShellData {
       if (update.type === "call.vote") return;
       // Held by lib/workshop.ts. A shared port changes nothing that needs fetching again.
       if (update.type.startsWith("workshop.")) return;
+      // Held by useMessageNotifications. The space's own "tree.updated" carries the change.
+      if (update.type === "event.invited" || update.type === "event.reminder") return;
       if (update.type === "profile.avatar") {
         // Only the picture changed. Its new version swaps it wherever it is shown.
         if (update.actorId && update.at) noteAvatarVersion(update.actorId, update.at);
