@@ -1,22 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, ChevronDown, ChevronRight, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
+import { ArrowUpDown, ChevronDown, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { api, type Nest, type TreeDetails, type TreeMember, type TreeSearchResult } from "@/lib/api";
+import { api, type TreeDetails, type TreeMember, type TreeSearchResult } from "@/lib/api";
 import type { ChatStore } from "@/lib/chat/store";
 import { treeCan } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-import { EmptyState, GroupedList, NestGlyph, PersonAvatar, SectionLabel } from "../atoms";
+import { AvatarStack, EmptyState, GroupedList, LiveDot, NestGlyph, PersonAvatar, SectionLabel } from "../atoms";
 import { displayNameFor, lifecycleLabel, PRESENCE, presenceFromApi, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useTreeChatSummaries } from "../useChat";
-import { groupMembers, lobbyMenus, treeSubtitleParts } from "../treeLobby";
+import { groupMembers, liveTreeNests, lobbyMenus, lobbySummary, peopleAround, treeSubtitleParts } from "../treeLobby";
 import type { NestEntryController } from "../useNestEntry";
 import { AddTreeMemberDialog, NameDialog, TREE_ROLE_LABEL } from "./dialogs";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
-import { DoorwayHeader, DoorwayPage, DoorwayRow, LiveNestCard, nestView, ViewBody, ViewHeader } from "./shared";
+import { DoorwayHeader, DoorwayPage, DoorwayRow, LiveNestCard, nestPeople, nestView, ViewBody, ViewHeader } from "./shared";
 import { TreeNestsSection } from "./TreeNestsSection";
 import { usePendingActions } from "../usePendingActions";
 
@@ -57,14 +57,21 @@ export function TreeLobbyView({
   const answering = requestActions.isPending;
   const canJoin = !entry.enteringNestId && media.phase !== "joining" && media.phase !== "leaving";
 
-  // The launcher list knows who is inside; the tree's own list is the fallback.
-  const liveNests: Nest[] = details.activeNests.map((nest) => data.activeNests.find((candidate) => candidate.id === nest.id) ?? nest);
+  const liveNests = liveTreeNests(details, data.activeNests);
   const quietNests = details.inactiveNests;
   const memberIds = useMemo(() => new Set(details.members.filter((member) => member.state === "joined").map((member) => member.userId)), [details.members]);
   const members = details.members;
   const menus = lobbyMenus({ canRooms: canManage, canMembers: canManageMembers, hasChat: Boolean(chat) });
   const peopleInside = data.activeNests.filter((nest) => nest.treeId === tree.id).reduce((sum, nest) => sum + nest.activeParticipantCount, 0);
   const subtitle = treeSubtitleParts({ visibility: tree.visibility, members: members.length, inside: peopleInside, nestSingular });
+  const summary = useMemo(() => {
+    const nests = liveNests.map((nest) => ({ id: nest.id, name: nest.name, people: nestPeople(nest, data) }));
+    const insideIds = new Set(nests.flatMap((nest) => nest.people.map((person) => person.id)));
+    return { nests, ...lobbySummary({ nests, selfId: data.user?.id, activeNestId: media.activeNestId, around: peopleAround(members, data.user?.id, insideIds) }) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveNests, members, data.user?.id, data.presence, media.activeNestId]);
+  const summaryNest = summary.nestId ? liveNests.find((nest) => nest.id === summary.nestId) : undefined;
+  const summaryPeople = summary.kind === "here" || summary.kind === "live" ? (summary.nestId ? summary.nests.find((nest) => nest.id === summary.nestId)?.people : summary.nests.flatMap((nest) => nest.people)) ?? [] : [];
   const hasNests = liveNests.length > 0 || quietNests.length > 0 || textNestCount > 0;
   const setup = [
     canManage ? "voice" : null,
@@ -109,7 +116,7 @@ export function TreeLobbyView({
             {menus.create.length > 1 ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button className="gap-1.5 pl-3 pr-2.5">
+                  <Button variant="secondary" className="gap-1.5 pl-3 pr-2.5">
                     <Plus className="h-4 w-4" />
                     New
                     <ChevronDown className="h-4 w-4 opacity-70" />
@@ -131,7 +138,7 @@ export function TreeLobbyView({
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : menus.create.length === 1 ? (
-              <Button onClick={() => setCreateNestOpen(true)}>
+              <Button variant="secondary" onClick={() => setCreateNestOpen(true)}>
                 <Plus className="h-4 w-4" />
                 New {nestSingular}
               </Button>
@@ -174,6 +181,16 @@ export function TreeLobbyView({
       <ViewBody>
         <div className="grid max-w-5xl gap-8 min-[1100px]:grid-cols-[minmax(0,1fr)_264px]">
           <div className="min-w-0 space-y-8">
+            <div className="flex items-center gap-3">
+              {summary.kind === "live" || summary.kind === "here" ? <LiveDot /> : null}
+              {summaryPeople.length ? <AvatarStack people={summaryPeople} max={4} size="md" surface="card" /> : null}
+              <p role="status" className="min-w-0 flex-1 text-body">{summary.text}</p>
+              {summaryNest && summary.kind === "here" ? (
+                <Button size="sm" variant="secondary" onClick={() => onNavigate(nestView(summaryNest))}>Return</Button>
+              ) : summaryNest && summary.kind === "live" ? (
+                <Button size="sm" disabled={!canJoin} onClick={() => onNavigate(nestView(summaryNest))}>Join {summaryNest.name}…</Button>
+              ) : null}
+            </div>
             {tree.description ? <p className="max-w-prose text-small text-muted-foreground">{tree.description}</p> : null}
             {canManageMembers && details.joinRequests.length ? (
               <section>
@@ -209,6 +226,7 @@ export function TreeLobbyView({
                       showTree={false}
                       here={media.activeNestId === nest.id}
                       canJoin={canJoin}
+                      joinVariant="secondary"
                       onOpen={() => onNavigate(nestView(nest))}
                     />
                   ))}
@@ -353,15 +371,13 @@ export function TreeLobbyView({
   );
 }
 
-/** Members as the lobby shows them: who is in a nest, who is online, and who is away behind a disclosure. */
+/** Members as the lobby shows them: who is in a nest, who is online, and who is around. */
 function MembersList({ members, selfId, data, onNavigate }: { members: TreeMember[]; selfId?: string; data: RavenShellData; onNavigate: (view: RavenView) => void }) {
   // The member list can say you are offline while you are looking at it; your own status is what the dock shows.
   const groups = useMemo(
     () => groupMembers(members.map((member) => (member.userId === selfId && data.presence ? { ...member, presenceState: data.presence.state, reachability: data.presence.reachability } : member))),
     [members, selfId, data.presence],
   );
-  const [showOffline, setShowOffline] = useState(false);
-  const onlyAway = groups.here.length === 0 && groups.online.length === 0;
   const row = (member: TreeMember) => (
     <MemberRow
       key={member.userId}
@@ -379,28 +395,10 @@ function MembersList({ members, selfId, data, onNavigate }: { members: TreeMembe
           <div className="space-y-px">{groups.here.map(row)}</div>
         </section>
       ) : null}
-      {groups.online.length ? (
+      {groups.around.length ? (
         <section>
-          <SectionLabel className="mb-1 px-2">Online · {groups.online.length}</SectionLabel>
-          <div className="space-y-px">{groups.online.map(row)}</div>
-        </section>
-      ) : null}
-      {groups.offline.length ? (
-        <section className="space-y-px">
-          {onlyAway ? (
-            <SectionLabel className="mb-1 px-2">Offline · {groups.offline.length}</SectionLabel>
-          ) : (
-            <button
-              type="button"
-              aria-expanded={showOffline}
-              onClick={() => setShowOffline((open) => !open)}
-              className="flex h-7 w-full items-center gap-1 rounded-control px-2 text-left text-caption font-medium text-subtle transition-colors hover:text-foreground"
-            >
-              {showOffline ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              Offline · {groups.offline.length}
-            </button>
-          )}
-          {onlyAway || showOffline ? groups.offline.map(row) : null}
+          <SectionLabel className="mb-1 px-2">Around · {groups.around.length}</SectionLabel>
+          <div className="space-y-px">{groups.around.map(row)}</div>
         </section>
       ) : null}
     </div>

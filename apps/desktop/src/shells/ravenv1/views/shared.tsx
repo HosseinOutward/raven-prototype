@@ -129,6 +129,7 @@ export function LiveNestCard({
   here,
   canJoin,
   showTree = true,
+  joinVariant = "default",
   onOpen,
 }: {
   nest: Nest | LauncherNest;
@@ -136,6 +137,8 @@ export function LiveNestCard({
   here: boolean;
   canJoin: boolean;
   showTree?: boolean;
+  /** "secondary" where the page already has its one primary button. */
+  joinVariant?: "default" | "secondary";
   /** The card and its Join button are one target: joining always passes the threshold. */
   onOpen: () => void;
 }) {
@@ -161,7 +164,7 @@ export function LiveNestCard({
         {here ? (
           <Button size="sm" variant="secondary" className="pointer-events-auto relative" onClick={onOpen}>Return</Button>
         ) : (
-          <Button size="sm" className="pointer-events-auto relative" disabled={!canJoin} onClick={onOpen}>Join…</Button>
+          <Button size="sm" variant={joinVariant} className="pointer-events-auto relative" disabled={!canJoin} onClick={onOpen}>Join…</Button>
         )}
       </div>
     </div>

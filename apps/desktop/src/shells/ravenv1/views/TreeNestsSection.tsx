@@ -20,6 +20,7 @@ import { AvatarStack, GroupedList, NestGlyph, SectionLabel } from "../atoms";
 import { lifecycleLabel, type RavenShellData, type RavenView } from "../state";
 import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useChatState } from "../useChat";
+import { liveTreeNests } from "../treeLobby";
 import { namesSentence, nestPeople, nestView } from "./shared";
 
 /**
@@ -65,7 +66,7 @@ export function TreeNestsSection({
     void chat.loadLayout(treeId).catch(() => undefined);
   }, [chat, treeId]);
 
-  const voiceNests = useMemo(() => [...details.activeNests, ...details.inactiveNests], [details.activeNests, details.inactiveNests]);
+  const voiceNests = useMemo(() => [...liveTreeNests(details, data.activeNests), ...details.inactiveNests], [details, data.activeNests]);
   const voiceById = useMemo(() => new Map(voiceNests.map((nest) => [nest.id, nest])), [voiceNests]);
   const textNests = useMemo(() => (state ? textNestsOfTree(state, treeId) : []), [state, treeId]);
   const textById = useMemo(() => new Map(textNests.map((nest) => [nest.summary.id, nest.summary])), [textNests]);
@@ -96,8 +97,6 @@ export function TreeNestsSection({
   }
 
   const hasCategories = sections.length > 1;
-  // The launcher list knows who is inside a live nest; the tree's own list is the fallback.
-  const withPeople = (nest: Nest): Nest | LauncherNest => data.activeNests.find((candidate) => candidate.id === nest.id) ?? nest;
   return (
     <>
       {sections.map((section) => {
@@ -146,7 +145,7 @@ export function TreeNestsSection({
                   ) : (
                     <VoiceNestRow
                       key={`voice:${ref.id}`}
-                      nest={withPeople(voiceById.get(ref.id)!)}
+                      nest={voiceById.get(ref.id)!}
                       data={data}
                       here={media.activeNestId === ref.id}
                       canJoin={canJoin}
@@ -337,7 +336,7 @@ function VoiceNestRow({
           </span>
         </span>
       </button>
-      <Button size="xs" variant={here ? "secondary" : "default"} className="mr-2 shrink-0" disabled={!here && !canJoin} onClick={() => onOpen(nest)}>
+      <Button size="xs" variant="secondary" className="mr-2 shrink-0" disabled={!here && !canJoin} onClick={() => onOpen(nest)}>
         {here ? "Return" : "Join…"}
       </Button>
       {menu}
