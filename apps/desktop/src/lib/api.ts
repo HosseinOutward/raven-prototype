@@ -403,12 +403,21 @@ export interface FriendRequest {
   resolvedAt?: string | null;
 }
 
+/** One house rule of a space. Icon ids come from shells/ravenv1/boardIcons.ts. */
+export interface TreeRule {
+  id: string;
+  icon: string;
+  text: string;
+  position: number;
+}
+
 export interface TreeDetails {
   tree: Tree;
   members: TreeMember[];
   activeNests: Nest[];
   inactiveNests: Nest[];
   joinRequests: TreeJoinRequest[];
+  rules: TreeRule[];
   /** The asker's role here and what it allows, decided by the server. */
   viewer?: { role: TreeRole; permissions: string[] };
 }
@@ -984,6 +993,22 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  }
+
+  createTreeRule(treeId: string, payload: { icon: string; text: string }) {
+    return this.request<{ rule: TreeRule }>(`/v1/trees/${treeId}/rules`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  editTreeRule(treeId: string, ruleId: string, payload: { icon: string; text: string }) {
+    return this.request<{ rule: TreeRule }>(`/v1/trees/${treeId}/rules/${ruleId}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  deleteTreeRule(treeId: string, ruleId: string) {
+    return this.request<void>(`/v1/trees/${treeId}/rules/${ruleId}`, { method: "DELETE" });
+  }
+
+  orderTreeRules(treeId: string, ids: string[]) {
+    return this.request<{ rules: TreeRule[] }>(`/v1/trees/${treeId}/rules/order`, { method: "POST", body: JSON.stringify({ ids }) });
   }
 
   uploadTreeAvatar(treeId: string, file: File) {

@@ -245,6 +245,7 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	conversation.Post("/typing", s.chatLimiter("typing", 20, 10*time.Second), s.chatRoute("typing", s.chatTyping))
 
 	s.registerTreeLayoutRoutes(service)
+	s.registerBoardRoutes(service)
 }
 
 // chatRoute logs a chat request that failed for a reason the caller could not have

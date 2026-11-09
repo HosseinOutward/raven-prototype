@@ -7,6 +7,7 @@ import { LiveMediaStage } from "@/components/media/LiveMediaStage";
 import type { VoiceModeration } from "@/components/media/VoiceModeration";
 import { watchNewSharesPreference } from "@/components/media/stageState";
 import { Button } from "@/components/ui/button";
+import { HouseRulesLine } from "./HouseRules";
 import { PortsControl } from "@/components/workshop/PortsPanel";
 import { api, ApiError, type LauncherNest, type Nest } from "@/lib/api";
 import { knownConnectedPeerIds } from "@/lib/callArrivals";
@@ -289,6 +290,8 @@ function NestThreshold({
           <span className="text-small text-muted-foreground">{closed ? `This ${nestLabel} has closed.` : "Nobody is here yet. You would be the first."}</span>
         )}
       </div>
+
+      <HouseRulesLine rules={treeDetails?.rules ?? []} />
 
       {closed ? (
         <div className="mt-6">

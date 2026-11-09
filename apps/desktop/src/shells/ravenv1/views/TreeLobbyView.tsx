@@ -18,6 +18,7 @@ import type { NestEntryController } from "../useNestEntry";
 import { AddTreeMemberDialog, NameDialog, SpaceNameDialog, TREE_ROLE_LABEL } from "./dialogs";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { DoorwayHeader, DoorwayPage, DoorwayRow, LiveNestCard, nestPeople, nestView, ViewBody, ViewHeader } from "./shared";
+import { HouseRules } from "./HouseRules";
 import { TreeNestsSection } from "./TreeNestsSection";
 import { usePendingActions } from "../usePendingActions";
 
@@ -197,6 +198,8 @@ export function TreeLobbyView({
               ) : null}
             </div>
             {tree.description ? <p className="max-w-prose text-small text-muted-foreground">{tree.description}</p> : null}
+            {/* The right column needs a wide window; below that the rules stay in this column. */}
+            <HouseRules rules={details.rules ?? []} className="min-[1100px]:hidden" />
             {canManageMembers && details.joinRequests.length ? (
               <section>
                 <SectionLabel className="mb-1">Asking to join</SectionLabel>
@@ -311,7 +314,10 @@ export function TreeLobbyView({
             ) : null}
           </div>
 
-          <aside className="hidden min-w-0 min-[1100px]:block">{membersList}</aside>
+          <aside className="hidden min-w-0 space-y-6 min-[1100px]:block">
+            {membersList}
+            <HouseRules rules={details.rules ?? []} />
+          </aside>
         </div>
       </ViewBody>
 

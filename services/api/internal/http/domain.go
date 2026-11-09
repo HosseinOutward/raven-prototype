@@ -131,6 +131,7 @@ type TreeDetails struct {
 	ActiveNests   []Nest            `json:"activeNests"`
 	InactiveNests []Nest            `json:"inactiveNests"`
 	JoinRequests  []TreeJoinRequest `json:"joinRequests"`
+	Rules         []TreeRule        `json:"rules"`
 	// Viewer is the role of whoever asked and what it lets them do here.
 	Viewer TreeViewer `json:"viewer"`
 }
@@ -341,7 +342,11 @@ func (s *Server) getTree(c *fiber.Ctx) error {
 			return err
 		}
 	}
-	return c.JSON(TreeDetails{Tree: tree, Members: members, ActiveNests: active, InactiveNests: inactive, JoinRequests: requests, Viewer: treeViewerFor(role)})
+	rules, err := s.treeRules(s.db, treeID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(TreeDetails{Tree: tree, Members: members, ActiveNests: active, InactiveNests: inactive, JoinRequests: requests, Rules: rules, Viewer: treeViewerFor(role)})
 }
 
 func (s *Server) searchTrees(c *fiber.Ctx) error {

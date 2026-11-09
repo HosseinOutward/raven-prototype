@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Info, MoreHorizontal, Shield, Trash2, Users } from "lucide-react";
+import { ClipboardList, Info, MoreHorizontal, Shield, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
@@ -21,15 +21,17 @@ import {
   type SettingsCategoryGroup,
 } from "../SettingsScaffold";
 import { displayNameFor, type RavenShellData, type RavenView } from "../state";
+import { BoardSettings } from "./BoardSettings";
 import { SpaceNameDialog, TREE_ROLE_LABEL } from "./dialogs";
 
-export type TreeSettingsSection = "general" | "access" | "members" | "delete";
+export type TreeSettingsSection = "general" | "access" | "members" | "board" | "delete";
 
 // Everyone in a tree can open its settings to see who is in it and to leave. What else
 // they find there is what their role allows.
 export function resolveTreeSettingsSection(section: string | undefined, details: TreeDetails, _data: RavenShellData): TreeSettingsSection {
   const canEdit = treeCan(details, "settings.edit");
   if (section === "members") return section;
+  if (section === "board" && treeCan(details, "board.manage")) return section;
   if ((section === "access" || section === "general") && canEdit) return section;
   if (section === "delete" && treeCan(details, "space.delete")) return section;
   return canEdit ? "general" : "members";
@@ -59,6 +61,7 @@ export function TreeSettingsNav({
             ]
           : []),
         { id: "members", label: "Members", icon: <Users /> },
+        ...(treeCan(details, "board.manage") ? [{ id: "board", label: "Board", icon: <ClipboardList /> }] : []),
       ],
     },
     ...(treeCan(details, "space.delete")
@@ -89,6 +92,7 @@ export function TreeSettingsView({
   onNavigate: (view: RavenView) => void;
 }) {
   if (section === "access") return <AccessSettings details={details} data={data} />;
+  if (section === "board") return <BoardSettings details={details} data={data} />;
   if (section === "members") return <MemberSettings details={details} data={data} onNavigate={onNavigate} />;
   if (section === "delete") return <DeleteSettings details={details} data={data} onNavigate={onNavigate} />;
   return <GeneralSettings details={details} data={data} />;

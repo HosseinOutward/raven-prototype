@@ -72,6 +72,7 @@ at a person is allowed only against someone below you.
 | Add members, answer join requests, invite into rooms | | yes | yes |
 | Remove someone, delete their messages | | members only | anyone else |
 | Server mute and server deafen someone | | members only | anyone else |
+| Keep the space board: house rules (later pinned notes and events) | | yes | yes |
 | Name, description, picture, visibility, join policy | | | yes |
 | Make someone a moderator or a member | | | yes |
 | Transfer ownership, delete the space | | | yes |

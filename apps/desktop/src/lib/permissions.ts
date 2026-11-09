@@ -12,6 +12,7 @@ export type TreePermission =
   | "messages.moderate"
   | "voice.moderate"
   | "members.rename"
+  | "board.manage"
   | "settings.edit"
   | "roles.assign"
   | "ownership.transfer"
