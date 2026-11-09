@@ -1,3 +1,4 @@
+import type { ChatStore } from "@/lib/chat/store";
 import { useEffect, useState } from "react";
 import { ClipboardList, Info, MoreHorizontal, Shield, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
@@ -84,15 +85,17 @@ export function TreeSettingsView({
   details,
   section,
   data,
+  chat,
   onNavigate,
 }: {
   details: TreeDetails;
   section: TreeSettingsSection;
   data: RavenShellData;
+  chat?: ChatStore | null;
   onNavigate: (view: RavenView) => void;
 }) {
   if (section === "access") return <AccessSettings details={details} data={data} />;
-  if (section === "board") return <BoardSettings details={details} data={data} />;
+  if (section === "board") return <BoardSettings details={details} data={data} chat={chat} />;
   if (section === "members") return <MemberSettings details={details} data={data} onNavigate={onNavigate} />;
   if (section === "delete") return <DeleteSettings details={details} data={data} onNavigate={onNavigate} />;
   return <GeneralSettings details={details} data={data} />;

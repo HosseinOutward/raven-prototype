@@ -373,7 +373,7 @@ function SwatchRow<Id extends string>({
 }
 
 /** Three or so short options on one track. */
-function SegmentedChoice<Id extends string>({
+export function SegmentedChoice<Id extends string>({
   label,
   options,
   selected,

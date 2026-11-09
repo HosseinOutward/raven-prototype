@@ -411,6 +411,22 @@ export interface TreeRule {
   position: number;
 }
 
+/** A pinned note on a space's lobby. Title and description may hold mention tokens. */
+export interface TreeNote {
+  id: string;
+  title: string;
+  description: string;
+  /** ISO time it stops showing, or null for no end. */
+  endsAt: string | null;
+  position: number;
+}
+
+export interface TreeNoteInput {
+  title: string;
+  description: string;
+  endsAt: string | null;
+}
+
 export interface TreeDetails {
   tree: Tree;
   members: TreeMember[];
@@ -418,6 +434,8 @@ export interface TreeDetails {
   inactiveNests: Nest[];
   joinRequests: TreeJoinRequest[];
   rules: TreeRule[];
+  /** Absent from older servers. */
+  notes?: TreeNote[];
   /** The asker's role here and what it allows, decided by the server. */
   viewer?: { role: TreeRole; permissions: string[] };
 }
@@ -1009,6 +1027,22 @@ export class ApiClient {
 
   orderTreeRules(treeId: string, ids: string[]) {
     return this.request<{ rules: TreeRule[] }>(`/v1/trees/${treeId}/rules/order`, { method: "POST", body: JSON.stringify({ ids }) });
+  }
+
+  createTreeNote(treeId: string, payload: TreeNoteInput) {
+    return this.request<{ note: TreeNote }>(`/v1/trees/${treeId}/notes`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  editTreeNote(treeId: string, noteId: string, payload: TreeNoteInput) {
+    return this.request<{ note: TreeNote }>(`/v1/trees/${treeId}/notes/${noteId}`, { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  deleteTreeNote(treeId: string, noteId: string) {
+    return this.request<void>(`/v1/trees/${treeId}/notes/${noteId}`, { method: "DELETE" });
+  }
+
+  orderTreeNotes(treeId: string, ids: string[]) {
+    return this.request<{ notes: TreeNote[] }>(`/v1/trees/${treeId}/notes/order`, { method: "POST", body: JSON.stringify({ ids }) });
   }
 
   uploadTreeAvatar(treeId: string, file: File) {

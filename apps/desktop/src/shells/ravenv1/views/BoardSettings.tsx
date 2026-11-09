@@ -5,14 +5,16 @@ import { ConfirmDialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api, type TreeDetails, type TreeRule } from "@/lib/api";
+import type { ChatStore } from "@/lib/chat/store";
 import { cn } from "@/lib/utils";
 import { BOARD_ICONS, DEFAULT_BOARD_ICON, MAX_RULES, MAX_RULE_LENGTH } from "../boardIcons";
 import { SettingsPage, SettingsRows, SettingsSection } from "../SettingsScaffold";
 import type { RavenShellData } from "../state";
 import { RuleIcon } from "./HouseRules";
+import { BoardNotes } from "./BoardNotes";
 
-/** Settings › Board: the space's house rules. */
-export function BoardSettings({ details, data }: { details: TreeDetails; data: RavenShellData }) {
+/** Settings › Board: the space's pinned notes and house rules. */
+export function BoardSettings({ details, data, chat }: { details: TreeDetails; data: RavenShellData; chat?: ChatStore | null }) {
   const treeId = details.tree.id;
   const treeLabel = data.labels.treeSingular.toLowerCase();
   const rules = details.rules ?? [];
@@ -45,6 +47,7 @@ export function BoardSettings({ details, data }: { details: TreeDetails; data: R
 
   return (
     <SettingsPage title="Board" description={`What everyone in this ${treeLabel} sees in its lobby.`}>
+      <BoardNotes details={details} data={data} chat={chat} />
       <SettingsSection title="House rules" description={`Up to ${MAX_RULES}, one line each. Keep them short.`}>
         {rules.length ? (
           <SettingsRows>
