@@ -29,6 +29,7 @@ func (s *Server) registerAdminRoutes(authenticated fiber.Router) {
 	admin.Post("/settings/accounts", s.adminSetAccountSettings)
 	admin.Post("/server/avatar", s.adminUploadServerAvatar)
 
+	admin.Post("/messages", s.adminSendMessage)
 	admin.Get("/users", s.adminListUsers)
 	admin.Post("/users", s.adminCreateUser)
 	admin.Get("/users/:id", s.adminGetUser)

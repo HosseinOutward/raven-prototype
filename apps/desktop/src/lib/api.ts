@@ -116,6 +116,8 @@ export interface UserPreferences {
    * that predate it. Not derived from `followScreenShares` (which defaulted on).
    */
   watchNewShares?: boolean;
+  /** Everything Raven sends to this person: event messages and the server admin's notes. On unless turned off; absent from servers that predate it. */
+  ravenMessages?: boolean;
   updatedAt: string;
 }
 
@@ -934,7 +936,7 @@ export class ApiClient {
     return this.request<{ preferences: UserPreferences }>("/v1/preferences");
   }
 
-  updatePreferences(patch: Partial<Pick<UserPreferences, "displayName" | "uiLabels" | "colorPalette" | "alwaysJoinMuted" | "joinWithCameraOff" | "joinWithoutScreenSharing" | "followScreenShares" | "watchNewShares">>) {
+  updatePreferences(patch: Partial<Pick<UserPreferences, "displayName" | "uiLabels" | "colorPalette" | "alwaysJoinMuted" | "joinWithCameraOff" | "joinWithoutScreenSharing" | "followScreenShares" | "watchNewShares" | "ravenMessages">>) {
     return this.request<{ preferences: UserPreferences; user: User }>("/v1/preferences", {
       method: "POST",
       body: JSON.stringify(patch),

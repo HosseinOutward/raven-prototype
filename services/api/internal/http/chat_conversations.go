@@ -60,7 +60,8 @@ func chatSummarySQL(one bool) string {
 			(SELECT COUNT(*) FROM (
 				SELECT 1 FROM chat_messages m
 				WHERE m.conversation_id = c.id AND m.seq > cm.read_seq AND m.seq >= cm.visible_from_seq
-				  AND m.sender_id <> cm.user_id AND m.kind = 'text' AND m.deleted_at IS NULL
+				  AND ((m.sender_id <> cm.user_id AND m.kind = 'text') OR (c.kind = 'raven' AND m.kind = 'system'))
+				  AND m.deleted_at IS NULL
 				  AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.user_id = cm.user_id AND h.message_id = m.id)
 				LIMIT %[1]d
 			) capped) AS unread_count,
@@ -81,7 +82,7 @@ func chatSummarySQL(one bool) string {
 		LEFT JOIN chat_user_settings ms ON ms.user_id = cm.user_id
 		LEFT JOIN chat_user_settings ps ON ps.user_id = peer.user_id
 		WHERE c.status = 'active'
-		  AND ((c.kind IN ('dm', 'group', 'saved') AND cm.state = 'joined') OR (c.kind = 'nest' AND tm.user_id IS NOT NULL))%[2]s
+		  AND ((c.kind IN ('dm', 'group', 'saved', 'raven') AND cm.state = 'joined') OR (c.kind = 'nest' AND tm.user_id IS NOT NULL))%[2]s
 	 ) b
 	 LEFT JOIN chat_messages pm ON pm.conversation_id = b.id AND pm.seq = b.preview_seq
 	 LEFT JOIN users pmu ON pmu.id = pm.sender_id
@@ -162,6 +163,9 @@ func (s *Server) chatSummaries(q chatQuerier, userID, onlyID string) ([]ChatConv
 			item.Role = memberRole
 			item.Name = "Saved messages"
 			item.CanSend = true
+		case chatKindRaven:
+			item.Role = memberRole
+			item.Name = "Raven"
 		}
 		if !capabilities.SendMessages {
 			item.CanSend = false

@@ -66,8 +66,19 @@ export function SavedAvatar({ userId, name, className }: { userId: string; name:
   );
 }
 
+/** Raven's own contact: the app's mark, never a person's picture. */
+export function RavenAvatar({ className }: { className?: string }) {
+  return <img src="/favicon.png" alt="" aria-hidden className={cn("shrink-0 rounded-full bg-secondary object-contain p-1", className)} />;
+}
+
+/** Marks a message source that is not a person. Bordered, quiet, never a colour. */
+export function SystemBadge({ className }: { className?: string }) {
+  return <span className={cn("shrink-0 rounded-full border border-border px-1.5 text-caption text-muted-foreground", className)}>System</span>;
+}
+
 /** The picture for a conversation: the other person, the group's initials, or a text nest's mark. */
 export function ConversationAvatar({ conversation, me, className }: { conversation: ChatConversation; /** Whose Saved messages this would be. */ me?: string; className?: string }) {
+  if (conversation.kind === "raven") return <RavenAvatar className={className} />;
   if (conversation.kind === "saved" && me) return <SavedAvatar userId={me} name={conversation.name} className={className} />;
   if (conversation.kind === "nest") {
     return (
@@ -110,6 +121,7 @@ export const ConversationRowCompact = memo(function ConversationRowCompact({
       <span className={cn("min-w-0 flex-1 truncate text-small", unread || active ? "font-medium text-foreground" : "text-muted-foreground")}>
         <bdi>{conversation.name}</bdi>
       </span>
+      {conversation.kind === "raven" ? <SystemBadge /> : null}
       <MutedIndicator conversation={conversation} />
       {conversation.kind === "group" ? <GroupIndicator /> : null}
       <MentionDot count={conversation.mentionCount} />
@@ -136,6 +148,7 @@ export const ConversationRow = memo(function ConversationRow({
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
           <span className={cn("min-w-0 flex-1 truncate text-body", unread ? "font-semibold" : "font-medium")}><bdi>{conversation.name}</bdi></span>
+          {conversation.kind === "raven" ? <SystemBadge className="self-center" /> : null}
           <MutedIndicator conversation={conversation} />
           {conversation.kind === "group" ? <GroupIndicator className="self-center" /> : null}
           <time className="shrink-0 text-caption tabular-nums text-subtle">{listTime(conversation.lastActivityMs)}</time>

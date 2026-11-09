@@ -102,3 +102,30 @@ func TestPinnedNotes(t *testing.T) {
 	deleteJSON(t, server, bobToken, base+"/notes/"+second.ID, http.StatusNoContent)
 	deleteJSON(t, server, bobToken, base+"/notes/"+second.ID, http.StatusNotFound)
 }
+
+// A mention counts as a short name toward the 280 limit, not as its stored token.
+func TestPinnedNoteMentionsCountAsShortNames(t *testing.T) {
+	server, aliceToken := newTestServer(t)
+	treeID := createTestTree(t, server, aliceToken, "Core")
+	base := "/v1/trees/" + treeID
+	nestID := createTestNest(t, server, aliceToken, base+"/nests", "Standup")
+	token := "<@n:" + nestID + ">"
+	if len(token) < 30 {
+		t.Fatalf("token %q is shorter than expected", token)
+	}
+
+	// Six mentions are about 230 stored characters, but read as 96.
+	ok := strings.Repeat(token, 6) + strings.Repeat("a", 180)
+	postJSON(t, server, aliceToken, base+"/notes", map[string]any{"title": "ok", "description": ok}, http.StatusCreated)
+
+	// One mention too many for what people read: 17 * 16 = 272, plus 9 is over 280.
+	over := strings.Repeat(token, 17) + strings.Repeat("a", 9)
+	postJSON(t, server, aliceToken, base+"/notes", map[string]any{"title": "over", "description": over}, http.StatusBadRequest)
+
+	// Plain text still stops at 280.
+	postJSON(t, server, aliceToken, base+"/notes", map[string]any{"title": "plain", "description": strings.Repeat("a", 281)}, http.StatusBadRequest)
+
+	if got := noteShownLength(token + "ab"); got != treeNoteMentionRunes+2 {
+		t.Fatalf("noteShownLength = %d", got)
+	}
+}

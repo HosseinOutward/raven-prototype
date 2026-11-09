@@ -13,12 +13,13 @@ import { failureText } from "@/lib/chat/errors";
 import { saveAttachment } from "@/lib/chat/imageActions";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
 import { emojiOnlyCount } from "@/lib/chat/format";
-import { systemLine } from "@/lib/chat/text";
+import { systemLine, UNKNOWN_RAVEN_MESSAGE } from "@/lib/chat/text";
 import { clockTime, fullTime, listTime } from "@/lib/chat/time";
 import type { ChatAttachment, ChatMessage, ChatOrigin, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
 import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
+import { RavenAvatar, SystemBadge } from "./ConversationRow";
 import { EmojiPicker } from "./EmojiPicker";
 import { Reactions } from "./Reactions";
 import { MessageText, type MentionContext } from "./MessageText";
@@ -192,6 +193,38 @@ function MessageMeta({ message, mine, deleted, status, overImage, alignStart, cl
   );
 }
 
+/**
+ * A message from Raven or the server admin, in the Raven contact. It comes from Raven, not
+ * from the person it is addressed to, whatever sender the server records. The admin's words
+ * are plain text: they are shown as written, never parsed for mentions or formatting.
+ */
+function RavenMessageRow({ message, dayHeading, newDivider }: { message: ChatMessage; dayHeading?: string; newDivider?: boolean }) {
+  const admin = message.system?.type === "admin";
+  return (
+    <div>
+      <Decorations dayHeading={dayHeading} newDivider={newDivider} />
+      <div className="flex items-start gap-2 pt-2.5">
+        <RavenAvatar className="h-7 w-7" />
+        <div className="min-w-0 max-w-[min(100%,34rem)] rounded-card bg-secondary px-3 py-1.5">
+          <div className="flex items-center gap-1.5 text-caption">
+            <span className="font-medium text-muted-foreground">Raven</span>
+            <SystemBadge />
+          </div>
+          {admin ? (
+            <>
+              <p className="pt-0.5 text-caption text-subtle">From the server admin</p>
+              <p dir="auto" className="whitespace-pre-wrap break-words text-body text-foreground">{message.system?.text ?? ""}</p>
+            </>
+          ) : (
+            <p className="text-body text-muted-foreground">{UNKNOWN_RAVEN_MESSAGE}</p>
+          )}
+          <time className="mt-0.5 block text-caption tabular-nums text-subtle" dateTime={message.createdAt} title={fullTime(message.createdAt)}>{clockTime(message.createdAt)}</time>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** One message in a conversation. */
 export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const { message, mine, showSender, continuation, status, parent } = props;
@@ -204,6 +237,9 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
     onReply: () => props.onReply(message),
   });
 
+  if (message.kind === "system" && message.system?.type) {
+    return <RavenMessageRow message={message} dayHeading={props.dayHeading} newDivider={props.newDivider} />;
+  }
   if (message.kind === "system") {
     return (
       <div>

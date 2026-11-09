@@ -202,6 +202,11 @@ export class AdminApi {
     return this.request("DELETE", `/v1/admin/users/${id(userId)}/avatar`);
   }
 
+  /** Puts a plain-text message from the server admin in people's Raven contact. */
+  sendMessage(to: "all" | string[], text: string): Promise<{ sent: number; skipped: number }> {
+    return this.request("POST", "/v1/admin/messages", { to, text });
+  }
+
   suspendUser(userId: string, reason: string): Promise<UserDetail> {
     return this.request("POST", `/v1/admin/users/${id(userId)}/suspend`, { reason });
   }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AdminApi, ApiError } from "./api";
 import { parseRoute, routeHref } from "./lib/route";
+import { sendResult } from "./lib/sendResult";
 import { describeDetail, describeEffective, formatAgo } from "./lib/format";
 import type { UserCapability } from "./types";
 
@@ -110,6 +111,7 @@ describe("AdminApi", () => {
     await api.setUserCapability("a/b", "spaces.create", "allow", 2);
     await api.deleteSpace("s 1", "Guild");
     await api.transferSpace("s1", { userId: "u1" });
+    await api.sendMessage(["u1"], "Hello");
     expect(server.calls[0]).toMatchObject({
       path: "/v1/admin/users/a%2Fb/capabilities",
       method: "POST",
@@ -117,6 +119,14 @@ describe("AdminApi", () => {
     });
     expect(server.calls[1]).toMatchObject({ path: "/v1/admin/spaces/s%201", method: "DELETE", body: { confirmation: "Guild" } });
     expect(server.calls[2]).toMatchObject({ path: "/v1/admin/spaces/s1/transfer", body: { userId: "u1" } });
+    expect(server.calls[3]).toMatchObject({ path: "/v1/admin/messages", method: "POST", body: { to: ["u1"], text: "Hello" } });
+  });
+});
+
+describe("sendResult", () => {
+  test("leaves out the second sentence when nobody turned messages off", () => {
+    expect(sendResult(5, 0)).toBe("Sent to 5.");
+    expect(sendResult(5, 2)).toBe("Sent to 5. 2 turned Raven messages off.");
   });
 });
 

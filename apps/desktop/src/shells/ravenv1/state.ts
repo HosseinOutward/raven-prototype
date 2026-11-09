@@ -152,7 +152,7 @@ export interface RavenShellData {
   selectApiServer: (url: string) => Promise<void>;
   refresh: () => Promise<void>;
   retryConnection: () => Promise<void>;
-  updatePreferences: (patch: Partial<Pick<UserPreferences, "displayName" | "uiLabels" | "colorPalette" | "alwaysJoinMuted" | "joinWithCameraOff" | "joinWithoutScreenSharing" | "followScreenShares" | "watchNewShares">>) => Promise<void>;
+  updatePreferences: (patch: Partial<Pick<UserPreferences, "displayName" | "uiLabels" | "colorPalette" | "alwaysJoinMuted" | "joinWithCameraOff" | "joinWithoutScreenSharing" | "followScreenShares" | "watchNewShares" | "ravenMessages">>) => Promise<void>;
   getTree: (id: string) => Tree | undefined;
   getNest: (id: string) => Nest | LauncherNest | undefined;
   getPerson: (id: string) => ShellPerson | undefined;

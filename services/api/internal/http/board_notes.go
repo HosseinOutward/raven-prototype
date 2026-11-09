@@ -16,6 +16,11 @@ const (
 	treeMaxNotes       = 5
 	treeNoteTitleRunes = 80
 	treeNoteDescRunes  = 280
+	// treeNoteStoredRunes is the hard limit on a description as stored, mention tokens in
+	// full. A mention counts as treeNoteMentionRunes toward treeNoteDescRunes, about the
+	// length of a short name, so a few mentions do not use up the description.
+	treeNoteStoredRunes  = 1000
+	treeNoteMentionRunes = 16
 	// boardTimeLayout is fixed width, so end times compare correctly as text.
 	boardTimeLayout = "2006-01-02T15:04:05.000Z"
 )
@@ -137,6 +142,16 @@ type treeNoteInput struct {
 	EndsAt      *string `json:"endsAt"`
 }
 
+// noteShownLength is the length of a description as people read it: each mention token
+// counts as a short name.
+func noteShownLength(text string) int {
+	length := utf8.RuneCountInString(text)
+	for _, token := range chatMentionToken.FindAllString(text, -1) {
+		length += treeNoteMentionRunes - utf8.RuneCountInString(token)
+	}
+	return length
+}
+
 func (input treeNoteInput) clean(now time.Time) (title, description string, ends *string, err error) {
 	title = strings.TrimSpace(input.Title)
 	description = strings.TrimSpace(input.Description)
@@ -151,7 +166,7 @@ func (input treeNoteInput) clean(now time.Time) (title, description string, ends
 	if utf8.RuneCountInString(title) > treeNoteTitleRunes {
 		return "", "", nil, fiber.NewError(fiber.StatusBadRequest, "A title can be at most 80 characters.")
 	}
-	if utf8.RuneCountInString(description) > treeNoteDescRunes {
+	if noteShownLength(description) > treeNoteDescRunes || utf8.RuneCountInString(description) > treeNoteStoredRunes {
 		return "", "", nil, fiber.NewError(fiber.StatusBadRequest, "A description can be at most 280 characters.")
 	}
 	if input.EndsAt != nil && strings.TrimSpace(*input.EndsAt) != "" {

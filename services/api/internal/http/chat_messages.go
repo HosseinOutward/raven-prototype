@@ -233,6 +233,8 @@ const (
 	chatReadPublicSpace  = "public_space"
 	// chatReadSaved has no switch: nobody else is there to see it, so it is always off.
 	chatReadSaved = "saved"
+	// chatReadRaven has no switch either: there is nobody to show it to.
+	chatReadRaven = "raven"
 )
 
 // chatReadColumns maps a category to its switch's column and its default for people who
@@ -256,6 +258,8 @@ func chatReadCategory(q chatQuerier, access chatAccess) (string, error) {
 		return chatReadGroup, nil
 	case chatKindSaved:
 		return chatReadSaved, nil
+	case chatKindRaven:
+		return chatReadRaven, nil
 	}
 	var visibility string
 	if err := q.QueryRow(`SELECT visibility FROM trees WHERE id = ?`, access.TreeID).Scan(&visibility); err != nil {
@@ -997,8 +1001,10 @@ func chatUnreadCount(q chatQuerier, conversationID, userID string, readSeq, floo
 	err := q.QueryRow(
 		`SELECT COUNT(*) FROM (
 			SELECT 1 FROM chat_messages m
-			WHERE m.conversation_id = ? AND m.seq > ? AND m.seq >= ? AND m.sender_id <> ?
-			  AND m.kind = 'text' AND m.deleted_at IS NULL
+			WHERE m.conversation_id = ? AND m.seq > ? AND m.seq >= ?
+			  AND ((m.sender_id <> ? AND m.kind = 'text')
+			       OR (m.kind = 'system' AND EXISTS (SELECT 1 FROM chat_conversations c WHERE c.id = m.conversation_id AND c.kind = 'raven')))
+			  AND m.deleted_at IS NULL
 			  AND NOT EXISTS (SELECT 1 FROM chat_message_hides h WHERE h.user_id = ? AND h.message_id = m.id)
 			LIMIT ?
 		 ) capped`,

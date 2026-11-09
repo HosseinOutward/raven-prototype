@@ -1,7 +1,7 @@
 // What the server sends for text chat, and what the client keeps about it.
 // The wire shapes mirror services/api/internal/http/chat.go.
 
-export type ChatKind = "dm" | "group" | "nest" | "saved";
+export type ChatKind = "dm" | "group" | "nest" | "saved" | "raven";
 
 export interface ChatUser {
   id: string;
@@ -59,7 +59,11 @@ export interface ChatReplyRef {
 
 /** What a system line says happened. */
 export interface ChatSystemPayload {
-  event: "group_created" | "members_added" | "member_left" | "member_removed" | "renamed" | "topic_changed" | string;
+  /** Raven's own messages (a conversation of kind `raven`) say what they are here instead. */
+  type?: "admin" | "event" | string;
+  /** The words of an `admin` message. Plain text: never parse it. */
+  text?: string;
+  event?: "group_created" | "members_added" | "member_left" | "member_removed" | "renamed" | "topic_changed" | string;
   name?: string;
   user?: ChatUser;
   users?: ChatUser[];

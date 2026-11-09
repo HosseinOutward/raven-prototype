@@ -6,7 +6,7 @@ import { ForwardDialog } from "@/components/chat/ForwardDialog";
 import { SelectionBar } from "@/components/chat/SelectionBar";
 import { ImageViewer } from "@/components/chat/ImageViewer";
 import { Composer } from "@/components/chat/Composer";
-import { ConversationAvatar } from "@/components/chat/ConversationRow";
+import { ConversationAvatar, SystemBadge } from "@/components/chat/ConversationRow";
 import { MessageList, type MessageListHandle } from "@/components/chat/MessageList";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
@@ -352,7 +352,7 @@ function OpenConversation({
     ? <span className="text-warning">Reconnecting… Messages you send will go when Raven is back online.</span>
     : summary.kind === "dm"
       ? status
-      : summary.kind === "saved"
+      : summary.kind === "saved" || summary.kind === "raven"
         ? undefined
         : summary.kind === "group"
         ? `${summary.memberCount} ${summary.memberCount === 1 ? "person" : "people"}`
@@ -360,6 +360,8 @@ function OpenConversation({
 
   const intro = summary.kind === "dm"
     ? `Messages here are between you and ${name}.${summary.peerReadSeq !== undefined && sharesReadStatus && !summary.peerDeleted ?" You can each see when the other has read them; Settings › Messages turns that off." : ""}`
+    : summary.kind === "raven"
+      ? "Messages from Raven and your server’s admin arrive here."
     : summary.kind === "saved"
       ? "Only you can see this. Keep notes here, or add messages from any conversation."
       : summary.kind === "group"
@@ -379,6 +381,7 @@ function OpenConversation({
           )
         }
         title={name}
+        badge={summary.kind === "raven" ? <SystemBadge /> : undefined}
         subtitle={subtitle}
         titleLink={summary.kind === "dm" && summary.peer ? { label: `Open ${name}’s profile`, onOpen: () => onNavigate({ kind: "user", id: summary.peer!.id }) } : undefined}
         actions={
@@ -479,6 +482,10 @@ function OpenConversation({
             onSave={summary.kind === "saved" ? undefined : saveChosen}
             onCancel={() => setSelection(null)}
           />
+        ) : summary.kind === "raven" ? (
+          <p className="mx-auto w-full max-w-3xl shrink-0 px-6 pb-5 text-center text-small text-muted-foreground">
+            {"Raven can't read replies. Messages here come from Raven and your server's admin."}
+          </p>
         ) : summary.canSend ? (
           <Composer
             conversationId={id}
@@ -671,6 +678,8 @@ function describeConfirmation(confirming: Confirmation, name: string, kind: Conv
         title: `Clear ${name} for you?`,
         description: kind === "dm"
           ? "Everything here disappears from your devices, and the conversation leaves your list until there is a new message. The other person keeps their copy."
+          : kind === "raven"
+          ? "Everything here disappears from your devices. New messages from Raven still arrive."
           : kind === "saved"
           ? "Everything here disappears from your devices and can’t be brought back."
           : "Everything here disappears from your devices. Other people keep their copy, and new messages still arrive.",

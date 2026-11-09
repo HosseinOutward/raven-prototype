@@ -13,6 +13,7 @@ export function ViewHeader({
   subtitle,
   actions,
   titleLink,
+  badge,
 }: {
   leading?: ReactNode;
   title: string;
@@ -20,6 +21,8 @@ export function ViewHeader({
   actions?: ReactNode;
   /** Makes the picture and the title open something, such as the person's profile. */
   titleLink?: { label: string; onOpen: () => void };
+  /** A small chip beside the title, such as "System". */
+  badge?: ReactNode;
 }) {
   return (
     <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border/70 px-6 py-2.5">
@@ -40,6 +43,11 @@ export function ViewHeader({
               </button>
             </Tooltip>
           </h1>
+        ) : badge ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-title-sm font-semibold">{title}</h1>
+            {badge}
+          </div>
         ) : (
           <h1 className="truncate text-title-sm font-semibold">{title}</h1>
         )}

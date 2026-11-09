@@ -13,8 +13,16 @@ export function namesSentence(names: string[], max = 2): string {
   return `${names.slice(0, max).join(", ")} and ${rest} ${rest === 1 ? "other" : "others"}`;
 }
 
+/** What one of Raven's own messages says, as a single plain line. */
+export function ravenLine(system: ChatSystemPayload): string {
+  return system.type === "admin" ? system.text ?? "" : UNKNOWN_RAVEN_MESSAGE;
+}
+
+export const UNKNOWN_RAVEN_MESSAGE = "This message needs a newer Raven.";
+
 /** What a system line says, for example "Ava added Sam" or "You left". */
 export function systemLine(system: ChatSystemPayload | undefined, actorId: string, actorName: string, me: string): string {
+  if (system?.type) return ravenLine(system);
   const actor = actorId === me ? "You" : actorName;
   const nameOf = (person: { id: string; displayName: string }) => (person.id === me ? "you" : person.displayName);
   switch (system?.event) {
@@ -41,7 +49,7 @@ export function previewLine(conversation: ChatConversation, me: string): string 
   if (!last) return "";
   if (last.kind === "system") return systemLine(last.system, last.senderId, last.senderName, me);
   const text = last.deleted ? "Message deleted" : messageExcerpt(last.excerpt, last.attachments);
-  if (conversation.kind === "saved") return text;
+  if (conversation.kind === "saved" || conversation.kind === "raven") return text;
   if (last.senderId === me) return `You: ${text}`;
   return conversation.kind === "dm" ? text : `${last.senderName}: ${text}`;
 }
