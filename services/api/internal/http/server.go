@@ -114,6 +114,7 @@ type Nest struct {
 	Type           string  `json:"type"`
 	Status         string  `json:"status"`
 	LifecycleState string  `json:"lifecycleState"`
+	Door           string  `json:"door"`
 	CreatedAt      string  `json:"createdAt"`
 	UpdatedAt      string  `json:"updatedAt"`
 	ArchivedAt     *string `json:"archivedAt,omitempty"`
@@ -426,6 +427,10 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 func errorHandler(c *fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
 	message := "internal error"
+	var reasoned *reasonedError
+	if errors.As(err, &reasoned) {
+		return c.Status(reasoned.status).JSON(fiber.Map{"error": reasoned.message, "reasonCode": reasoned.reason})
+	}
 	var fiberErr *fiber.Error
 	if errors.As(err, &fiberErr) {
 		code = fiberErr.Code
@@ -803,6 +808,7 @@ func (s *Server) createNestWithType(c *fiber.Ctx, defaultType string) error {
 		Name   string `json:"name"`
 		Type   string `json:"type"`
 		TreeID string `json:"treeId"`
+		Door   string `json:"door"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid Nest payload")
@@ -814,6 +820,13 @@ func (s *Server) createNestWithType(c *fiber.Ctx, defaultType string) error {
 	nestType := normalizeNestType(body.Type, defaultType)
 	if nestType == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "Nest type must be persistent or temporary")
+	}
+	door, err := normalizeNestDoor(body.Door)
+	if err != nil {
+		return err
+	}
+	if nestType != "persistent" && door != doorOpen {
+		return fiber.NewError(fiber.StatusBadRequest, "Only rooms in a Tree can have a door")
 	}
 	var treeID *string
 	if nestType == "persistent" {
@@ -842,7 +855,7 @@ func (s *Server) createNestWithType(c *fiber.Ctx, defaultType string) error {
 	} else if err := s.requireStartRooms(user); err != nil {
 		return err
 	}
-	nest, err := s.createNestForUser(user, name, nestType, treeID)
+	nest, err := s.createNestForUser(user, name, nestType, door, treeID)
 	if err != nil {
 		return err
 	}
@@ -1275,6 +1288,9 @@ func (s *Server) joinOrRequest(nest Nest, user User) (fiber.Map, error) {
 		// There is nobody to ask: the way into a tree's nest is to be in the tree.
 		return nil, fiber.NewError(fiber.StatusForbidden, "This Nest belongs to a Tree you’re not in.")
 	}
+	if err := s.requireDoor(user.ID, nest); err != nil {
+		return nil, err
+	}
 	state, _, err := s.membershipState(nest.ID, user.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -1310,7 +1326,7 @@ func (s *Server) joinOrRequest(nest Nest, user User) (fiber.Map, error) {
 }
 
 func (s *Server) queryNests(clause string, args ...any) ([]Nest, error) {
-	query := `SELECT n.id, n.name, n.join_code, n.creator_user_id, n.tree_id, n.type, n.status, n.lifecycle_state, n.created_at, n.updated_at, n.archived_at, n.ended_at, n.empty_since, n.expires_at, n.last_activity_at FROM nests n ` + clause
+	query := `SELECT n.id, n.name, n.join_code, n.creator_user_id, n.tree_id, n.type, n.status, n.lifecycle_state, n.door, n.created_at, n.updated_at, n.archived_at, n.ended_at, n.empty_since, n.expires_at, n.last_activity_at FROM nests n ` + clause
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -1320,7 +1336,7 @@ func (s *Server) queryNests(clause string, args ...any) ([]Nest, error) {
 	for rows.Next() {
 		var nest Nest
 		var treeID, archivedAt, endedAt, emptySince, expiresAt sql.NullString
-		if err := rows.Scan(&nest.ID, &nest.Name, &nest.JoinCode, &nest.CreatorUserID, &treeID, &nest.Type, &nest.Status, &nest.LifecycleState, &nest.CreatedAt, &nest.UpdatedAt, &archivedAt, &endedAt, &emptySince, &expiresAt, &nest.LastActivityAt); err != nil {
+		if err := rows.Scan(&nest.ID, &nest.Name, &nest.JoinCode, &nest.CreatorUserID, &treeID, &nest.Type, &nest.Status, &nest.LifecycleState, &nest.Door, &nest.CreatedAt, &nest.UpdatedAt, &archivedAt, &endedAt, &emptySince, &expiresAt, &nest.LastActivityAt); err != nil {
 			return nil, err
 		}
 		nest.TreeID = nullStringPtr(treeID)
@@ -1336,8 +1352,8 @@ func (s *Server) queryNests(clause string, args ...any) ([]Nest, error) {
 func (s *Server) findNest(id string) (Nest, error) {
 	var nest Nest
 	var treeID, archivedAt, endedAt, emptySince, expiresAt sql.NullString
-	err := s.db.QueryRow(`SELECT id, name, join_code, creator_user_id, tree_id, type, status, lifecycle_state, created_at, updated_at, archived_at, ended_at, empty_since, expires_at, last_activity_at FROM nests WHERE id = ?`, id).
-		Scan(&nest.ID, &nest.Name, &nest.JoinCode, &nest.CreatorUserID, &treeID, &nest.Type, &nest.Status, &nest.LifecycleState, &nest.CreatedAt, &nest.UpdatedAt, &archivedAt, &endedAt, &emptySince, &expiresAt, &nest.LastActivityAt)
+	err := s.db.QueryRow(`SELECT id, name, join_code, creator_user_id, tree_id, type, status, lifecycle_state, door, created_at, updated_at, archived_at, ended_at, empty_since, expires_at, last_activity_at FROM nests WHERE id = ?`, id).
+		Scan(&nest.ID, &nest.Name, &nest.JoinCode, &nest.CreatorUserID, &treeID, &nest.Type, &nest.Status, &nest.LifecycleState, &nest.Door, &nest.CreatedAt, &nest.UpdatedAt, &archivedAt, &endedAt, &emptySince, &expiresAt, &nest.LastActivityAt)
 	nest.TreeID = nullStringPtr(treeID)
 	nest.ArchivedAt = nullStringPtr(archivedAt)
 	nest.EndedAt = nullStringPtr(endedAt)
@@ -1349,8 +1365,8 @@ func (s *Server) findNest(id string) (Nest, error) {
 func (s *Server) findNestByCode(code string) (Nest, error) {
 	var nest Nest
 	var treeID, archivedAt, endedAt, emptySince, expiresAt sql.NullString
-	err := s.db.QueryRow(`SELECT id, name, join_code, creator_user_id, tree_id, type, status, lifecycle_state, created_at, updated_at, archived_at, ended_at, empty_since, expires_at, last_activity_at FROM nests WHERE join_code = ?`, code).
-		Scan(&nest.ID, &nest.Name, &nest.JoinCode, &nest.CreatorUserID, &treeID, &nest.Type, &nest.Status, &nest.LifecycleState, &nest.CreatedAt, &nest.UpdatedAt, &archivedAt, &endedAt, &emptySince, &expiresAt, &nest.LastActivityAt)
+	err := s.db.QueryRow(`SELECT id, name, join_code, creator_user_id, tree_id, type, status, lifecycle_state, door, created_at, updated_at, archived_at, ended_at, empty_since, expires_at, last_activity_at FROM nests WHERE join_code = ?`, code).
+		Scan(&nest.ID, &nest.Name, &nest.JoinCode, &nest.CreatorUserID, &treeID, &nest.Type, &nest.Status, &nest.LifecycleState, &nest.Door, &nest.CreatedAt, &nest.UpdatedAt, &archivedAt, &endedAt, &emptySince, &expiresAt, &nest.LastActivityAt)
 	nest.TreeID = nullStringPtr(treeID)
 	nest.ArchivedAt = nullStringPtr(archivedAt)
 	nest.EndedAt = nullStringPtr(endedAt)
@@ -1671,14 +1687,32 @@ func (s *Server) renameNest(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusForbidden, "creator or moderator role required")
 	}
 	var body struct {
-		Name string `json:"name"`
+		Name string  `json:"name"`
+		Door *string `json:"door"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid Nest payload")
 	}
-	nest, err := s.renameNestCore(nestID, body.Name)
+	door := ""
+	if body.Door != nil {
+		var err error
+		if door, err = normalizeNestDoor(*body.Door); err != nil {
+			return err
+		}
+	}
+	nest, err := s.findNest(nestID)
 	if err != nil {
 		return err
+	}
+	if body.Door == nil || strings.TrimSpace(body.Name) != "" {
+		if nest, err = s.renameNestCore(nestID, body.Name); err != nil {
+			return err
+		}
+	}
+	if body.Door != nil {
+		if nest, err = s.setNestDoor(nest, door); err != nil {
+			return err
+		}
 	}
 	return c.JSON(fiber.Map{"nest": withLinks(nest)})
 }

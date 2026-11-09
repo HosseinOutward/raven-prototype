@@ -11,7 +11,7 @@ import { stopAllSessions } from "@/lib/workshop";
 import { knockAge, loadNotificationSettings, newProfileKnocks, notificationCommands, type SeenKnocks } from "@/lib/notifications";
 import type { NestEntryNotice, PendingItem, RavenShellData, SelectablePresence, ShellPerson, UILabelCopy } from "./state";
 import { defaultPreferences, displayNameFor, labelsForPreference, presenceFromApi } from "./state";
-import { ApiError, type KnockReply, type ProfileKnockState } from "@/lib/api";
+import { ApiError, type KnockReply, type NestDoor, type ProfileKnockState } from "@/lib/api";
 import { toast } from "@/components/ui/toast";
 import { answerToast, answerUntil, knockAnswers, newKnockAnswers } from "./knockReplies";
 
@@ -627,7 +627,8 @@ export function useRavenShellData(): RavenShellData {
         await refresh();
         return result.status;
       } catch (err) {
-        setError(messageFromError(err));
+        // The threshold turns this into its knock state; it is not a failure to report.
+        if (!(err instanceof ApiError && err.reasonCode === "knock_required")) setError(messageFromError(err));
         throw err;
       } finally {
         setBusy(false);
@@ -793,10 +794,22 @@ export function useRavenShellData(): RavenShellData {
     [runMutation],
   );
   const createTreeNest = useCallback(
-    (treeId: string, name: string) => runMutation(() => api.createTreeNest(treeId, name).then((result) => result.nest)),
+    (treeId: string, name: string, door?: NestDoor) => runMutation(() => api.createTreeNest(treeId, name, door).then((result) => result.nest)),
     [runMutation],
   );
   const renameNest = useCallback((nestId: string, name: string) => runMutation(() => api.renameNest(nestId, name).then(() => undefined)), [runMutation]);
+  const letInKnock = useCallback(
+    (knockId: string) => runMutation(() => api.acceptKnock(knockId).then(() => undefined)),
+    [runMutation],
+  );
+  const declineRoomKnock = useCallback(
+    (knockId: string) => runMutation(() => api.declineKnock(knockId).then(() => undefined)),
+    [runMutation],
+  );
+  const updateNestSettings = useCallback(
+    (nestId: string, settings: { name?: string; door?: NestDoor }) => runMutation(() => api.updateNestSettings(nestId, settings).then(() => undefined)),
+    [runMutation],
+  );
   const deleteNest = useCallback((nestId: string) => runMutation(() => api.archiveNest(nestId)), [runMutation]);
   const addTreeMember = useCallback(
     (treeId: string, username: string, role: TreeRole = "member") =>
@@ -929,6 +942,9 @@ export function useRavenShellData(): RavenShellData {
     joinTree,
     createTreeNest,
     renameNest,
+    updateNestSettings,
+    letInKnock,
+    declineRoomKnock,
     deleteNest,
     addTreeMember,
     updateTreeMemberRole,

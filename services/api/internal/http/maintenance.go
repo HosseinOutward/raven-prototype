@@ -151,6 +151,10 @@ func (s *Server) signalNestEntry(c *fiber.Ctx, updateType string) error {
 		}
 		return fiber.NewError(fiber.StatusForbidden, "admission is required before entering this Nest")
 	}
+	// A heads-up from someone who may not walk in would just be a knock nobody can answer.
+	if err := s.requireDoor(user.ID, nest); err != nil {
+		return err
+	}
 	occupants, err := s.nestOccupantIDs(nest.ID, user.ID)
 	if err != nil {
 		return err

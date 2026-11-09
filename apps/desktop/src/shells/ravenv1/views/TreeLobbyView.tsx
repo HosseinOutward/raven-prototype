@@ -7,6 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { api, type TreeDetails, type TreeMember, type TreeSearchResult } from "@/lib/api";
 import type { ChatStore } from "@/lib/chat/store";
 import { treeCan } from "@/lib/permissions";
+import { RoomDialog } from "./RoomDoor";
 import { cn } from "@/lib/utils";
 import { AvatarStack, EmptyState, GroupedList, LiveDot, NestGlyph, PersonAvatar, SectionLabel } from "../atoms";
 import { displayNameFor, lifecycleLabel, PRESENCE, presenceFromApi, type RavenShellData, type RavenView } from "../state";
@@ -314,16 +315,15 @@ export function TreeLobbyView({
         </div>
       </ViewBody>
 
-      <NameDialog
+      <RoomDialog
         open={createNestOpen}
         onOpenChange={setCreateNestOpen}
         title={`New ${nestSingular}`}
         description={`Everyone in ${tree.name} will be able to see it and join.`}
-        label="Name"
         placeholder="Lounge"
         submitLabel={`Create ${nestSingular}`}
-        onSubmit={async (name) => {
-          const nest = await data.createTreeNest(tree.id, name);
+        onSubmit={async (name, door) => {
+          const nest = await data.createTreeNest(tree.id, name, door);
           setCreateNestOpen(false);
           onNavigate({ kind: "nest", id: nest.id });
         }}

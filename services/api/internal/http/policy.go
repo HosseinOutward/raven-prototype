@@ -326,6 +326,9 @@ func (s *Server) requireNestEntry(user User, nest Nest) error {
 	if level < nestAccessMember || !joined {
 		return fiber.NewError(fiber.StatusForbidden, "admission is required before LiveKit access")
 	}
+	if err := s.requireDoor(user.ID, nest); err != nil {
+		return err
+	}
 	return s.requireNotVotedOut(nest.ID, user.ID)
 }
 

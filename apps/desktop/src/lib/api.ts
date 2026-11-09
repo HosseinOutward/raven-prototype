@@ -71,6 +71,8 @@ export type TreeJoinPolicy = "free" | "request";
 export type TreeVisibility = "public" | "private";
 export type UserPresenceState = "offline" | "available" | "dnd" | "in_nest" | "invisible";
 export type UserReachability = "open" | "around" | "focused" | "unavailable";
+/** How a room lets people in. Temporary nests are always open. */
+export type NestDoor = "open" | "knock" | "quiet";
 export type KnockStatus = "pending" | "accepted" | "declined" | "dismissed" | "expired";
 /** An answer to a knock on a person: Coming now, Coming in 10 min, Ask me later, Not today. */
 export type KnockReply = "coming" | "soon" | "later" | "not_today" | "message";
@@ -186,6 +188,8 @@ export interface Nest {
   type: NestType;
   status: "active" | "ended";
   lifecycleState: "created" | "waiting" | "ready" | "active" | "empty" | "expired" | "closed";
+  /** Absent from older servers, which have no doors. */
+  door?: NestDoor;
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
@@ -1066,10 +1070,10 @@ export class ApiClient {
     });
   }
 
-  createTreeNest(treeId: string, name: string) {
+  createTreeNest(treeId: string, name: string, door?: NestDoor) {
     return this.request<{ nest: Nest }>(`/v1/trees/${treeId}/nests`, {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...(door ? { door } : {}) }),
     });
   }
 
@@ -1105,6 +1109,13 @@ export class ApiClient {
 
   archiveNest(nestId: string) {
     return this.request<void>(`/v1/nests/${nestId}/archive`, { method: "POST" });
+  }
+
+  updateNestSettings(nestId: string, settings: { name?: string; door?: NestDoor }) {
+    return this.request<{ nest: Nest }>(`/v1/nests/${nestId}/settings`, {
+      method: "POST",
+      body: JSON.stringify(settings),
+    });
   }
 
   renameNest(nestId: string, name: string) {
