@@ -21,7 +21,7 @@ import {
   type SettingsCategoryGroup,
 } from "../SettingsScaffold";
 import { displayNameFor, type RavenShellData, type RavenView } from "../state";
-import { TREE_ROLE_LABEL } from "./dialogs";
+import { SpaceNameDialog, TREE_ROLE_LABEL } from "./dialogs";
 
 export type TreeSettingsSection = "general" | "access" | "members" | "delete";
 
@@ -223,64 +223,6 @@ function AccessSettings({ details, data }: { details: TreeDetails; data: RavenSh
         {error ? <p role="alert" className="text-small text-destructive">{error}</p> : null}
       </SettingsSection>
     </SettingsPage>
-  );
-}
-
-/** A name that applies inside one space only. Blank goes back to the usual name. */
-function SpaceNameDialog({
-  member,
-  isSelf,
-  treeName,
-  onClose,
-  onSave,
-}: {
-  member: TreeMember | null;
-  isSelf: boolean;
-  treeName: string;
-  onClose: () => void;
-  onSave: (name: string) => Promise<void>;
-}) {
-  const [name, setName] = useState("");
-  const [working, setWorking] = useState(false);
-  useEffect(() => {
-    if (member) setName(member.nickname ?? "");
-  }, [member]);
-  const save = (next: string) => {
-    if (working) return;
-    setWorking(true);
-    void onSave(next)
-      .catch(() => undefined)
-      .finally(() => setWorking(false));
-  };
-  const who = member ? (isSelf ? "your" : `${member.username}’s`) : "";
-  return (
-    <Dialog
-      open={member != null}
-      onOpenChange={(open) => { if (!open) onClose(); }}
-      title={isSelf ? `Your name in ${treeName}` : `${member ? displayNameFor(member) : ""}’s name in ${treeName}`}
-      description={`Everyone in ${treeName} sees this instead of ${who} usual name. Nowhere else changes.`}
-      widthClassName="max-w-sm"
-    >
-      <form
-        className="space-y-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          save(name.trim());
-        }}
-      >
-        <label className="block space-y-1.5 text-small text-muted-foreground">
-          Name
-          <Input value={name} onChange={(event) => setName(event.currentTarget.value)} placeholder={member?.nickname ? member.username : member ? displayNameFor(member) : ""} maxLength={80} autoFocus />
-        </label>
-        <div className="flex justify-between gap-2">
-          <Button variant="ghost" disabled={working || !member?.nickname} onClick={() => save("")}>Use usual name</Button>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={working}>{working ? "Saving…" : "Save"}</Button>
-          </div>
-        </div>
-      </form>
-    </Dialog>
   );
 }
 

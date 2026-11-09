@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, ChevronDown, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus } from "lucide-react";
+import { ArrowUpDown, ChevronDown, FolderPlus, Globe2, Hand, Lock, LogIn, MoreHorizontal, Plus, Settings, UserPlus, UserRound } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -14,7 +14,7 @@ import type { RavenMediaAdapterState } from "../useRavenMediaAdapter";
 import { useTreeChatSummaries } from "../useChat";
 import { groupMembers, liveTreeNests, lobbyMenus, lobbySummary, peopleAround, treeSubtitleParts } from "../treeLobby";
 import type { NestEntryController } from "../useNestEntry";
-import { AddTreeMemberDialog, NameDialog, TREE_ROLE_LABEL } from "./dialogs";
+import { AddTreeMemberDialog, NameDialog, SpaceNameDialog, TREE_ROLE_LABEL } from "./dialogs";
 import { ProfilePictureViewer } from "./ProfilePictureViewer";
 import { DoorwayHeader, DoorwayPage, DoorwayRow, LiveNestCard, nestPeople, nestView, ViewBody, ViewHeader } from "./shared";
 import { TreeNestsSection } from "./TreeNestsSection";
@@ -40,6 +40,7 @@ export function TreeLobbyView({
   const [createTextNestOpen, setCreateTextNestOpen] = useState(false);
   const [createCategoryOpen, setCreateCategoryOpen] = useState(false);
   const [arranging, setArranging] = useState(false);
+  const [renamingSelf, setRenamingSelf] = useState(false);
   const textNestCount = useTreeChatSummaries(chat).get(details.tree.id)?.count ?? 0;
   const tree = details.tree;
   const treeSingular = data.labels.treeSingular.toLowerCase();
@@ -64,12 +65,9 @@ export function TreeLobbyView({
   const menus = lobbyMenus({ canRooms: canManage, canMembers: canManageMembers, hasChat: Boolean(chat) });
   const peopleInside = data.activeNests.filter((nest) => nest.treeId === tree.id).reduce((sum, nest) => sum + nest.activeParticipantCount, 0);
   const subtitle = treeSubtitleParts({ visibility: tree.visibility, members: members.length, inside: peopleInside, nestSingular });
-  const summary = useMemo(() => {
-    const nests = liveNests.map((nest) => ({ id: nest.id, name: nest.name, people: nestPeople(nest, data) }));
-    const insideIds = new Set(nests.flatMap((nest) => nest.people.map((person) => person.id)));
-    return { nests, ...lobbySummary({ nests, selfId: data.user?.id, activeNestId: media.activeNestId, around: peopleAround(members, data.user?.id, insideIds) }) };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveNests, members, data.user?.id, data.presence, media.activeNestId]);
+  const summaryNests = liveNests.map((nest) => ({ id: nest.id, name: nest.name, people: nestPeople(nest, data) }));
+  const insideIds = new Set(summaryNests.flatMap((nest) => nest.people.map((person) => person.id)));
+  const summary = { nests: summaryNests, ...lobbySummary({ nests: summaryNests, selfId: data.user?.id, activeNestId: media.activeNestId, around: peopleAround(members, data.user?.id, insideIds) }) };
   const summaryNest = summary.nestId ? liveNests.find((nest) => nest.id === summary.nestId) : undefined;
   const summaryPeople = summary.kind === "here" || summary.kind === "live" ? (summary.nestId ? summary.nests.find((nest) => nest.id === summary.nestId)?.people : summary.nests.flatMap((nest) => nest.people)) ?? [] : [];
   const hasNests = liveNests.length > 0 || quietNests.length > 0 || textNestCount > 0;
@@ -78,7 +76,7 @@ export function TreeLobbyView({
     canManage && chat ? "text" : null,
     canManageMembers ? "invite" : null,
   ].filter((row): row is "voice" | "text" | "invite" => row !== null);
-  const membersList = <MembersList members={members} selfId={data.user?.id} data={data} onNavigate={onNavigate} />;
+  const membersList = <MembersList members={members} selfId={data.user?.id} data={data} onNavigate={onNavigate} onRenameSelf={() => setRenamingSelf(true)} />;
 
   return (
     <>
@@ -143,7 +141,7 @@ export function TreeLobbyView({
                 New {nestSingular}
               </Button>
             ) : null}
-            {menus.more.length ? (
+            {menus.more.length || selfMember ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="icon-sm" variant="ghost" aria-label={`More for ${tree.name}`}>
@@ -161,6 +159,12 @@ export function TreeLobbyView({
                     <DropdownMenuItem onSelect={() => setAddMemberOpen(true)}>
                       <UserPlus className="text-muted-foreground" />
                       Add a person
+                    </DropdownMenuItem>
+                  ) : null}
+                  {selfMember ? (
+                    <DropdownMenuItem onSelect={() => setRenamingSelf(true)}>
+                      <UserRound className="text-muted-foreground" />
+                      Your name in {tree.name}
                     </DropdownMenuItem>
                   ) : null}
                   <DropdownMenuSeparator />
@@ -355,6 +359,17 @@ export function TreeLobbyView({
           />
         </>
       ) : null}
+      <SpaceNameDialog
+        member={renamingSelf ? selfMember ?? null : null}
+        isSelf
+        treeName={tree.name}
+        onClose={() => setRenamingSelf(false)}
+        onSave={async (name) => {
+          if (!data.user) return;
+          await data.updateTreeMemberName(tree.id, data.user.id, name);
+          setRenamingSelf(false);
+        }}
+      />
       <AddTreeMemberDialog
         open={addMemberOpen}
         onOpenChange={setAddMemberOpen}
@@ -371,8 +386,8 @@ export function TreeLobbyView({
   );
 }
 
-/** Members as the lobby shows them: who is in a nest, who is online, and who is around. */
-function MembersList({ members, selfId, data, onNavigate }: { members: TreeMember[]; selfId?: string; data: RavenShellData; onNavigate: (view: RavenView) => void }) {
+/** Members as the lobby shows them: who is in a nest and who is around. */
+function MembersList({ members, selfId, data, onNavigate, onRenameSelf }: { members: TreeMember[]; selfId?: string; data: RavenShellData; onNavigate: (view: RavenView) => void; onRenameSelf: () => void }) {
   // The member list can say you are offline while you are looking at it; your own status is what the dock shows.
   const groups = useMemo(
     () => groupMembers(members.map((member) => (member.userId === selfId && data.presence ? { ...member, presenceState: data.presence.state, reachability: data.presence.reachability } : member))),
@@ -384,7 +399,7 @@ function MembersList({ members, selfId, data, onNavigate }: { members: TreeMembe
       member={member}
       isSelf={member.userId === selfId}
       nestName={member.activeNestId ? data.getNest(member.activeNestId)?.name : undefined}
-      onOpen={() => onNavigate({ kind: "user", id: member.userId })}
+      onOpen={member.userId === selfId ? onRenameSelf : () => onNavigate({ kind: "user", id: member.userId })}
     />
   );
   return (
@@ -419,7 +434,9 @@ function MemberRow({
   const presence = presenceFromApi({ state: member.presenceState, reachability: member.reachability });
   const away = presence === "offline" || presence === "invisible";
   const status = away ? null : nestName ? `In ${nestName}` : presence === "around" ? null : PRESENCE[presence].label;
-  const tags = [isSelf ? "You" : null, member.role !== "member" ? TREE_ROLE_LABEL[member.role] : null].filter(Boolean).join(" · ");
+  const tags = isSelf
+    ? `You · ${member.nickname ? TREE_ROLE_LABEL[member.role] : "Set your name here"}`
+    : member.role !== "member" ? TREE_ROLE_LABEL[member.role] : "";
   return (
     <button
       type="button"
