@@ -80,6 +80,11 @@ nokhwa = { version = "0.10", features = ["input-native"] }
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2"
 
+# Opt-in "Start Raven when you sign in", which starts it in the tray. Only where the
+# tray exists.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tauri-plugin-autostart = "~2.5.1"
+
 [target.'cfg(windows)'.dependencies]
 # The tray's one-time "still running" notice, and one Raven per desktop session.
 tauri-plugin-notification = "2"

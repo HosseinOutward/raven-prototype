@@ -241,9 +241,11 @@ pub fn run() {
             push_to_talk::initialize(app.handle());
             audio::devices::spawn_device_watcher(app.handle().clone());
             updater::initialize(app.handle());
-            if let Err(err) = tray::initialize(app.handle()) {
+            let tray_ready = tray::initialize(app.handle()).unwrap_or_else(|err| {
                 eprintln!("[raven] tray initialization failed: {err}");
-            }
+                false
+            });
+            tray::show_main_at_launch(app.handle(), tray_ready);
             diagnostics::watch_webview_processes(app.handle());
             Ok(())
         })
@@ -267,6 +269,13 @@ pub fn run() {
 
     #[cfg(windows)]
     let builder = builder.plugin(tauri_plugin_notification::init());
+
+    // "Start Raven when you sign in" (off by default) starts it in the tray.
+    #[cfg(any(windows, target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        Some(vec![tray::AUTOSTART_FLAG]),
+    ));
 
     // Raven stays in the tray after its window is closed, so starting it again should
     // bring that window back. Development builds are left alone: they share the installed
