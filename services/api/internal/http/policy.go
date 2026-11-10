@@ -39,11 +39,14 @@ const (
 	// treeActionManageBoard covers the space board: house rules, and later pinned notes
 	// and events.
 	treeActionManageBoard treeAction = "board.manage"
-	treeActionEditSettings     treeAction = "settings.edit"
-	treeActionAssignRoles      treeAction = "roles.assign"
-	treeActionTransfer         treeAction = "ownership.transfer"
-	treeActionDelete           treeAction = "space.delete"
-	treeActionLeave            treeAction = "leave"
+	// treeActionManageStickers covers the space's GIF and sticker set: adding, editing,
+	// organising and removing what the space's members can use in its conversations.
+	treeActionManageStickers treeAction = "stickers.manage"
+	treeActionEditSettings   treeAction = "settings.edit"
+	treeActionAssignRoles    treeAction = "roles.assign"
+	treeActionTransfer       treeAction = "ownership.transfer"
+	treeActionDelete         treeAction = "space.delete"
+	treeActionLeave          treeAction = "leave"
 )
 
 const (
@@ -85,6 +88,7 @@ var treeActionMinimumRole = map[treeAction]string{
 	treeActionModerateVoice:    treeRoleModerator,
 	treeActionRenameMember:     treeRoleModerator,
 	treeActionManageBoard:      treeRoleModerator,
+	treeActionManageStickers:   treeRoleModerator,
 	treeActionEditSettings:     treeRoleOwner,
 	treeActionAssignRoles:      treeRoleOwner,
 	treeActionTransfer:         treeRoleOwner,
@@ -101,6 +105,7 @@ var treeViewerActions = []treeAction{
 	treeActionModerateVoice,
 	treeActionRenameMember,
 	treeActionManageBoard,
+	treeActionManageStickers,
 	treeActionEditSettings,
 	treeActionAssignRoles,
 	treeActionTransfer,

@@ -1,4 +1,5 @@
 import type {
+  AdminLibraryItem,
   AdminSpace,
   AdminUser,
   AuditEvent,
@@ -232,6 +233,31 @@ export class AdminApi {
 
   revokeSession(userId: string, sessionId: string): Promise<void> {
     return this.request("DELETE", `/v1/admin/users/${id(userId)}/sessions/${id(sessionId)}`);
+  }
+
+  // GIFs and stickers people have published
+
+  async publicLibrary(query = ""): Promise<AdminLibraryItem[]> {
+    const suffix = query.trim() ? `?q=${id(query.trim())}` : "";
+    return (await this.request<{ items: AdminLibraryItem[] }>("GET", `/v1/admin/library/public${suffix}`)).items;
+  }
+
+  async unpublishLibraryItem(itemId: string): Promise<void> {
+    await this.request("POST", `/v1/admin/library/items/${id(itemId)}/unpublish`);
+  }
+
+  async deleteLibraryItem(itemId: string): Promise<void> {
+    await this.request("DELETE", `/v1/admin/library/items/${id(itemId)}`);
+  }
+
+  /** The picture an admin sees for a public item: the poster of a GIF, the sticker itself. */
+  async libraryPreview(assetId: string, variant: "play" | "poster"): Promise<Blob> {
+    const headers: Record<string, string> = {};
+    const session = this.storage.getItem(SESSION_KEY);
+    if (session) headers["X-Session-ID"] = session;
+    const response = await this.fetchImpl(`/v1/admin/library/assets/${id(assetId)}/${variant}`, { headers });
+    if (!response.ok) throw new ApiError("Couldn’t load the preview.", response.status);
+    return response.blob();
   }
 
   // Spaces and rooms

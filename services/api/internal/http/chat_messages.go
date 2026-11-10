@@ -17,10 +17,10 @@ import (
 // that person, used to tell whether they removed, for themselves, the message a reply
 // points at.
 var chatMessageSelectSQL = `SELECT m.id, m.conversation_id, m.seq, m.changed_seq, m.sender_id,
-		`+spaceNameSQL("stm", "sp", "su")+`,
+		` + spaceNameSQL("stm", "sp", "su") + `,
 		m.client_message_id, m.kind, m.body, m.system_json, m.created_at, m.edited_at, m.deleted_at,
 		m.reply_to_message_id,
-		p.seq, p.sender_id, `+spaceNameSQL("ptm", "pp", "pu")+`, p.body, p.deleted_at,
+		p.seq, p.sender_id, ` + spaceNameSQL("ptm", "pp", "pu") + `, p.body, p.deleted_at,
 		CASE WHEN ph.user_id IS NULL THEN 0 ELSE 1 END,
 		m.origin_message_id, COALESCE(m.origin_conversation_id, ''), COALESCE(m.origin_sender_id, ''), m.origin_sender_name,
 		COALESCE(m.origin_created_at, ''), m.origin_hide_sender, m.origin_hide_source
@@ -317,6 +317,8 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 		Body             string   `json:"body"`
 		ReplyToMessageID string   `json:"replyToMessageId"`
 		AttachmentIDs    []string `json:"attachmentIds"`
+		// LibraryItemID sends a GIF or sticker from a library. It goes on its own.
+		LibraryItemID string `json:"libraryItemId"`
 	}
 	if err := c.BodyParser(&input); err != nil {
 		s.metrics.chatSends.inc("invalid")
@@ -336,7 +338,11 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 		s.metrics.chatSends.inc("invalid")
 		return errChatAttachmentNotReady
 	}
-	if body == "" && len(input.AttachmentIDs) == 0 {
+	if input.LibraryItemID != "" && (body != "" || len(input.AttachmentIDs) > 0) {
+		s.metrics.chatSends.inc("invalid")
+		return fiber.NewError(400, "A GIF or sticker is sent on its own.")
+	}
+	if body == "" && len(input.AttachmentIDs) == 0 && input.LibraryItemID == "" {
 		s.metrics.chatSends.inc("invalid")
 		return fiber.NewError(400, "Write a message first.")
 	}
@@ -346,7 +352,7 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 	unlock := s.chatLocks.lock(conversationID)
 	defer unlock()
 
-	sent, err := s.storeChatMessage(user, conversationID, input.ClientMessageID, body, input.ReplyToMessageID, input.AttachmentIDs...)
+	sent, err := s.storeChatMessage(user, conversationID, input.ClientMessageID, body, input.ReplyToMessageID, input.LibraryItemID, input.AttachmentIDs...)
 	if err != nil {
 		s.metrics.chatSends.inc(chatSendOutcome(err))
 		return err
@@ -388,7 +394,7 @@ type chatStored struct {
 }
 
 // storeChatMessage commits one message, or finds the one an earlier attempt committed.
-func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, body, replyToID string, attachmentIDs ...string) (chatStored, error) {
+func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, body, replyToID, libraryItemID string, attachmentIDs ...string) (chatStored, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return chatStored{}, err
@@ -465,6 +471,11 @@ func (s *Server) storeChatMessage(sender User, conversationID, clientMessageID, 
 
 	if err := claimChatAttachments(tx, conversationID, sender.ID, messageID, now, attachmentIDs); err != nil {
 		return chatStored{}, err
+	}
+	if libraryItemID != "" {
+		if err := s.libraryAttachTx(tx, access, sender.ID, messageID, libraryItemID, now); err != nil {
+			return chatStored{}, err
+		}
 	}
 	attachments := []ChatMessage{{ID: messageID}}
 	if err := withChatAttachments(tx, attachments); err != nil {
@@ -613,6 +624,14 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 		if created, err := time.Parse(time.RFC3339Nano, createdAt); err != nil || time.Since(created) > chatEditWindow {
 			return errChatEditTooLate
 		}
+	}
+	// A GIF or sticker goes on its own, so it can't gain a caption later.
+	var fromLibrary int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM chat_attachments WHERE message_id = ? AND asset_id IS NOT NULL`, messageID).Scan(&fromLibrary); err != nil {
+		return err
+	}
+	if fromLibrary > 0 {
+		return errChatCannotEdit
 	}
 	if body == "" {
 		var count int

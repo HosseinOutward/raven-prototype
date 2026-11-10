@@ -36,6 +36,9 @@ type ChatAttachment struct {
 	Placeholder string          `json:"placeholder,omitempty"`
 	Variants    []string        `json:"variants"`
 	Meta        json.RawMessage `json:"meta,omitempty"`
+	// AssetID and Format are set on a library GIF or sticker, fetched by the asset.
+	AssetID string `json:"assetId,omitempty"`
+	Format  string `json:"format,omitempty"`
 }
 
 type chatVariantRule struct {
@@ -82,10 +85,13 @@ func chatAttachmentReady(q chatQuerier, id string) (bool, error) {
 
 // The joined query loads descriptions and variants for the whole page at once.
 func loadChatAttachments(q chatQuerier, where string, args ...any) (map[string][]ChatAttachment, error) {
+	// A library attachment has no variants of its own; it lists its asset's.
 	rows, err := q.Query(`SELECT a.message_id, a.id, a.kind, a.source, a.content_type, a.size_bytes, a.name,
- a.width, a.height, a.duration_ms, a.placeholder, a.meta_json, v.variant
+ a.width, a.height, a.duration_ms, a.placeholder, a.meta_json, COALESCE(v.variant, lv.variant), COALESCE(a.asset_id, ''), COALESCE(la.format, '')
  FROM chat_attachments a LEFT JOIN chat_attachment_variants v ON v.attachment_id = a.id
- WHERE `+where+` ORDER BY a.message_id, a.position, a.id, v.variant`, args...)
+ LEFT JOIN library_assets la ON la.id = a.asset_id
+ LEFT JOIN library_asset_variants lv ON lv.asset_id = a.asset_id AND lv.variant <> 'original' AND lv.object_key IS NOT NULL
+ WHERE `+where+` ORDER BY a.message_id, a.position, a.id, COALESCE(v.variant, lv.variant)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +101,7 @@ func loadChatAttachments(q chatQuerier, where string, args ...any) (map[string][
 	for rows.Next() {
 		var a ChatAttachment
 		var message, meta, variant sql.NullString
-		if err := rows.Scan(&message, &a.ID, &a.Kind, &a.Source, &a.ContentType, &a.Size, &a.Name, &a.Width, &a.Height, &a.DurationMs, &a.Placeholder, &meta, &variant); err != nil {
+		if err := rows.Scan(&message, &a.ID, &a.Kind, &a.Source, &a.ContentType, &a.Size, &a.Name, &a.Width, &a.Height, &a.DurationMs, &a.Placeholder, &meta, &variant, &a.AssetID, &a.Format); err != nil {
 			return nil, err
 		}
 		if a.ID != lastID {

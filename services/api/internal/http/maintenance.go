@@ -36,6 +36,10 @@ func (s *Server) runMaintenance(now time.Time) {
 	if err := s.expireChatAttachments(now); err != nil {
 		log.Printf("maintenance: expire chat attachments: %v", err)
 	}
+	if err := s.sweepLibraryAssets(now); err != nil {
+		log.Printf("maintenance: sweep library assets: %v", err)
+	}
+	s.startLibraryConversions()
 	if err := s.drainChatObjectPurges(); err != nil {
 		log.Printf("maintenance: drain chat object purges: %v", err)
 	}

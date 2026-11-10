@@ -55,6 +55,8 @@ type Server struct {
 	// workshop is the Workshop's port sharing: every active share, in memory.
 	workshop    *relay.Registry
 	relayServer *relay.Server
+	// libraryConversion runs ffmpeg for GIFs and stickers, when it is installed.
+	libraryConversion *libraryConverter
 	// What the compatibility gate compares clients against (see compat.go).
 	serverVersion    string
 	minClientVersion string
@@ -235,6 +237,7 @@ func New(db *database.DB) *Server {
 	s.workshop.OnEvent = s.publishWorkshopEvent
 	s.relayServer = relay.NewServer(s.workshop, relayPolicy{s})
 	s.loginThrottle = newLoginThrottle()
+	s.libraryConversion = detectLibraryConversion()
 	s.routes()
 	return s
 }
@@ -247,7 +250,7 @@ func New(db *database.DB) *Server {
 func fiberConfig() fiber.Config {
 	config := fiber.Config{
 		AppName:      "Raven API",
-		BodyLimit:    chatImageFullBytes + 64*1024,
+		BodyLimit:    libraryOriginalBytes + 64*1024,
 		ErrorHandler: errorHandler,
 	}
 	if proxies := splitCSV(os.Getenv("RAVEN_TRUSTED_PROXIES")); len(proxies) > 0 {
@@ -321,6 +324,7 @@ func (s *Server) routes() {
 	s.registerAdminRoutes(authenticated)
 	service := authenticated.Use(s.requireCompatibleClient)
 	s.registerChatRoutes(service)
+	s.registerLibraryRoutes(service)
 	s.registerWorkshopRoutes(service)
 	service.Get("/invites", s.listInvites)
 	service.Post("/invites", s.createInvite)
@@ -412,6 +416,14 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	properties := map[string]any{
+		"chat": chat,
+		// Which ways in the sign-in screen may offer before anyone is signed in.
+		"accounts": map[string]any{"signUp": accounts.SignUpOpen, "invitations": accounts.InvitationsOpen},
+	}
+	if library := s.libraryCapabilities(); library != nil {
+		properties["library"] = library
+	}
 	return c.JSON(ServerProperties{
 		Name:         fallbackString(s.serverName, "Raven"),
 		Description:  fallbackString(s.serverDescription, "Desktop RTC for private Nests"),
@@ -419,11 +431,7 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 		RTCServerURL: fallbackString(s.liveKitURL, "ws://127.0.0.1:7880"),
 		// Lets a client tell that this server has text chat, and its limits, before it
 		// shows anything that depends on it.
-		Properties: map[string]any{
-			"chat": chat,
-			// Which ways in the sign-in screen may offer before anyone is signed in.
-			"accounts": map[string]any{"signUp": accounts.SignUpOpen, "invitations": accounts.InvitationsOpen},
-		},
+		Properties: properties,
 	})
 }
 

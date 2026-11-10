@@ -383,6 +383,44 @@ picker offers emoji through Unicode 15.0, matching the bundled font.
   of Raven. Update to see it." Lists and quotes say "Photo", "2 photos" or "Attachment"
   when there is no caption.
 
+### GIF and sticker libraries
+
+Migration `2026111006_library` adds `library_assets` (one per kind and SHA-256 of the
+original: status `uploading`/`processing`/`ready`/`failed`, failure text, size and
+duration), `library_asset_variants` (`original`, `play`, `poster`), `library_items` (a
+personal item or a space-set item pointing at an asset; unique per owner and asset),
+`library_item_terms` (lowercase NFKC words of the title plus keywords, matched with
+`term LIKE ? || '%'`), `library_collections`, `library_usage` and
+`trees.saved_stickers_publishable`. Space sets need `stickers.manage`. The design and
+limits are in `docs/plans/gifs-stickers/README.md`.
+
+| Method and path | Behavior |
+|---|---|
+| `POST /v1/library/assets` | `{clientUploadId, kind, contentType, size, sha256, target: {scope, treeId?}, title?, keywords?, collectionId?}`. A ready asset with the same hash gives the item at once; otherwise returns `{item, upload: true}` (`201`, or `200` on retry). A failed asset with the same hash answers `422` with its failure text. |
+| `PUT /v1/library/assets/:id/original` | Raw bytes, at most 20 MB. Anyone who added the asset may upload it; size, hash and sniffed type must match. TGS and already-fitting WebP stickers become `ready` here; everything else is `processing` and converted by ffmpeg in the background. |
+| `GET /v1/library/assets/:id/:variant` | `play` or `poster`, for an item of your own, a public item, a set of a space you belong to, or a message you can read. Immutable cache headers, ETag, `nosniff`. TGS `play` is the decompressed Lottie JSON (`application/json`). |
+| `GET /v1/library/items?scope=&treeId=&collectionId=&cursor=` | Browse a personal library or a space set. |
+| `PATCH /v1/library/items/:id`, `PATCH /v1/library/items` | Title, keywords, collection, favourite, public; bulk edit up to 200 ids. Only personal items with a title can be public; an item saved from a space set needs that space's `savedStickersPublishable`. |
+| `DELETE /v1/library/items/:id` | Removes the item; sent messages keep working. |
+| `POST /v1/library/save` | `{itemId}` or `{attachmentId}` into your personal library. |
+| `/v1/library/collections` | `GET`, `POST`, `PATCH /:id`, `DELETE /:id`. Deleting keeps the items, uncollected. |
+| `GET /v1/library/search?conversationId=&q=&kind=&scope=&cursor=` | What the caller may use in that conversation: personal, the conversation's space set, and (with a query) public. Order: scope, favourite, recent use, newest. 60 per page. |
+| `GET /v1/library/suggest?conversationId=&messageId=` | Up to 12 usable items matching words of that message. |
+
+Send accepts `libraryItemId`, alone: no body and no `attachmentIds`. The message gets one
+attachment with `kind` `gif` or `sticker`, `source: "library"`, `assetId` and `format`
+(`webm`, `webp` or `tgs`); its variants are the asset's `play` and `poster`, fetched
+from the library asset route. These messages can't be edited. Forwarding one outside
+Saved needs the forwarder to be able to send it there.
+
+`properties.library` announces `{version, conversion, kinds, maxOriginalBytes,
+maxDurationMs, maxFps, tgs, maxTitleLength, maxKeywords, maxKeywordLength, pageSize}`.
+It is omitted when object storage is unavailable. With `conversion: false` (no ffmpeg on
+the server) only TGS and WebP stickers can be added.
+
+An asset is purged when no item and no message refers to it. Maintenance checks this
+every run, and removes assets that never became ready within 24 hours.
+
 ## Limits and safety
 
 - Up to 10 attachments per message. Images require `full` (up to 10 MiB) and `preview`
@@ -393,15 +431,18 @@ picker offers emoji through Unicode 15.0, matching the bundled font.
 - `properties.chat.attachments` announces version 1, supported kinds/variant byte
   limits, dimensions, sources and max-per-message from the server's rule map. It is
   omitted when object storage is unavailable; clients then hide attachment controls.
-- Create is limited to 60/minute and upload to 120/minute per account.
-- The global Fiber body limit is 10 MiB + 64 KiB. Other `/v1` requests over 1 MiB
-  are rejected with `413` before parsing (both Content-Length and buffered size are
+- Create is limited to 60/minute and upload to 120/minute per account. Library: add,
+  upload, save and edits 60/minute each; search and suggest 30 per 10 s.
+- The global Fiber body limit is 20 MB + 64 KiB, for library originals. Other `/v1`
+  requests over 1 MiB (all but attachment and library uploads, whose handlers cap
+  their own sizes) are rejected with `413` before parsing (both Content-Length and buffered size are
   checked). Known limit: fasthttp already buffers requests before this middleware,
   so rejection does not save that memory. A focused `StreamRequestBody` experiment
   confirmed that existing `c.Body()` handlers still buffer the whole stream and can
   read past BodyLimit; streaming was left disabled to retain the global bound.
 - The repo nginx API limit is 12 MiB in `nginx/mimir.conf` (desktop API) and
-  `nginx/raven.conf` (admin API). Saye's running nginx and the ArvanCloud CDN
+  `nginx/raven.conf` (admin API). Library originals get 21 MB on
+  `/v1/library/assets/*/original` in `nginx/mimir.conf` and `infra/raven/edge-nginx.conf`. Saye's running nginx and the ArvanCloud CDN
   must be checked/updated at deploy time; this change does not deploy either.
 
 - Per-account rate limits, with `Retry-After`: send 20 per 10 s, typing 20 per 10 s, edit

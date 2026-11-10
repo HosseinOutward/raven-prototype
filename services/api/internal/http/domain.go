@@ -135,6 +135,8 @@ type TreeDetails struct {
 	Notes         []TreeNote        `json:"notes"`
 	// Events are the space's scheduled events that are not over, pinned first.
 	Events []TreeEvent `json:"events"`
+	// Library is the space's GIF and sticker settings.
+	Library TreeLibrarySettings `json:"library"`
 	// Viewer is the role of whoever asked and what it lets them do here.
 	Viewer TreeViewer `json:"viewer"`
 }
@@ -271,6 +273,9 @@ func (s *Server) updateTreeSettings(c *fiber.Ctx) error {
 		Description string `json:"description"`
 		JoinPolicy  string `json:"joinPolicy"`
 		Visibility  string `json:"visibility"`
+		// SavedStickersPublishable is left as it is when absent, so older clients that
+		// send only the fields above never change it.
+		SavedStickersPublishable *bool `json:"savedStickersPublishable"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid Tree settings payload")
@@ -279,11 +284,20 @@ func (s *Server) updateTreeSettings(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
+	if body.SavedStickersPublishable != nil {
+		if _, err := s.db.Exec(`UPDATE trees SET saved_stickers_publishable = ? WHERE id = ? AND status = 'active'`, *body.SavedStickersPublishable, treeID); err != nil {
+			return err
+		}
+	}
 	tree, err := s.updateTreeSettingsCore(treeID, settings)
 	if err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"tree": tree})
+	library, err := treeLibrarySettings(s.db, treeID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"tree": tree, "library": library})
 }
 
 func (s *Server) deleteTree(c *fiber.Ctx) error {
@@ -357,7 +371,11 @@ func (s *Server) getTree(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return c.JSON(TreeDetails{Tree: tree, Members: members, ActiveNests: active, InactiveNests: inactive, JoinRequests: requests, Rules: rules, Notes: notes, Events: events, Viewer: treeViewerFor(role)})
+	library, err := treeLibrarySettings(s.db, treeID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(TreeDetails{Tree: tree, Members: members, ActiveNests: active, InactiveNests: inactive, JoinRequests: requests, Rules: rules, Notes: notes, Events: events, Library: library, Viewer: treeViewerFor(role)})
 }
 
 func (s *Server) searchTrees(c *fiber.Ctx) error {

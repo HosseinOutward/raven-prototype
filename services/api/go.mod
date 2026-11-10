@@ -18,6 +18,7 @@ require (
 	github.com/quic-go/quic-go v0.65.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.38.0
+	golang.org/x/text v0.40.0
 	modernc.org/sqlite v1.38.2
 )
 
@@ -116,7 +117,6 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect

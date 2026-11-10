@@ -121,6 +121,17 @@ describe("AdminApi", () => {
     expect(server.calls[2]).toMatchObject({ path: "/v1/admin/spaces/s1/transfer", body: { userId: "u1" } });
     expect(server.calls[3]).toMatchObject({ path: "/v1/admin/messages", method: "POST", body: { to: ["u1"], text: "Hello" } });
   });
+
+  test("lists, unpublishes and deletes published GIFs and stickers", async () => {
+    const server = fakeServer((call) => ({ body: call.method === "GET" ? { items: [{ id: "i1" }] } : {} }));
+    const api = new AdminApi(server.fetchImpl, new MemoryStore());
+    expect(await api.publicLibrary(" cat hat ")).toEqual([{ id: "i1" }] as never);
+    await api.unpublishLibraryItem("i/1");
+    await api.deleteLibraryItem("i1");
+    expect(server.calls[0]).toMatchObject({ path: "/v1/admin/library/public?q=cat%20hat", method: "GET" });
+    expect(server.calls[1]).toMatchObject({ path: "/v1/admin/library/items/i%2F1/unpublish", method: "POST" });
+    expect(server.calls[2]).toMatchObject({ path: "/v1/admin/library/items/i1", method: "DELETE" });
+  });
 });
 
 describe("sendResult", () => {
@@ -132,7 +143,7 @@ describe("sendResult", () => {
 
 describe("routes", () => {
   test("round-trip through the hash", () => {
-    for (const route of [{ page: "overview" }, { page: "users" }, { page: "user", id: "a b" }, { page: "spaces" }, { page: "space", id: "x/y" }, { page: "settings" }, { page: "audit" }] as const) {
+    for (const route of [{ page: "overview" }, { page: "users" }, { page: "user", id: "a b" }, { page: "spaces" }, { page: "space", id: "x/y" }, { page: "library" }, { page: "settings" }, { page: "audit" }] as const) {
       expect(parseRoute(routeHref(route))).toEqual(route);
     }
     expect(parseRoute("#/nonsense")).toEqual({ page: "overview" });

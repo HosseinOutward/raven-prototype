@@ -56,6 +56,11 @@ func (s *Server) registerAdminRoutes(authenticated fiber.Router) {
 	admin.Post("/spaces/:id/rooms", s.adminCreateRoom)
 	admin.Post("/spaces/:id/rooms/:roomId", s.adminRenameRoom)
 	admin.Delete("/spaces/:id/rooms/:roomId", s.adminRemoveRoom)
+
+	admin.Get("/library/public", s.adminListPublicLibrary)
+	admin.Post("/library/items/:id/unpublish", s.adminUnpublishLibraryItem)
+	admin.Delete("/library/items/:id", s.adminDeleteLibraryItem)
+	admin.Get("/library/assets/:id/:variant", s.adminFetchLibraryAsset)
 }
 
 type AdminOverview struct {
