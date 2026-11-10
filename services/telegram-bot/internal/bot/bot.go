@@ -24,15 +24,21 @@ const (
 	defaultPackTitle    = "Telegram pack"
 )
 
-const startText = `I turn Telegram stickers and GIFs into a Raven pack.
+const startText = `I turn Telegram stickers and GIFs into a pack for Raven.
 
-Send me stickers, GIFs and .gif files. For a sticker from a set I can add just that one or the whole set.
+1. Send or forward stickers and GIFs here. One sticker is enough to grab its whole set.
+2. Tap "Make the pack".
+3. In Raven, open Settings › GIFs and stickers › Import pack… and pick the file.
 
-/done  send the pack, then import it in Raven
-/title <name>  name the pack
-/cancel  throw the draft away
+/title <name> names the pack. Unfinished packs are kept for 24 hours.`
 
-Drafts live in memory: a restart or 24 hours of silence clears them.`
+// commands is the menu Telegram shows next to the message box.
+var commands = []botapi.Command{
+	{Command: "start", Description: "How it works"},
+	{Command: "done", Description: "Make the pack"},
+	{Command: "title", Description: "Name the pack"},
+	{Command: "cancel", Description: "Start over"},
+}
 
 type Bot struct {
 	API   *botapi.Client
@@ -51,6 +57,9 @@ func New(api *botapi.Client, store *drafts.Store, log *slog.Logger) *Bot {
 // Run long-polls until ctx ends.
 func (b *Bot) Run(ctx context.Context) error {
 	go b.sweepLoop(ctx)
+	if err := b.API.SetMyCommands(ctx, commands); err != nil {
+		b.Log.Warn("setMyCommands failed", "err", err)
+	}
 	var offset int64
 	for ctx.Err() == nil {
 		ups, err := b.API.GetUpdates(ctx, offset, 30)
@@ -84,6 +93,16 @@ func updateUser(u botapi.Update) (int64, bool) {
 		return u.CallbackQuery.From.ID, true
 	}
 	return 0, false
+}
+
+// waiting is how many updates are queued behind the one running for user.
+func (b *Bot) waiting(user int64) int {
+	b.qmu.Lock()
+	defer b.qmu.Unlock()
+	if q, ok := b.queues[user]; ok {
+		return len(*q)
+	}
+	return 0
 }
 
 // serial runs fns for one user one after another, in arrival order.
@@ -175,11 +194,11 @@ func (b *Bot) handleMessage(ctx context.Context, m *botapi.Message) {
 		b.addCandidates(ctx, user, chat, []cand{{label: "GIF", fileID: d.FileID, uniqueID: d.FileUniqueID,
 			extHint: ".gif", kind: "gif", size: d.FileSize, skip: sizeSkip(d.FileSize)}}, "")
 	case m.Document != nil:
-		b.say(ctx, chat, "I only take stickers, GIFs and .gif files.")
+		b.say(ctx, chat, "I can only use stickers, GIFs and .gif files.")
 	case strings.HasPrefix(m.Text, "/"):
 		b.handleCommand(ctx, m)
 	default:
-		b.say(ctx, chat, "Send me stickers or GIFs, then /done. /start lists what I can do.")
+		b.say(ctx, chat, "Send or forward stickers and GIFs here. /start shows how it works.")
 	}
 }
 
@@ -193,11 +212,11 @@ func (b *Bot) handleCommand(ctx context.Context, m *botapi.Message) {
 		b.say(ctx, chat, startText)
 	case "/cancel":
 		if b.Store.Get(user) == nil {
-			b.say(ctx, chat, "Nothing to cancel.")
+			b.say(ctx, chat, "There's nothing to clear.")
 			return
 		}
-		b.Store.Clear(user)
-		b.say(ctx, chat, "Draft cleared.")
+		b.clear(ctx, chat, user)
+		b.say(ctx, chat, "Cleared. Send stickers or GIFs to start a new pack.")
 	case "/title":
 		d, err := b.Store.Ensure(user)
 		if err != nil {
@@ -206,18 +225,18 @@ func (b *Bot) handleCommand(ctx context.Context, m *botapi.Message) {
 			return
 		}
 		if rest == "" {
-			b.say(ctx, chat, "Pack title: "+packTitle(d)+". Change it with /title <name>.")
+			b.say(ctx, chat, "The pack is called “"+packTitle(d)+"”. To rename it, send /title and the name, like /title My cats.")
 			return
 		}
 		if r := []rune(rest); len(r) > 80 {
 			rest = string(r[:80])
 		}
 		d.Title = rest
-		b.say(ctx, chat, "Pack title: "+rest)
+		b.say(ctx, chat, "The pack is now called “"+rest+"”.")
 	case "/done":
 		b.done(ctx, user, chat)
 	default:
-		b.say(ctx, chat, "I don't know that command. /start lists what I can do.")
+		b.say(ctx, chat, "I don't know that command. /start shows how it works.")
 	}
 }
 
@@ -231,32 +250,30 @@ func packTitle(d *drafts.Draft) string {
 	return defaultPackTitle
 }
 
+// handleSticker adds the sticker at once. If it comes from a set not added whole, the
+// status offers the rest of the set.
 func (b *Bot) handleSticker(ctx context.Context, m *botapi.Message, user int64) {
 	st := m.Sticker
-	chat := m.Chat.ID
-	c := stickerCand(*st, "")
-	if c.skip == "" && st.SetName != "" {
-		d, err := b.Store.Ensure(user)
-		if err == nil {
-			if set, err := b.API.GetStickerSet(ctx, st.SetName); err == nil && len(set.Stickers) > 0 {
-				d.SetTitles[st.SetName] = set.Title
-				_, err := b.API.SendMessage(ctx, chat, "Add just this sticker, or the whole pack?", m.MessageID, []botapi.Button{
-					{Text: "Add this sticker", CallbackData: "add"},
-					{Text: fmt.Sprintf("Add the whole pack (%d)", len(set.Stickers)), CallbackData: "pack"},
-				})
-				if err != nil {
-					b.Log.Warn("sendMessage failed", "err", err)
-				}
-				return
+	d, err := b.Store.Ensure(user)
+	if err != nil {
+		b.Log.Error("draft failed", "err", err)
+		b.say(ctx, m.Chat.ID, "Something went wrong. Try again.")
+		return
+	}
+	if st.SetName != "" && st.Type != "custom_emoji" && !d.FullSets[st.SetName] && d.OfferSet != st.SetName {
+		if set, err := b.API.GetStickerSet(ctx, st.SetName); err != nil {
+			b.Log.Warn("getStickerSet failed", "err", err)
+		} else if len(set.Stickers) > 0 {
+			d.SetTitles[st.SetName] = set.Title
+			if d.DefaultTitle == "" {
+				d.DefaultTitle = set.Title
+			}
+			if len(set.Stickers) > 1 {
+				d.OfferSet, d.OfferCount = st.SetName, len(set.Stickers)
 			}
 		}
 	}
-	var title string
-	if d := b.Store.Get(user); d != nil {
-		title = d.SetTitles[st.SetName]
-	}
-	c.title = title
-	b.addCandidates(ctx, user, chat, []cand{c}, "")
+	b.addCandidates(ctx, user, m.Chat.ID, []cand{stickerCand(*st, d.SetTitles[st.SetName])}, "")
 }
 
 func (b *Bot) handleCallback(ctx context.Context, cq *botapi.CallbackQuery) {
@@ -265,43 +282,49 @@ func (b *Bot) handleCallback(ctx context.Context, cq *botapi.CallbackQuery) {
 			b.Log.Warn("answerCallbackQuery failed", "err", err)
 		}
 	}
-	if cq.Message == nil || cq.Message.ReplyToMessage == nil || cq.Message.ReplyToMessage.Sticker == nil {
-		answer("Send the sticker again.")
-		return
-	}
-	user, chat, promptID := cq.From.ID, cq.Message.Chat.ID, cq.Message.MessageID
-	st := cq.Message.ReplyToMessage.Sticker
-	var cands []cand
-	var setTitle string
-	switch cq.Data {
-	case "add":
-		if d := b.Store.Get(user); d != nil {
-			setTitle = d.SetTitles[st.SetName]
-		}
-		cands = []cand{stickerCand(*st, setTitle)}
-		setTitle = ""
-	case "pack":
-		set, err := b.API.GetStickerSet(ctx, st.SetName)
-		if err != nil {
-			b.Log.Warn("getStickerSet failed", "err", err)
-			answer("Couldn't read the pack.")
-			return
-		}
-		for _, s := range set.Stickers {
-			cands = append(cands, stickerCand(s, set.Title))
-		}
-		setTitle = set.Title
-	default:
+	if cq.Message == nil {
 		answer("")
 		return
 	}
-	answer("")
-	if err := b.API.EditMessageText(ctx, chat, promptID, "Adding..."); err != nil {
-		b.Log.Warn("editMessageText failed", "err", err)
+	user, chat := cq.From.ID, cq.Message.Chat.ID
+	d := b.Store.Get(user)
+	if d == nil || d.StatusMsgID != cq.Message.MessageID {
+		answer("This pack is gone. Send stickers or GIFs to start a new one.")
+		return
 	}
-	b.addCandidates(ctx, user, chat, cands, setTitle)
-	if err := b.API.EditMessageText(ctx, chat, promptID, "Added."); err != nil {
-		b.Log.Warn("editMessageText failed", "err", err)
+	switch cq.Data {
+	case "set":
+		name := d.OfferSet
+		if name == "" {
+			answer("")
+			return
+		}
+		set, err := b.API.GetStickerSet(ctx, name)
+		if err != nil {
+			b.Log.Warn("getStickerSet failed", "err", err)
+			answer("Couldn't read that set. Try again.")
+			return
+		}
+		answer("")
+		if err := b.API.EditMessageText(ctx, chat, d.StatusMsgID, fmt.Sprintf("Adding %s from “%s”…", plural(len(set.Stickers), "sticker"), set.Title)); err != nil {
+			b.Log.Warn("editMessageText failed", "err", err)
+		}
+		cands := make([]cand, 0, len(set.Stickers))
+		for _, s := range set.Stickers {
+			cands = append(cands, stickerCand(s, set.Title))
+		}
+		d.FullSets[name] = true
+		d.OfferSet, d.OfferCount = "", 0
+		b.addCandidates(ctx, user, chat, cands, set.Title)
+	case "done":
+		answer("")
+		b.done(ctx, user, chat)
+	case "cancel":
+		answer("")
+		b.clear(ctx, chat, user)
+		b.say(ctx, chat, "Cleared. Send stickers or GIFs to start a new pack.")
+	default:
+		answer("")
 	}
 }
 
@@ -408,7 +431,10 @@ func (b *Bot) addCandidates(ctx context.Context, user, chat int64, cands []cand,
 		d.DefaultTitle = wholeSetTitle
 	}
 	b.Store.Touch(d)
-	b.status(ctx, chat, d)
+	// A burst of forwarded items refreshes the status once, after the last.
+	if b.waiting(user) == 0 {
+		b.status(ctx, chat, d)
+	}
 }
 
 // fetch downloads one candidate to base+ext, 4 at a time.
@@ -453,14 +479,27 @@ func statusText(d *drafts.Draft) string {
 	if gif > 0 {
 		parts = append(parts, plural(gif, "GIF"))
 	}
+	var text string
 	if len(parts) == 0 {
-		parts = append(parts, "nothing added yet")
+		text = "Your pack is empty. Send or forward stickers and GIFs."
+	} else {
+		text = fmt.Sprintf("“%s”: %s.\nSend more, or tap Make the pack.", packTitle(d), strings.Join(parts, " and "))
 	}
-	text := fmt.Sprintf("%s: %s. Send more, or /done.", plural(len(d.Items), "item"), strings.Join(parts, ", "))
 	if n := len(d.Skipped); n > 0 {
-		text += fmt.Sprintf("\n%d skipped; /done lists them.", n)
+		text += fmt.Sprintf("\n%s couldn't be used; you'll see why when the pack is ready.", plural(n, "item"))
 	}
 	return text
+}
+
+func statusButtons(d *drafts.Draft) []botapi.Button {
+	var buttons []botapi.Button
+	if d.OfferSet != "" && d.OfferCount > 0 {
+		buttons = append(buttons, botapi.Button{Text: fmt.Sprintf("Add all %d from “%s”", d.OfferCount, d.SetTitles[d.OfferSet]), CallbackData: "set"})
+	}
+	if len(d.Items) > 0 {
+		buttons = append(buttons, botapi.Button{Text: "Make the pack", CallbackData: "done"})
+	}
+	return append(buttons, botapi.Button{Text: "Start over", CallbackData: "cancel"})
 }
 
 func plural(n int, word string) string {
@@ -470,16 +509,16 @@ func plural(n int, word string) string {
 	return fmt.Sprintf("%d %ss", n, word)
 }
 
-// status edits the one status message in place, or sends it the first time.
+// status keeps one status message at the bottom of the chat: the old one is deleted
+// and a new one sent, so it never scrolls out of sight behind the items.
 func (b *Bot) status(ctx context.Context, chat int64, d *drafts.Draft) {
-	text := statusText(d)
 	if d.StatusMsgID != 0 {
-		err := b.API.EditMessageText(ctx, chat, d.StatusMsgID, text)
-		if err == nil || strings.Contains(err.Error(), "not modified") {
-			return
+		if err := b.API.DeleteMessage(ctx, chat, d.StatusMsgID); err != nil {
+			b.Log.Warn("deleteMessage failed", "err", err)
 		}
+		d.StatusMsgID = 0
 	}
-	id, err := b.API.SendMessage(ctx, chat, text, 0, nil)
+	id, err := b.API.SendMessage(ctx, chat, statusText(d), 0, statusButtons(d))
 	if err != nil {
 		b.Log.Warn("sendMessage failed", "err", err)
 		return
@@ -487,10 +526,20 @@ func (b *Bot) status(ctx context.Context, chat int64, d *drafts.Draft) {
 	d.StatusMsgID = id
 }
 
+// clear drops the draft and its status message.
+func (b *Bot) clear(ctx context.Context, chat, user int64) {
+	if d := b.Store.Get(user); d != nil && d.StatusMsgID != 0 {
+		if err := b.API.DeleteMessage(ctx, chat, d.StatusMsgID); err != nil {
+			b.Log.Warn("deleteMessage failed", "err", err)
+		}
+	}
+	b.Store.Clear(user)
+}
+
 func (b *Bot) done(ctx context.Context, user, chat int64) {
 	d := b.Store.Get(user)
 	if d == nil || len(d.Items) == 0 {
-		b.say(ctx, chat, "Nothing to send yet. Send me stickers or GIFs first.")
+		b.say(ctx, chat, "Your pack is empty. Send or forward stickers and GIFs first.")
 		return
 	}
 	if !b.Store.PackAllowed(user) {
@@ -500,20 +549,24 @@ func (b *Bot) done(ctx context.Context, user, chat int64) {
 	packs, err := ravenpack.Build(d.Dir, packTitle(d), d.Items, packLimit)
 	if err != nil {
 		b.Log.Error("pack build failed", "err", err)
-		b.say(ctx, chat, "Couldn't build the pack. Try /done again.")
+		b.say(ctx, chat, "Couldn't make the pack. Tap Make the pack to try again.")
 		return
 	}
 	for _, p := range packs {
 		if err := b.API.SendDocument(ctx, chat, p.Path, p.Filename); err != nil {
 			b.Log.Error("sendDocument failed", "err", err)
-			b.say(ctx, chat, "Couldn't send the pack. Your draft is kept: try /done again.")
+			b.say(ctx, chat, "Couldn't send the pack. Nothing is lost: tap Make the pack to try again.")
 			return
 		}
 	}
 	b.Store.RecordPacks(user, len(packs))
-	msg := fmt.Sprintf("Sent %s with %s. Open it in Raven to import.", plural(len(packs), "pack"), plural(len(d.Items), "item"))
+	file := "Here's your pack"
+	if len(packs) > 1 {
+		file = fmt.Sprintf("Here's your pack, in %d files to stay under Telegram's size limit", len(packs))
+	}
+	msg := fmt.Sprintf("%s (%s). Save it, then in Raven open Settings › GIFs and stickers › Import pack… and pick it.", file, plural(len(d.Items), "item"))
 	if len(d.Skipped) > 0 {
-		msg += fmt.Sprintf("\n\nSkipped %d:", len(d.Skipped))
+		msg += fmt.Sprintf("\n\nLeft out %d:", len(d.Skipped))
 		for i, s := range d.Skipped {
 			if i == maxSkippedLines {
 				msg += fmt.Sprintf("\n...and %d more", len(d.Skipped)-maxSkippedLines)
@@ -523,6 +576,6 @@ func (b *Bot) done(ctx context.Context, user, chat int64) {
 		}
 	}
 	b.Log.Info("pack sent", "packs", len(packs), "items", len(d.Items), "skipped", len(d.Skipped))
-	b.Store.Clear(user)
+	b.clear(ctx, chat, user)
 	b.say(ctx, chat, msg)
 }

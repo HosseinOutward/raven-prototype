@@ -63,6 +63,8 @@ type fakeTG struct {
 	mu       sync.Mutex
 	sent     []string
 	edits    []string
+	markups  []string
+	deletes  int
 	docs     map[string][]byte
 	setTitle string
 }
@@ -86,6 +88,8 @@ func (f *fakeTG) handler(t *testing.T) http.HandlerFunc {
 			f.mu.Lock()
 			if strings.HasSuffix(p, "/sendMessage") {
 				f.sent = append(f.sent, in["text"].(string))
+				markup, _ := json.Marshal(in["reply_markup"])
+				f.markups = append(f.markups, string(markup))
 			} else {
 				f.edits = append(f.edits, in["text"].(string))
 			}
@@ -102,6 +106,11 @@ func (f *fakeTG) handler(t *testing.T) http.HandlerFunc {
 			f.docs[h.Filename] = b
 			f.mu.Unlock()
 			io.WriteString(w, `{"ok":true,"result":{"message_id":5}}`)
+		case strings.HasSuffix(p, "/deleteMessage"):
+			f.mu.Lock()
+			f.deletes++
+			f.mu.Unlock()
+			io.WriteString(w, `{"ok":true,"result":true}`)
 		default:
 			io.WriteString(w, `{"ok":true,"result":true}`)
 		}
@@ -125,16 +134,18 @@ func msg(from int64, text string) botapi.Update {
 func TestWholeSetFlowAndDone(t *testing.T) {
 	b, f := newBot(t)
 	ctx := context.Background()
-	// A set sticker offers the two buttons.
+	// A set sticker is added at once; the status offers the rest of its set.
 	b.Handle(ctx, botapi.Update{Message: &botapi.Message{MessageID: 4, From: &botapi.User{ID: 1}, Chat: botapi.Chat{ID: 1},
 		Sticker: &botapi.Sticker{FileID: "s1", FileUniqueID: "u1", SetName: "cats", Type: "regular", Emoji: "a"}}})
-	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "whole pack") {
-		t.Fatalf("sent %v", f.sent)
+	if len(f.sent) != 1 || !strings.Contains(f.sent[0], "“Cats”: 1 sticker.") || !strings.Contains(f.markups[0], "Add all 3 from “Cats”") {
+		t.Fatalf("sent %v markups %v", f.sent, f.markups)
 	}
-	// Press "whole pack": the custom emoji is skipped, two stickers added.
-	prompt := &botapi.Message{MessageID: 9, Chat: botapi.Chat{ID: 1}, ReplyToMessage: &botapi.Message{MessageID: 4,
-		Sticker: &botapi.Sticker{FileID: "s1", FileUniqueID: "u1", SetName: "cats"}}}
-	b.Handle(ctx, botapi.Update{CallbackQuery: &botapi.CallbackQuery{ID: "c", From: botapi.User{ID: 1}, Message: prompt, Data: "pack"}})
+	if n := len(b.Store.Get(1).Items); n != 1 {
+		t.Fatalf("%d items after one sticker", n)
+	}
+	// Press "Add all" on the status: the custom emoji is skipped, the duplicate ignored.
+	status := &botapi.Message{MessageID: 99, Chat: botapi.Chat{ID: 1}}
+	b.Handle(ctx, botapi.Update{CallbackQuery: &botapi.CallbackQuery{ID: "c", From: botapi.User{ID: 1}, Message: status, Data: "set"}})
 	d := b.Store.Get(1)
 	if d == nil || len(d.Items) != 2 || len(d.Skipped) != 1 {
 		t.Fatalf("draft %+v", d)
@@ -142,15 +153,15 @@ func TestWholeSetFlowAndDone(t *testing.T) {
 	if d.Items[1].Ext != ".tgs" || d.Items[0].Title != "Cats" || d.Items[0].Emoji != "a" {
 		t.Fatalf("items %+v", d.Items)
 	}
-	if !strings.Contains(f.sent[len(f.sent)-1], "2 items: 2 stickers") {
-		t.Fatalf("status %v", f.sent)
+	if last := f.markups[len(f.markups)-1]; !strings.Contains(f.sent[len(f.sent)-1], "2 stickers") || strings.Contains(last, "Add all") || !strings.Contains(last, "Make the pack") {
+		t.Fatalf("status %v markups %v", f.sent, f.markups)
 	}
-	// Add a GIF: the status message is edited in place, not re-sent.
-	nSent := len(f.sent)
+	// Add a GIF: the old status is deleted and a new one sent below it.
+	deleted := f.deletes
 	b.Handle(ctx, botapi.Update{Message: &botapi.Message{MessageID: 5, From: &botapi.User{ID: 1}, Chat: botapi.Chat{ID: 1},
 		Animation: &botapi.Animation{FileID: "g1", FileUniqueID: "ug", Duration: 3, FileSize: 5}}})
-	if len(f.sent) != nSent || !strings.Contains(f.edits[len(f.edits)-1], "3 items: 2 stickers, 1 GIF") {
-		t.Fatalf("sent=%v edits=%v", f.sent, f.edits)
+	if f.deletes != deleted+1 || !strings.Contains(f.sent[len(f.sent)-1], "2 stickers and 1 GIF") {
+		t.Fatalf("sent=%v deletes=%d", f.sent, f.deletes)
 	}
 	// A too-long animation is skipped, not added.
 	b.Handle(ctx, botapi.Update{Message: &botapi.Message{MessageID: 6, From: &botapi.User{ID: 1}, Chat: botapi.Chat{ID: 1},
@@ -184,7 +195,7 @@ func TestWholeSetFlowAndDone(t *testing.T) {
 		t.Fatalf("manifest %+v", m)
 	}
 	last := f.sent[len(f.sent)-1]
-	if !strings.Contains(last, "Skipped 2") || !strings.Contains(last, "custom emoji aren't supported") || !strings.Contains(last, "longer than 10 seconds") {
+	if !strings.Contains(last, "Import pack") || !strings.Contains(last, "Left out 2") || !strings.Contains(last, "custom emoji aren't supported") || !strings.Contains(last, "longer than 10 seconds") {
 		t.Fatalf("done reply %q", last)
 	}
 	if b.Store.Get(1) != nil {
@@ -199,7 +210,7 @@ func TestDoneEmptyAndTitleAndCancel(t *testing.T) {
 	b, f := newBot(t)
 	ctx := context.Background()
 	b.Handle(ctx, msg(2, "/done"))
-	if !strings.Contains(f.sent[0], "Nothing to send") {
+	if !strings.Contains(f.sent[0], "pack is empty") {
 		t.Fatalf("sent %v", f.sent)
 	}
 	b.Handle(ctx, msg(2, "/title@toravenbot  My Cats "))

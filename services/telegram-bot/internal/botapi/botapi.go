@@ -234,6 +234,22 @@ func (c *Client) EditMessageText(ctx context.Context, chatID, messageID int64, t
 	return c.callJSON(ctx, "editMessageText", map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}, nil)
 }
 
+// DeleteMessage removes one of the bot's messages.
+func (c *Client) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	return c.callJSON(ctx, "deleteMessage", map[string]any{"chat_id": chatID, "message_id": messageID}, nil)
+}
+
+// Command is one entry in the menu Telegram shows next to the message box.
+type Command struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// SetMyCommands sets the bot's command menu.
+func (c *Client) SetMyCommands(ctx context.Context, commands []Command) error {
+	return c.callJSON(ctx, "setMyCommands", map[string]any{"commands": commands}, nil)
+}
+
 func (c *Client) AnswerCallbackQuery(ctx context.Context, id, text string) error {
 	return c.callJSON(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, nil)
 }

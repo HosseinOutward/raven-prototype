@@ -27,9 +27,13 @@ type Draft struct {
 	StatusMsgID  int64
 	Skipped      []string
 	SetTitles    map[string]string
-	seen         map[string]bool
-	last         time.Time
-	files        int
+	// OfferSet is the sticker set the status offers to add whole; OfferCount its size.
+	OfferSet   string
+	OfferCount int
+	FullSets   map[string]bool // sets already added whole
+	seen       map[string]bool
+	last       time.Time
+	files      int
 }
 
 type quota struct {
@@ -91,7 +95,7 @@ func (s *Store) Ensure(user int64) (*Draft, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	d := &Draft{UserID: user, Dir: dir, SetTitles: map[string]string{}, seen: map[string]bool{}, last: s.now()}
+	d := &Draft{UserID: user, Dir: dir, SetTitles: map[string]string{}, FullSets: map[string]bool{}, seen: map[string]bool{}, last: s.now()}
 	s.byID[user] = d
 	return d, nil
 }

@@ -4,9 +4,12 @@
 files; `/done` replies with a `.ravenpack` file they import in Raven. It never talks to a
 Raven server. The pack format is in `docs/plans/gifs-stickers/README.md`.
 
-Commands: `/start`, `/title <name>`, `/done`, `/cancel`. A sticker from a set offers
-"Add this sticker" or "Add the whole pack". Drafts are in memory (24 h idle, or a restart,
-clears them). Files are packed as received; the Raven server converts on import.
+Items are added as they arrive. One status message, always at the bottom of the chat,
+counts them and has buttons: **Add all N from "Set"** (when a sticker came from a set),
+**Make the pack** and **Start over**. Commands, also in Telegram's menu: `/start`,
+`/done`, `/title <name>`, `/cancel`. The pack is named after the first sticker set unless
+renamed. Drafts are in memory (24 h idle, or a restart, clears them). Files are packed as
+received; the Raven server converts on import.
 
 ## Environment
 
