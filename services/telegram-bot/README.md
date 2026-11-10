@@ -28,12 +28,17 @@ The bot long-polls, so it needs no inbound port. Run only one instance per token
 
 ## Deploy (Saye)
 
-The compose file is `infra/homelab/telegram-bot/compose.yaml`; it reads
-`TORAVEN_TELEGRAM_BOT_TOKEN` from Saye's environment or `~/services/raven/.env` and maps
-it to `TELEGRAM_BOT_TOKEN`.
+The bot runs on Saye apart from Raven's own (retired) stack there. Its source sits in
+`~/services/raven/telegram-bot/src`, a copy of just `services/telegram-bot` and
+`infra/homelab/telegram-bot`, so the build needs no full checkout. The compose file maps
+`TORAVEN_TELEGRAM_BOT_TOKEN` (in `~/secrets/tokens.env`, loaded by login shells) to
+`TELEGRAM_BOT_TOKEN`. From the repo root on the primary PC:
 
 ```
-cd ~/services/raven/current/infra/homelab/telegram-bot
-docker compose -p raven-telegram-bot --env-file ~/services/raven/.env up -d --build
-docker compose -p raven-telegram-bot logs --tail 20
+git archive --format=tar HEAD services/telegram-bot infra/homelab/telegram-bot   | ssh saye 'rm -rf ~/services/raven/telegram-bot/src && mkdir -p ~/services/raven/telegram-bot/src && tar -x -C ~/services/raven/telegram-bot/src'
+ssh saye 'bash -lc "cd ~/services/raven/telegram-bot/src/infra/homelab/telegram-bot && docker compose -p raven-telegram-bot up -d --build"'
+ssh saye 'docker logs --tail 20 raven-telegram-bot-raven-telegram-bot-1'
 ```
+
+The log should say "raven telegram bot started". Stop it with
+`docker compose -p raven-telegram-bot down` in the same folder.
