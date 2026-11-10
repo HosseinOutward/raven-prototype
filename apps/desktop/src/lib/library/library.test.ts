@@ -43,6 +43,19 @@ describe("picker sections", () => {
     ]);
   });
 
+  test("a scope chip keeps only that scope's items", () => {
+    const items = [item("fav", { favourite: true }), item("loose"), space("s")];
+    const mine = browseSections({ kind: "sticker", scope: "personal", suggested: [space("s")], recent: [item("loose"), space("s")], items });
+    expect(mine.top.map((section) => [section.title, ids(section.items)])).toEqual([
+      ["Favourites", ["fav"]],
+      ["Recent", ["loose"]],
+    ]);
+    expect(mine.bottom.map((section) => section.title)).toEqual(["Not in a collection"]);
+    const tree = browseSections({ kind: "sticker", scope: "tree", suggested: [], recent: [item("loose"), space("s")], items });
+    expect(tree.top.map((section) => [section.title, ids(section.items)])).toEqual([["Recent", ["s"]]]);
+    expect(tree.bottom.map((section) => [section.title, ids(section.items)])).toEqual([["This space", ["s"]]]);
+  });
+
   test("empty sections are left out", () => {
     const { top, bottom } = browseSections({ kind: "gif", suggested: [], recent: [], items: [] });
     expect(top).toEqual([]);

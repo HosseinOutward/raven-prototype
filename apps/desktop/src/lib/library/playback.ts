@@ -150,15 +150,17 @@ function reducedMotionQuery(): MediaQueryList | null {
 }
 
 /**
- * One scroll container's budget, fed by one pair of IntersectionObservers: one with a
- * 200 px margin for "near", one without for how much is visible.
+ * One budget, fed by a pair of IntersectionObservers per scroll container: one with a
+ * 200 px margin for "near", one without for how much is visible. The chat scope outlives
+ * any one conversation, so each container gets its own pair, dropped when its last tile
+ * leaves; an observer whose root left the page never fires again.
  */
 export class PlaybackScope {
   readonly budget: PlaybackBudget;
-  private near?: IntersectionObserver;
-  private visible?: IntersectionObserver;
+  private roots = new Map<Element | null, { near: IntersectionObserver; visible: IntersectionObserver; count: number }>();
   private ids = new WeakMap<Element, string>();
   private nearIds = new Set<string>();
+  private currentVisible = new Map<string, number>();
   private stop: Array<() => void> = [];
 
   constructor(cap: number, mode: PlaybackMode, private root?: Element | null) {
@@ -178,28 +180,30 @@ export class PlaybackScope {
     }
   }
 
-  private observers(element: Element) {
-    if (this.near && this.visible) return;
-    if (this.root === undefined) this.root = scrollParent(element);
-    const currentVisible = new Map<string, number>();
-    this.near = new IntersectionObserver((entries) => {
+  private observers(root: Element | null) {
+    let pair = this.roots.get(root);
+    if (pair) return pair;
+    const near = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         const id = this.ids.get(entry.target);
         if (!id) continue;
         if (entry.isIntersecting) this.nearIds.add(id);
-        this.budget.setVisibility(id, this.nearIds.has(id), currentVisible.get(id) ?? 0);
+        this.budget.setVisibility(id, this.nearIds.has(id), this.currentVisible.get(id) ?? 0);
       }
-    }, { root: this.root, rootMargin: NEAR_MARGIN });
-    this.visible = new IntersectionObserver((entries) => {
+    }, { root, rootMargin: NEAR_MARGIN });
+    const visible = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         const id = this.ids.get(entry.target);
         if (!id) continue;
         const ratio = entry.isIntersecting ? entry.intersectionRatio : 0;
-        currentVisible.set(id, ratio);
+        this.currentVisible.set(id, ratio);
         if (ratio > 0) this.nearIds.add(id);
         this.budget.setVisibility(id, this.nearIds.has(id), ratio);
       }
-    }, { root: this.root, threshold: [0, 0.5, 1] });
+    }, { root, threshold: [0, 0.5, 1] });
+    pair = { near, visible, count: 0 };
+    this.roots.set(root, pair);
+    return pair;
   }
 
   observe(element: Element, id: string, onChange: (state: TileState) => void): () => void {
@@ -209,21 +213,33 @@ export class PlaybackScope {
       this.budget.setVisibility(id, true, 0);
       return unregister;
     }
-    this.observers(element);
+    const root = this.root === undefined ? scrollParent(element) : this.root;
+    const pair = this.observers(root);
+    pair.count += 1;
     this.ids.set(element, id);
-    this.near!.observe(element);
-    this.visible!.observe(element);
+    pair.near.observe(element);
+    pair.visible.observe(element);
     return () => {
-      this.near?.unobserve(element);
-      this.visible?.unobserve(element);
+      pair.near.unobserve(element);
+      pair.visible.unobserve(element);
+      pair.count -= 1;
+      if (pair.count === 0) {
+        pair.near.disconnect();
+        pair.visible.disconnect();
+        this.roots.delete(root);
+      }
       this.nearIds.delete(id);
+      this.currentVisible.delete(id);
       unregister();
     };
   }
 
   dispose() {
-    this.near?.disconnect();
-    this.visible?.disconnect();
+    for (const pair of this.roots.values()) {
+      pair.near.disconnect();
+      pair.visible.disconnect();
+    }
+    this.roots.clear();
     for (const stop of this.stop) stop();
   }
 }

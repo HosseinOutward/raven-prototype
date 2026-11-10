@@ -21,11 +21,25 @@ const notIn = (seen: Set<string>) => (item: LibraryItem) => !seen.has(item.id);
  * search: the person's own items and this space's set. An item shows once, in the first
  * section that has it, except that Recent and For this reply may repeat what is below.
  */
-export function browseSections({ kind, suggested, recent, items }: { kind: LibraryKind; suggested: LibraryItem[]; recent: LibraryItem[]; items: LibraryItem[] }): {
+export function browseSections({
+  kind,
+  scope = "all",
+  suggested,
+  recent,
+  items,
+}: {
+  kind: LibraryKind;
+  /** A scope chip other than All keeps only that scope's items. */
+  scope?: PickerScope;
+  suggested: LibraryItem[];
+  recent: LibraryItem[];
+  items: LibraryItem[];
+}): {
   top: PickerSection[];
   bottom: PickerSection[];
 } {
-  const ofKind = (list: LibraryItem[]) => list.filter((item) => item.kind === kind && item.status === "ready");
+  const ofKind = (list: LibraryItem[]) =>
+    list.filter((item) => item.kind === kind && item.status === "ready" && (scope === "all" || scopeOf(item) === scope));
   const own = ofKind(items).filter((item) => scopeOf(item) === "personal");
   const favourites = own.filter((item) => item.favourite);
   const shownAbove = new Set(favourites.map((item) => item.id));

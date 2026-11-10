@@ -56,7 +56,8 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
   const [results, setResults] = useState<Results>(EMPTY);
   const [suggested, setSuggested] = useState<LibraryItem[]>([]);
   const [collections, setCollections] = useState<LibraryCollection[]>([]);
-  const [open, setOpen] = useState<Set<string>>(new Set());
+  // Collections start open; this holds the ones the person folded.
+  const [folded, setFolded] = useState<Set<string>>(new Set());
   const [collectionItems, setCollectionItems] = useState<Record<string, LibraryItem[] | "loading" | "error">>({});
   const [changed, setChanged] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -117,7 +118,8 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
     };
   }, [api, conversationId, kind, debounced, scope, searching, reload]);
 
-  // Each collection loads the first time it is opened.
+  // Each collection's first page loads with the picker (tiles fetch only posters, and only
+  // near the view), so a collection with nothing of this kind can be left out.
   const loadCollection = (id: string) => {
     if (collectionItems[id] && collectionItems[id] !== "error") return;
     setCollectionItems((current) => ({ ...current, [id]: "loading" }));
@@ -127,15 +129,21 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
     );
   };
   useEffect(() => setCollectionItems({}), [kind]);
+  useEffect(() => {
+    for (const collection of collections) if (collectionItems[collection.id] === undefined) loadCollection(collection.id);
+  });
   const toggle = (id: string, force?: boolean) => {
-    const next = new Set(open);
-    const opening = force ?? !next.has(id);
-    if (opening) {
-      next.add(id);
-      loadCollection(id);
-    } else next.delete(id);
-    setOpen(next);
+    const next = new Set(folded);
+    const opening = force ?? next.has(id);
+    if (opening) next.delete(id);
+    else next.add(id);
+    setFolded(next);
   };
+  // Collections are personal, so This space hides them.
+  const shownCollections = scope === "tree" ? [] : collections.filter((collection) => {
+    const items = collectionItems[collection.id];
+    return !Array.isArray(items) || items.length > 0;
+  });
 
   const more = (current: Results, set: (value: Results) => void, q?: string) => {
     if (!current.nextCursor) return;
@@ -200,21 +208,21 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
       </>
     );
   } else {
-    const { top, bottom } = browseSections({ kind, suggested, recent, items: browse.items });
+    const { top, bottom } = browseSections({ kind, scope, suggested, recent, items: browse.items });
     const visibleBottom = inSpace ? bottom : bottom.filter((entry) => entry.id !== "space");
-    const empty = top.length === 0 && visibleBottom.length === 0 && collections.length === 0;
+    const empty = top.length === 0 && visibleBottom.length === 0 && shownCollections.length === 0;
     body = browse.error ? (
       <Hint>Couldn’t load your {noun}. Try again in a moment.</Hint>
     ) : browse.loading ? (
       <Hint>Loading…</Hint>
     ) : (
       <>
-        {empty ? <Hint>No {noun} yet. Add one, or save one someone sent you.</Hint> : null}
+        {empty ? <Hint>{scope === "tree" ? `This space has no ${noun} yet.` : `No ${noun} yet. Add one, or save one someone sent you.`}</Hint> : null}
         {top.map(section)}
-        {collections.length > 0 ? (
+        {shownCollections.length > 0 ? (
           <>
             <div className="flex flex-wrap gap-1 pt-2" role="group" aria-label="Jump to a collection">
-              {collections.map((collection) => (
+              {shownCollections.map((collection) => (
                 <button
                   key={collection.id}
                   type="button"
@@ -228,8 +236,8 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
                 </button>
               ))}
             </div>
-            {collections.map((collection) => {
-              const expanded = open.has(collection.id);
+            {shownCollections.map((collection) => {
+              const expanded = !folded.has(collection.id);
               const items = collectionItems[collection.id];
               return (
                 <section key={collection.id} data-collection={collection.id} aria-label={collection.name}>
