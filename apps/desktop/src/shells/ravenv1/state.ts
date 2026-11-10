@@ -162,7 +162,7 @@ export interface RavenShellData {
   searchUsers: (query: string) => Promise<PublicUser[]>;
   searchTrees: (query: string) => Promise<TreeSearchResult[]>;
   createTree: (name: string) => Promise<Tree>;
-  updateTreeSettings: (treeId: string, settings: { name: string; description: string; joinPolicy: TreeJoinPolicy; visibility: TreeVisibility }) => Promise<Tree>;
+  updateTreeSettings: (treeId: string, settings: { name: string; description: string; joinPolicy: TreeJoinPolicy; visibility: TreeVisibility; savedStickersPublishable?: boolean }) => Promise<Tree>;
   deleteTree: (treeId: string, confirmation: string) => Promise<void>;
   joinTree: (treeId: string) => Promise<"joined" | "waiting">;
   createTreeNest: (treeId: string, name: string, door?: NestDoor) => Promise<Nest>;

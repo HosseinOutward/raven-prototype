@@ -1,6 +1,6 @@
 import type { ChatStore } from "@/lib/chat/store";
-import { useEffect, useState } from "react";
-import { ClipboardList, Info, MoreHorizontal, Shield, Trash2, Users } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ClipboardList, Info, MoreHorizontal, Shield, Sticker, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
@@ -19,13 +19,18 @@ import {
   SettingsPage,
   SettingsRows,
   SettingsSection,
+  SettingsToggleRow,
   type SettingsCategoryGroup,
 } from "../SettingsScaffold";
 import { displayNameFor, type RavenShellData, type RavenView } from "../state";
 import { BoardSettings } from "./BoardSettings";
+import { LibraryManager } from "@/components/library/LibraryManager";
+import { libraryCapabilities } from "@/lib/library/types";
+import { failureText } from "@/lib/chat/errors";
+import { toast } from "@/components/ui/toast";
 import { SpaceNameDialog, TREE_ROLE_LABEL } from "./dialogs";
 
-export type TreeSettingsSection = "general" | "access" | "members" | "board" | "delete";
+export type TreeSettingsSection = "general" | "access" | "members" | "board" | "library" | "delete";
 
 // Everyone in a tree can open its settings to see who is in it and to leave. What else
 // they find there is what their role allows.
@@ -33,9 +38,16 @@ export function resolveTreeSettingsSection(section: string | undefined, details:
   const canEdit = treeCan(details, "settings.edit");
   if (section === "members") return section;
   if (section === "board" && treeCan(details, "board.manage")) return section;
+  if (section === "library" && showsLibrary(details, _data)) return section;
   if ((section === "access" || section === "general") && canEdit) return section;
   if (section === "delete" && treeCan(details, "space.delete")) return section;
   return canEdit ? "general" : "members";
+}
+
+/** GIFs and stickers: for whoever manages the set or the space's settings, on a server that has them. */
+function showsLibrary(details: TreeDetails, data: RavenShellData): boolean {
+  if (!libraryCapabilities(data.serverProperties.properties)) return false;
+  return treeCan(details, "stickers.manage") || (treeCan(details, "settings.edit") && Boolean(details.library));
 }
 
 export function TreeSettingsNav({
@@ -63,6 +75,7 @@ export function TreeSettingsNav({
           : []),
         { id: "members", label: "Members", icon: <Users /> },
         ...(treeCan(details, "board.manage") ? [{ id: "board", label: "Board", icon: <ClipboardList /> }] : []),
+        ...(showsLibrary(details, data) ? [{ id: "library", label: "GIFs and stickers", icon: <Sticker /> }] : []),
       ],
     },
     ...(treeCan(details, "space.delete")
@@ -96,6 +109,7 @@ export function TreeSettingsView({
 }) {
   if (section === "access") return <AccessSettings details={details} data={data} />;
   if (section === "board") return <BoardSettings details={details} data={data} chat={chat} />;
+  if (section === "library") return <SpaceLibrarySettings details={details} data={data} />;
   if (section === "members") return <MemberSettings details={details} data={data} onNavigate={onNavigate} />;
   if (section === "delete") return <DeleteSettings details={details} data={data} onNavigate={onNavigate} />;
   return <GeneralSettings details={details} data={data} />;
@@ -413,6 +427,43 @@ function DeleteSettings({ details, data, onNavigate }: { details: TreeDetails; d
           {deleting ? "Deleting…" : `Delete ${treeLabel}`}
         </Button>
       </SettingsSection>
+    </SettingsPage>
+  );
+}
+
+function SpaceLibrarySettings({ details, data }: { details: TreeDetails; data: RavenShellData }) {
+  const tree = details.tree;
+  const capabilities = useMemo(() => libraryCapabilities(data.serverProperties.properties), [data.serverProperties.properties]);
+  const owner = useMemo(() => ({ scope: "tree" as const, treeId: tree.id }), [tree.id]);
+  const stored = details.library?.savedStickersPublishable ?? false;
+  const [publishable, setPublishable] = useState(stored);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setPublishable(stored), [stored]);
+
+  const change = (next: boolean) => {
+    setPublishable(next);
+    setSaving(true);
+    data
+      .updateTreeSettings(tree.id, { name: tree.name, description: tree.description, joinPolicy: tree.joinPolicy, visibility: tree.visibility, savedStickersPublishable: next })
+      .catch((failure: unknown) => {
+        setPublishable(stored);
+        toast({ title: failureText(failure, "Couldn’t save that setting."), tone: "error" });
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <SettingsPage title="GIFs and stickers" description={`This ${data.labels.treeSingular.toLowerCase()}’s own set, which everyone in it can send.`}>
+      {treeCan(details, "settings.edit") && details.library ? (
+        <SettingsToggleRow
+          label="Saved copies can be made public"
+          description="When on, someone who saves one of these to their library may share it with the whole server."
+          checked={publishable}
+          disabled={saving}
+          onChange={change}
+        />
+      ) : null}
+      {treeCan(details, "stickers.manage") && capabilities ? <LibraryManager owner={owner} capabilities={capabilities} /> : null}
     </SettingsPage>
   );
 }

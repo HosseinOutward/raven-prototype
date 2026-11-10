@@ -10,6 +10,7 @@ import { canShow, messageExcerpt, onlyPictures } from "@/lib/chat/attachments";
 import type { ReactionLimits } from "@/lib/chat/attachments";
 import { QUICK_REACTIONS } from "@/lib/chat/reactions";
 import { failureText } from "@/lib/chat/errors";
+import { libraryApi } from "@/lib/library/libraryApi";
 import { saveAttachment } from "@/lib/chat/imageActions";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
 import { emojiOnlyCount } from "@/lib/chat/format";
@@ -22,6 +23,8 @@ import type { ChatAttachment, ChatMessage, ChatOrigin, ChatReplyRef, ChatSystemP
 import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
+import { LibraryMedia } from "@/components/library/LibraryMedia";
+import { libraryBox } from "@/lib/library/types";
 import { RavenAvatar, SystemBadge } from "./ConversationRow";
 import { EmojiPicker } from "./EmojiPicker";
 import { Reactions } from "./Reactions";
@@ -297,6 +300,16 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const shown = attachments.filter(canShow);
   const savable = shown.length === 1 && shown[0].kind === "image" ? shown[0] : null;
 
+  const libraryAttachment = shown.length === 1 && (shown[0].kind === "gif" || shown[0].kind === "sticker") ? shown[0] : null;
+  const saveToLibrary = () => {
+    if (!libraryAttachment) return;
+    const what = libraryAttachment.kind === "gif" ? "GIF" : "sticker";
+    void libraryApi.save({ attachmentId: libraryAttachment.id }).then(
+      () => toast({ title: `Saved to your ${what}s` }),
+      (failure: unknown) => toast({ title: `Couldn’t save the ${what}`, description: failureText(failure, "Try again in a moment."), tone: "error" }),
+    );
+  };
+
   const save = () => {
     if (!savable) return;
     void saveAttachment(message.conversationId, savable).then(
@@ -413,6 +426,12 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
             <DropdownMenuItem onSelect={save}>
               <Download className="text-muted-foreground" />
               Save image…
+            </DropdownMenuItem>
+          ) : null}
+          {!deleted && libraryAttachment ? (
+            <DropdownMenuItem onSelect={saveToLibrary}>
+              <Bookmark className="text-muted-foreground" />
+              Save to my library
             </DropdownMenuItem>
           ) : null}
           {!deleted && hasText ? (
@@ -568,7 +587,18 @@ export const PendingRow = memo(function PendingRow({
   const attachments = pending.attachments ?? [];
   const hasText = pending.body.trim() !== "";
   const bareEmoji = attachments.length === 0 && !pending.replyTo && emojiOnlyCount(pending.body) > 0;
-  const bare = bareEmoji || (attachments.length > 0 && !hasText && !pending.replyTo);
+  const library = pending.library;
+  const bare = bareEmoji || ((attachments.length > 0 || library) && !hasText && !pending.replyTo);
+  const libraryView = (footer?: ReactNode) => {
+    if (!library) return null;
+    const box = libraryBox(library.kind, library.width, library.height);
+    return (
+      <div className="relative max-w-full" style={{ width: box.width }}>
+        <LibraryMedia media={library} width={box.width} height={box.height} />
+        {footer}
+      </div>
+    );
+  };
   const meta = (overImage: boolean) => (
     <div
       className={cn(
@@ -590,11 +620,12 @@ export const PendingRow = memo(function PendingRow({
     <div className="flex flex-col items-end pt-2.5">
       {bare ? (
         <div className="min-w-0 max-w-[min(100%,34rem)]">
-          {bareEmoji ? <><MessageText body={pending.body} />{meta(false)}</> : <PendingAttachments attachments={attachments} footer={meta(true)} />}
+          {bareEmoji ? <><MessageText body={pending.body} />{meta(false)}</> : library ? libraryView(meta(true)) : <PendingAttachments attachments={attachments} footer={meta(true)} />}
         </div>
       ) : (
         <div className="min-w-0 max-w-[min(100%,34rem)] rounded-card bg-accent px-3 py-1.5">
           {pending.replyTo ? <ReplyQuote reply={pending.replyTo} /> : null}
+          {library ? <div className="-mx-1.5 mb-1 mt-0.5">{libraryView()}</div> : null}
           {attachments.length > 0 ? (
             <div className="-mx-1.5 mb-1 mt-0.5">
               <PendingAttachments attachments={attachments} />

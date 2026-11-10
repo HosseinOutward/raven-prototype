@@ -37,6 +37,9 @@ export interface ChatAttachment {
   /** What can be fetched, for example ["full", "preview"]. */
   variants: string[];
   meta?: Record<string, unknown>;
+  /** A GIF or sticker (`source: "library"`): the library asset and what `play` is. */
+  assetId?: string;
+  format?: "webm" | "webp" | "tgs";
 }
 
 /** All a list or a quote needs to say what a message holds ("Photo"). */
@@ -320,11 +323,25 @@ export interface PendingAttachment {
  *   sending  the request is out, or it failed in a way worth retrying and will go again
  *   failed   it will not be retried without the person asking
  */
+/** What a pending GIF or sticker needs to be sent and drawn before the server answers. */
+export interface PendingLibraryItem {
+  itemId: string;
+  kind: "gif" | "sticker";
+  format: "webm" | "webp" | "tgs";
+  assetId: string;
+  variants: string[];
+  width?: number;
+  height?: number;
+  title?: string;
+}
+
 export interface PendingMessage {
   clientMessageId: string;
   conversationId: string;
   body: string;
   attachments?: PendingAttachment[];
+  /** A GIF or sticker from a library: sent alone, with no text or attachments. */
+  library?: PendingLibraryItem;
   replyTo?: ChatReplyRef;
   createdAt: string;
   state: "queued" | "sending" | "failed";

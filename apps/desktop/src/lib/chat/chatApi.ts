@@ -65,7 +65,7 @@ export interface ChatApi {
   clearConversation(id: string): Promise<void>;
   messages(id: string, cursor?: { before?: number; after?: number; around?: number; limit?: number }): Promise<ChatPage>;
   changes(id: string, after: number): Promise<ChatChanges>;
-  send(id: string, message: { clientMessageId: string; body: string; replyToMessageId?: string; attachmentIds?: string[] }): Promise<{ message: ChatMessage; duplicate?: boolean }>;
+  send(id: string, message: { clientMessageId: string; body: string; replyToMessageId?: string; attachmentIds?: string[]; libraryItemId?: string }): Promise<{ message: ChatMessage; duplicate?: boolean }>;
   /** Declares an attachment. The same `clientUploadId` again returns the same one. */
   createAttachment(id: string, description: AttachmentDescription): Promise<AttachmentUploadState>;
   /** Stores the bytes of one variant. Uploading one the server already has is harmless. */

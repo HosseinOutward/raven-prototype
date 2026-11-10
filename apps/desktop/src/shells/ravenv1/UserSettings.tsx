@@ -4,8 +4,9 @@ import { InvitationsSettings } from "./InvitationsSettings";
 import { YourDataSettings } from "./YourDataSettings";
 import { WorkshopSettings } from "./WorkshopSettings";
 import { capabilitiesOf } from "@/lib/permissions";
-import { Bell, Check, Download, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video, Wrench } from "lucide-react";
+import { Bell, Check, Sticker as StickerIcon, Download, Info, Keyboard, MessageSquare, MonitorUp, Palette, PanelBottom, RefreshCw, Server as ServerIcon, ShieldCheck, Ticket, User as UserIcon, Video, Wrench } from "lucide-react";
 import { ChatSettingsPage } from "@/components/chat/ChatSettings";
+import { LibrarySettingsPage } from "@/components/library/LibrarySettings";
 import type { ChatStore } from "@/lib/chat/store";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -48,7 +49,7 @@ import type {
 
 const onMacSettings = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
 
-export type UserSettingsSection = "profile" | "messages" | "sessions" | "data" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "workshop" | "updates" | "about";
+export type UserSettingsSection = "profile" | "messages" | "library" | "sessions" | "data" | "invitations" | "appearance" | "audio-video" | "hotkeys" | "voice-overlay" | "tray" | "notifications" | "server" | "workshop" | "updates" | "about";
 
 const GROUPS: SettingsCategoryGroup[] = [
   {
@@ -56,6 +57,7 @@ const GROUPS: SettingsCategoryGroup[] = [
     categories: [
       { id: "profile", label: "Profile", icon: <UserIcon /> },
       { id: "messages", label: "Messages", icon: <MessageSquare /> },
+      { id: "library", label: "GIFs and stickers", icon: <StickerIcon /> },
       { id: "sessions", label: "Password and devices", icon: <ShieldCheck /> },
       { id: "data", label: "Your data", icon: <Download /> },
       { id: "invitations", label: "Invitations", icon: <Ticket /> },
@@ -154,6 +156,8 @@ export function UserSettingsView({
       return <ProfileSettings data={data} />;
     case "messages":
       return <ChatSettingsPage chat={chat} labels={data.labels} />;
+    case "library":
+      return <LibrarySettingsPage properties={data.serverProperties.properties} />;
     case "invitations":
       return capabilitiesOf(data.user).createInvites ? <InvitationsSettings data={data} /> : <ProfileSettings data={data} />;
     case "sessions":

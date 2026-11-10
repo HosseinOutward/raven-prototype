@@ -1,7 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import type { ReactionLimits } from "@/lib/chat/attachments";
+import { isLibraryMessage, type ReactionLimits } from "@/lib/chat/attachments";
 import type { ChatStore } from "@/lib/chat/store";
 import { typingLine } from "@/lib/chat/text";
 import { unreadLabel } from "@/lib/chat/reducer";
@@ -291,7 +291,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
             ? message.seq <= (summary.kind === "dm" ? (summary.peerReadSeq ?? 0) : (conversation.seen?.readSeq ?? 0)) ? "read" : "sent"
             : undefined;
           // A copy stays as it was saved; your own notes in Saved messages have no time limit.
-          const editable = mine && summary.canSend && !message.origin && (inSaved || Date.now() - Date.parse(message.createdAt) < EDIT_WINDOW_MS);
+          const editable = mine && summary.canSend && !message.origin && !isLibraryMessage(message) && (inSaved || Date.now() - Date.parse(message.createdAt) < EDIT_WINDOW_MS);
           return (
             <div className="mx-auto w-full max-w-3xl px-6">
               <MessageRow

@@ -404,7 +404,7 @@ limits are in `docs/plans/gifs-stickers/README.md`.
 | `DELETE /v1/library/items/:id` | Removes the item; sent messages keep working. |
 | `POST /v1/library/save` | `{itemId}` or `{attachmentId}` into your personal library. |
 | `/v1/library/collections` | `GET`, `POST`, `PATCH /:id`, `DELETE /:id`. Deleting keeps the items, uncollected. |
-| `GET /v1/library/search?conversationId=&q=&kind=&scope=&cursor=` | What the caller may use in that conversation: personal, the conversation's space set, and (with a query) public. Order: scope, favourite, recent use, newest. 60 per page. |
+| `GET /v1/library/search?conversationId=&q=&kind=&scope=&cursor=` | What the caller may use in that conversation: personal, the conversation's space set, and (with a query) public. Order: scope, favourite, recent use, newest. 60 per page. Without `conversationId` (the library page) no space set is in scope. |
 | `GET /v1/library/suggest?conversationId=&messageId=` | Up to 12 usable items matching words of that message. |
 
 Send accepts `libraryItemId`, alone: no body and no `attachmentIds`. The message gets one

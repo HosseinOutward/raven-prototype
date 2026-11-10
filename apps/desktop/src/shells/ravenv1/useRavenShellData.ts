@@ -782,7 +782,7 @@ export function useRavenShellData(): RavenShellData {
 
   const createTree = useCallback((name: string) => runMutation(() => api.createTree({ name }).then((result) => result.tree)), [runMutation]);
   const updateTreeSettings = useCallback(
-    (treeId: string, settings: { name: string; description: string; joinPolicy: TreeJoinPolicy; visibility: TreeVisibility }) =>
+    (treeId: string, settings: { name: string; description: string; joinPolicy: TreeJoinPolicy; visibility: TreeVisibility; savedStickersPublishable?: boolean }) =>
       runMutation(() => api.updateTreeSettings(treeId, settings).then((result) => result.tree)),
     [runMutation],
   );

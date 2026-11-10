@@ -507,6 +507,8 @@ export interface TreeDetails {
   events?: TreeEvent[];
   /** The asker's role here and what it allows, decided by the server. */
   viewer?: { role: TreeRole; permissions: string[] };
+  /** The space's sticker settings. Absent from servers without GIFs and stickers. */
+  library?: { savedStickersPublishable: boolean };
 }
 
 export interface HomeState {
@@ -1084,7 +1086,7 @@ export class ApiClient {
     return this.request<TreeDetails>(`/v1/trees/${id}`);
   }
 
-  updateTreeSettings(treeId: string, payload: { name: string; description: string; joinPolicy: TreeJoinPolicy; visibility: TreeVisibility }) {
+  updateTreeSettings(treeId: string, payload: { name: string; description: string; joinPolicy: TreeJoinPolicy; visibility: TreeVisibility; savedStickersPublishable?: boolean }) {
     return this.request<{ tree: Tree }>(`/v1/trees/${treeId}/settings`, {
       method: "POST",
       body: JSON.stringify(payload),

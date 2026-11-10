@@ -7,6 +7,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 
 mod account_export;
 pub mod attachments;
+pub mod library;
 pub mod audio;
 mod diagnostics;
 pub mod media_hotkeys;
@@ -92,6 +93,11 @@ pub fn run() {
             attachments::attachment_discard,
             attachments::attachment_sweep,
             attachments::attachment_save,
+            library::library_stage,
+            library::library_read,
+            library::library_discard,
+            library::library_pick_pack,
+            library::read_ravenpack,
             account_export::save_export_file,
             audio_get_state,
             audio_get_capabilities,
@@ -220,6 +226,7 @@ pub fn run() {
         ])
         .setup(|app| {
             attachments::initialize(app.handle());
+            library::initialize(app.handle());
             if should_start_api_sidecar() {
                 start_api_sidecar(app.handle())?;
             }

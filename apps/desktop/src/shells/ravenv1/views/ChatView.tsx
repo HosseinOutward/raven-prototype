@@ -15,8 +15,10 @@ import { toast } from "@/components/ui/toast";
 import { failureText } from "@/lib/chat/errors";
 import { notifies } from "@/lib/chat/notify";
 import { canSelect, clickSelection, selectionAfterKey, startSelection, type MessageSelection } from "@/lib/chat/selection";
-import { canShow, reactionLimits } from "@/lib/chat/attachments";
+import { canShow, isLibraryMessage, reactionLimits } from "@/lib/chat/attachments";
 import { addToTray } from "@/lib/chat/composerTray";
+import { dropsClaimed } from "@/lib/library/dropTarget";
+import { libraryCapabilities, type LibraryItem } from "@/lib/library/types";
 import { excerptOf, summarize, textNestsOfTree } from "@/lib/chat/reducer";
 import type { MentionCandidate, MentionResolver, MentionTarget } from "@/lib/chat/mentions";
 import type { ChatStore } from "@/lib/chat/store";
@@ -145,6 +147,8 @@ function OpenConversation({
   const imageLimits = useImageLimits(data);
   // Images can come in only where something can be sent, and not while editing a message.
   const takesImages = summary.canSend && imageLimits && !editing ? imageLimits : null;
+  const libraryCaps = useMemo(() => libraryCapabilities(data.serverProperties.properties), [data.serverProperties.properties]);
+  const library = useMemo(() => (libraryCaps && summary.canSend && me ? { userId: me, inSpace: Boolean(summary.treeId), capabilities: libraryCaps } : null), [libraryCaps, summary.canSend, me, summary.treeId]);
 
   // Files dragged over the window. Only the conversation on screen listens, so a drop
   // lands nowhere else.
@@ -159,6 +163,8 @@ function OpenConversation({
         else if (payload.type === "leave") setDropping(false);
         else if (payload.type === "drop") {
           setDropping(false);
+          // The open GIF and sticker picker takes the files instead.
+          if (dropsClaimed()) return;
           addToTray(id, payload.paths.map((path) => ({ kind: "path" as const, path })), takesImages);
         }
       })
@@ -305,8 +311,19 @@ function OpenConversation({
     list.current?.scrollToLatest();
   };
 
+  const sendLibrary = (item: LibraryItem) => {
+    const reply = replyingTo;
+    chat.sendLibrary(
+      id,
+      { itemId: item.id, kind: item.kind, format: item.format, assetId: item.assetId, variants: item.variants, width: item.width, height: item.height, title: item.title || undefined },
+      reply ? { id: reply.id, seq: reply.seq, senderId: reply.senderId, senderName: reply.senderName, excerpt: excerptOf(reply.body), attachments: summarize(reply.attachments) } : undefined,
+    );
+    setReplyingTo(null);
+    list.current?.scrollToLatest();
+  };
+
   const editLast = () => {
-    const mine = [...conversation.messages].reverse().find((message) => message.senderId === me && message.kind === "text" && !message.deletedAt && !message.origin);
+    const mine = [...conversation.messages].reverse().find((message) => message.senderId === me && message.kind === "text" && !message.deletedAt && !message.origin && !isLibraryMessage(message));
     if (mine && summary.canSend) startEdit(mine);
   };
 
@@ -507,6 +524,8 @@ function OpenConversation({
             }}
             onEditLast={editLast}
             imageLimits={imageLimits}
+            library={library}
+            onSendLibrary={sendLibrary}
             mentionCandidates={mentionCandidates}
             mentionResolver={mentionResolver}
             nestHeading={data.labels.nestPlural}

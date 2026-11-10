@@ -1276,11 +1276,12 @@ func (s *Server) librarySearchItems(q chatQuerier, search librarySearch) ([]Libr
 }
 
 // libraryConversationTree answers which space set may be used in a conversation the
-// viewer can read.
+// viewer can read. Without one (the library page) there is no space set in scope: only
+// the viewer's own items and public ones.
 func (s *Server) libraryConversationTree(c *fiber.Ctx) (string, error) {
 	id := c.Query("conversationId")
 	if id == "" {
-		return "", fiber.NewError(400, "Choose a conversation.")
+		return "", nil
 	}
 	access, err := s.chatAccessFor(s.db, id, currentUser(c).ID)
 	if err != nil {

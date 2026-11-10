@@ -5150,6 +5150,7 @@ dependencies = [
  "screencapturekit",
  "serde",
  "serde_json",
+ "sha2",
  "sonora",
  "sonora-agc2",
  "sonora-simd",
@@ -5177,6 +5178,7 @@ dependencies = [
  "windows-core 0.61.2",
  "x11-dl",
  "yamux",
+ "zip 4.6.1",
 ]
 
 [[package]]
@@ -9076,6 +9078,7 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap 2.14.0",
  "memchr",
 ]
