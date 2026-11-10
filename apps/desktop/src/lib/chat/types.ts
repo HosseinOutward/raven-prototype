@@ -106,6 +106,21 @@ export interface ChatOrigin {
   };
 }
 
+/**
+ * The card the server adds under a message with a web address: what the page says about
+ * itself. It arrives after the message, as a change to it. The text is plain text.
+ */
+export interface ChatLinkPreview {
+  /** The address in the message the card is for. */
+  url: string;
+  title?: string;
+  description?: string;
+  siteName?: string;
+  /** The page's picture, fetched from the message's link-preview/image route. */
+  /** `version` changes whenever the picture does; older servers leave it out. */
+  image?: { version?: string; contentType: string; width: number; height: number };
+}
+
 export interface ChatMessage {
   id: string;
   conversationId: string;
@@ -120,6 +135,7 @@ export interface ChatMessage {
   /** The text, or the caption when there are attachments. May be empty then. */
   body: string;
   attachments?: ChatAttachment[];
+  linkPreview?: ChatLinkPreview;
   reactions?: ChatReaction[];
   replyTo?: ChatReplyRef;
   system?: ChatSystemPayload;

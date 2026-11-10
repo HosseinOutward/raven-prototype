@@ -11,6 +11,7 @@ import (
 
 	"raven/services/api/internal/auth"
 	"raven/services/api/internal/database"
+	"raven/services/api/internal/linkpreview"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -267,6 +268,9 @@ type chatCopyResult struct {
 	// Existing are copies the target already held, for SkipExisting.
 	Existing   []string
 	Recipients []chatRecipient
+	// LinkPreviews are fetches for copies whose original had no card yet, to queue once
+	// the copies are committed.
+	LinkPreviews []chatLinkPreviewJob
 }
 
 type chatCopySource struct {
@@ -423,6 +427,11 @@ func (s *Server) chatCopyMessagesTx(tx *database.Tx, caller User, sourceIDs []st
 		}
 		if err := chatCopyAttachmentsTx(tx, source.id, copyID, targetID, caller.ID, now); err != nil {
 			return result, err
+		}
+		if fetch, err := chatCopyLinkPreviewTx(tx, source.id, copyID, targetID, now); err != nil {
+			return result, err
+		} else if fetch {
+			result.LinkPreviews = append(result.LinkPreviews, chatLinkPreviewJob{caller.ID, targetID, copyID, linkpreview.FirstLink(body)})
 		}
 		result.Copied = append(result.Copied, copyID)
 	}
@@ -643,6 +652,7 @@ func (s *Server) saveChatMessages(c *fiber.Ctx) error {
 		_ = tx.Rollback()
 	}
 	committedAt := time.Now()
+	s.queueChatLinkPreviews(result.LinkPreviews)
 
 	load := func(ids []string) ([]ChatMessage, error) {
 		messages := make([]ChatMessage, 0, len(ids))
@@ -818,6 +828,7 @@ func (s *Server) forwardChatMessages(c *fiber.Ctx) error {
 		return err
 	}
 	committedAt := time.Now()
+	s.queueChatLinkPreviews(result.LinkPreviews)
 
 	messages := make([]ChatMessage, 0, len(newIDs))
 	views := chatSourceViews{}
