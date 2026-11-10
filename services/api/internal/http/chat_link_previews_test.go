@@ -45,7 +45,7 @@ func chatEnableLinkPreviews(t *testing.T, s *Server, pages *fakeLinkPages) *memo
 	t.Helper()
 	store := &memoryProfileMedia{objects: map[string]profilemedia.Object{}}
 	s.profileMedia = store
-	s.linkPreviews = &chatLinkPreviewer{fetch: pages.fetch, jobs: make(chan chatLinkPreviewJob, 16)}
+	s.linkPreviews = newChatLinkPreviewer(pages.fetch, 16)
 	s.startChatLinkPreviews()
 	t.Cleanup(func() {
 		s.linkPreviews.pending.Wait()
@@ -125,7 +125,10 @@ func TestChatLinkPreviewArrivesAsAChange(t *testing.T) {
 	want := ChatLinkPreview{URL: "https://example.com/a", Title: "An article", Description: "What it is about", SiteName: "Example",
 		Image: &ChatLinkPreviewImage{ContentType: "image/jpeg", Width: 800, Height: 420}}
 	if event.Type != "message.updated" || event.Seq != sent.Seq+1 || event.Message.ChangedSeq != sent.Seq+1 ||
-		event.Message.LinkPreview == nil || *event.Message.LinkPreview.Image != *want.Image {
+		event.Message.LinkPreview == nil || event.Message.LinkPreview.Image == nil || event.Message.LinkPreview.Image.Version == "" {
+		t.Fatalf("card event: %+v", event)
+	}
+	if image := *event.Message.LinkPreview.Image; image.ContentType != want.Image.ContentType || image.Width != want.Image.Width || image.Height != want.Image.Height {
 		t.Fatalf("card event: %+v", event)
 	}
 	got := chatHistoryFind(t, s, bob, dm.ID, sent.ID).LinkPreview
@@ -287,5 +290,45 @@ func TestChatLinkPreviewsOffByDefault(t *testing.T) {
 	chatSend(t, s, alice.token, dm.ID, "https://example.com/a")
 	if chatLinkPreviewsAnnounced(t, s) != nil {
 		t.Fatal("properties announce link previews while they are off")
+	}
+}
+
+func TestChatLinkPreviewReachesACopyMadeBeforeItArrived(t *testing.T) {
+	s, alice, bob, dm := chatPair(t)
+	pages := &fakeLinkPages{pages: map[string]linkpreview.Preview{"https://example.com/a": examplePage}, gate: make(chan struct{})}
+	chatEnableLinkPreviews(t, s, pages)
+	sent := chatSend(t, s, alice.token, dm.ID, "https://example.com/a")
+	saved := chatSave(t, s, bob, http.StatusCreated, sent.ID).Saved
+	if len(saved) != 1 || saved[0].LinkPreview != nil {
+		t.Fatalf("saved copy: %+v", saved)
+	}
+	close(pages.gate)
+	chatLinkPreviewsSettle(s)
+	original := chatHistoryFind(t, s, alice, dm.ID, sent.ID).LinkPreview
+	copied := chatHistoryFind(t, s, bob, saved[0].ConversationID, saved[0].ID).LinkPreview
+	if original == nil || copied == nil || copied.Title != "An article" {
+		t.Fatalf("original %+v, copy %+v", original, copied)
+	}
+	if original.Image == nil || original.Image.Version == "" {
+		t.Fatalf("picture has no version: %+v", original.Image)
+	}
+}
+
+func TestChatLinkPreviewQueueIsSharedFairly(t *testing.T) {
+	previewer := newChatLinkPreviewer(nil, 64)
+	for range chatLinkPreviewPerSender {
+		if !previewer.reserve("alice") {
+			t.Fatal("alice ran out of places early")
+		}
+	}
+	if previewer.reserve("alice") {
+		t.Fatal("alice took more than her share")
+	}
+	if !previewer.reserve("bob") {
+		t.Fatal("bob had no place")
+	}
+	previewer.release("alice")
+	if !previewer.reserve("alice") {
+		t.Fatal("a finished job did not give alice her place back")
 	}
 }

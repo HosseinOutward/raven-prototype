@@ -37,6 +37,9 @@ const (
 	chatLinkPreviewWorkers  = 4
 	chatLinkPreviewQueue    = 256
 	chatLinkPreviewDeadline = 15 * time.Second
+	// chatLinkPreviewPerSender is how many of one person's links may wait or run at once,
+	// so one person pasting links can't fill the queue for everyone else.
+	chatLinkPreviewPerSender = 8
 )
 
 // ChatLinkPreview is the card under a message. The text fields are plain text.
@@ -51,13 +54,15 @@ type ChatLinkPreview struct {
 // ChatLinkPreviewImage describes the card's picture, fetched from
 // GET /v1/chat/conversations/:id/messages/:messageId/link-preview/image.
 type ChatLinkPreviewImage struct {
+	// Version changes whenever the picture does, so a client can cache it by version.
+	Version     string `json:"version"`
 	ContentType string `json:"contentType"`
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
 }
 
 type chatLinkPreviewJob struct {
-	conversationID, messageID, url string
+	senderID, conversationID, messageID, url string
 }
 
 // chatLinkPreviewer runs fetches on a few workers. A full queue drops the job: the
@@ -65,6 +70,9 @@ type chatLinkPreviewJob struct {
 type chatLinkPreviewer struct {
 	fetch func(context.Context, string) (linkpreview.Preview, error)
 	jobs  chan chatLinkPreviewJob
+	// mu guards perSender: each sender's jobs queued or running.
+	mu        sync.Mutex
+	perSender map[string]int
 	// pending counts jobs queued or running, so tests can wait for them.
 	pending sync.WaitGroup
 }
@@ -73,7 +81,30 @@ func newChatLinkPreviewerFromEnv() *chatLinkPreviewer {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("RAVEN_LINK_PREVIEWS")), "on") {
 		return nil
 	}
-	return &chatLinkPreviewer{fetch: linkpreview.New().Fetch, jobs: make(chan chatLinkPreviewJob, chatLinkPreviewQueue)}
+	return newChatLinkPreviewer(linkpreview.New().Fetch, chatLinkPreviewQueue)
+}
+
+func newChatLinkPreviewer(fetch func(context.Context, string) (linkpreview.Preview, error), queue int) *chatLinkPreviewer {
+	return &chatLinkPreviewer{fetch: fetch, jobs: make(chan chatLinkPreviewJob, queue), perSender: map[string]int{}}
+}
+
+// reserve takes one of sender's places, or reports that they have none left.
+func (p *chatLinkPreviewer) reserve(sender string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.perSender[sender] >= chatLinkPreviewPerSender {
+		return false
+	}
+	p.perSender[sender]++
+	return true
+}
+
+func (p *chatLinkPreviewer) release(sender string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.perSender[sender]--; p.perSender[sender] <= 0 {
+		delete(p.perSender, sender)
+	}
 }
 
 func (s *Server) startChatLinkPreviews() {
@@ -84,6 +115,7 @@ func (s *Server) startChatLinkPreviews() {
 		go func() {
 			for job := range s.linkPreviews.jobs {
 				s.runChatLinkPreview(job)
+				s.linkPreviews.release(job.senderID)
 				s.linkPreviews.pending.Done()
 			}
 		}()
@@ -97,17 +129,29 @@ func (s *Server) chatLinkPreviewCapabilities() map[string]any {
 	return fiber.Map{"version": 1}
 }
 
-// queueChatLinkPreview asks for a card for a message whose first address is url.
-func (s *Server) queueChatLinkPreview(conversationID, messageID, url string) {
+// queueChatLinkPreview asks for a card for senderID's message whose first address is url.
+// Whether the message should have one (chatLinkPreviewWanted) is checked by the worker.
+func (s *Server) queueChatLinkPreview(senderID, conversationID, messageID, url string) {
 	if s.linkPreviews == nil || url == "" {
+		return
+	}
+	if !s.linkPreviews.reserve(senderID) {
+		s.metrics.chatLinkPreviews.inc("dropped")
 		return
 	}
 	s.linkPreviews.pending.Add(1)
 	select {
-	case s.linkPreviews.jobs <- chatLinkPreviewJob{conversationID, messageID, url}:
+	case s.linkPreviews.jobs <- chatLinkPreviewJob{senderID, conversationID, messageID, url}:
 	default:
+		s.linkPreviews.release(senderID)
 		s.linkPreviews.pending.Done()
 		s.metrics.chatLinkPreviews.inc("dropped")
+	}
+}
+
+func (s *Server) queueChatLinkPreviews(jobs []chatLinkPreviewJob) {
+	for _, job := range jobs {
+		s.queueChatLinkPreview(job.senderID, job.conversationID, job.messageID, job.url)
 	}
 }
 
@@ -168,15 +212,16 @@ func (s *Server) runChatLinkPreview(job chatLinkPreviewJob) {
 		return
 	}
 	stored, err := s.storeChatLinkPreview(job, preview, imageKey)
-	if err != nil {
-		log.Printf("chat link preview: store: %v", err)
-	}
 	if !stored && imageKey != "" {
 		s.discardChatObject(imageKey)
 	}
-	if stored {
+	switch {
+	case err != nil:
+		log.Printf("chat link preview: store: %v", err)
+		s.metrics.chatLinkPreviews.inc("failed")
+	case stored:
 		s.metrics.chatLinkPreviews.inc("ok")
-	} else if err == nil {
+	default:
 		s.metrics.chatLinkPreviews.inc("stale")
 	}
 }
@@ -318,15 +363,21 @@ func chatQueueLinkPreviewPurgesTx(tx *database.Tx, where string, args ...any) er
 }
 
 // chatCopyLinkPreviewTx gives a copy (Saved messages, a forward) the original's card,
-// over the same stored picture, as chatCopyAttachmentsTx does for files.
-func chatCopyLinkPreviewTx(tx *database.Tx, fromMessageID, toMessageID, conversationID, now string) error {
+// over the same stored picture, as chatCopyAttachmentsTx does for files. It reports
+// whether the original has no card yet, removed or not: one may still be on its way, so
+// the copy needs its own fetch once it is committed.
+func chatCopyLinkPreviewTx(tx *database.Tx, fromMessageID, toMessageID, conversationID, now string) (bool, error) {
+	var rows int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM chat_link_previews WHERE message_id = ?`, fromMessageID).Scan(&rows); err != nil || rows == 0 {
+		return err == nil, err
+	}
 	_, err := tx.Exec(
 		`INSERT INTO chat_link_previews (message_id, conversation_id, url, title, description, site_name, image_key, image_content_type, image_width, image_height, created_at)
 		 SELECT ?, ?, url, title, description, site_name, image_key, image_content_type, image_width, image_height, ?
 		 FROM chat_link_previews WHERE message_id = ? AND removed_at IS NULL`,
 		toMessageID, conversationID, now, fromMessageID,
 	)
-	return err
+	return false, err
 }
 
 // withChatLinkPreviews adds cards to a page of messages in one query.
@@ -357,6 +408,7 @@ func withChatLinkPreviews(q chatQuerier, messages []ChatMessage) error {
 			return err
 		}
 		if imageKey.Valid {
+			image.Version = strings.TrimSuffix(path.Base(imageKey.String), path.Ext(imageKey.String))
 			preview.Image = &image
 		}
 		found[id] = &preview

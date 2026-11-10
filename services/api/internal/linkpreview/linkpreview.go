@@ -71,6 +71,9 @@ const (
 	maxImageBytes  = 5 << 20
 	maxImageSide   = 8192
 	maxImagePixels = 16_000_000
+	// decodeSlots is how many pictures are decoded at once, whatever the number of
+	// workers: a full-size decode holds up to 64 MB.
+	decodeSlots = 2
 	minImageSide   = 32
 	// fitSide is the longest side of the stored picture: enough for a card at twice its
 	// CSS size, small enough that every reader loads it quickly.
@@ -233,6 +236,8 @@ func (f *Fetcher) fetchImage(ctx context.Context, source *url.URL) (*Image, erro
 	return readImage(response.Body)
 }
 
+var decoding = make(chan struct{}, decodeSlots)
+
 // readImage decodes a picture within the limits and encodes it again at card size. The
 // new encoding is what keeps a malformed or hostile file from ever reaching a reader's
 // decoder, and it drops metadata and animation on the way.
@@ -257,6 +262,8 @@ func readImage(body io.Reader) (*Image, error) {
 	if w < minImageSide || h < minImageSide || w > maxImageSide || h > maxImageSide || w*h > maxImagePixels {
 		return nil, errors.New("linkpreview: image size out of range")
 	}
+	decoding <- struct{}{}
+	defer func() { <-decoding }()
 	decoded, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -419,6 +426,7 @@ var blockedPrefixes = func() []netip.Prefix {
 	var out []netip.Prefix
 	for _, prefix := range []string{
 		"0.0.0.0/8",       // "this network"
+		"::/96",           // IPv4-compatible IPv6, which embeds an IPv4 address
 		"100.64.0.0/10",   // carrier-grade NAT, and Tailscale
 		"192.0.0.0/24",    // IETF protocol assignments
 		"192.0.2.0/24",    // documentation

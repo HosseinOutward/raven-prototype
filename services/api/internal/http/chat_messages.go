@@ -362,9 +362,7 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 	event := sent.message
 	event.ReplyTo = nil
 	s.publishChatMessage("message.created", event, sent.message.Seq, sent.reply, sent.recipients, sent.committedAt)
-	if len(sent.message.Attachments) == 0 {
-		s.queueChatLinkPreview(conversationID, sent.message.ID, linkpreview.FirstLink(sent.message.Body))
-	}
+	s.queueChatLinkPreview(user.ID, conversationID, sent.message.ID, linkpreview.FirstLink(sent.message.Body))
 	s.metrics.chatSends.inc("ok")
 	s.metrics.sendDuration.observeSince(started)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": sent.message})
@@ -669,7 +667,7 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	event := message
 	event.ReplyTo = nil
 	s.publishChatMessage("message.updated", event, seq, reply, recipients, committedAt)
-	s.queueChatLinkPreview(conversationID, messageID, fetchLink)
+	s.queueChatLinkPreview(user.ID, conversationID, messageID, fetchLink)
 	return c.JSON(fiber.Map{"message": message})
 }
 

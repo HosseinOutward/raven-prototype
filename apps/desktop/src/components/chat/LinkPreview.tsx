@@ -37,9 +37,9 @@ export function isWidePicture(preview: ChatLinkPreview): boolean {
 
 function Picture({ conversationId, messageId, preview, wide }: { conversationId: string; messageId: string; preview: ChatLinkPreview; wide: boolean }) {
   const [ref, near] = useNearViewport<HTMLSpanElement>();
-  const key = linkPreviewKey(messageId, preview.url);
+  const key = linkPreviewKey(messageId, preview.url, preview.image?.version);
   const [wasCached] = useState(() => Boolean(mediaCache.peek(key)));
-  const { url, failed, gone } = useCachedUrl(key, () => getLinkPreviewImageUrl(conversationId, messageId, preview.url), near);
+  const { url, failed, gone } = useCachedUrl(key, () => getLinkPreviewImageUrl(conversationId, messageId, preview.url, preview.image?.version), near);
   const image = preview.image!;
   // A picture that won't load is left out rather than explained: the card still works.
   if (failed || gone) return null;
@@ -103,7 +103,8 @@ export function LinkPreviewCard({
           </span>
         ) : null}
         {wide ? picture : null}
-        {!hasText && !preview.image ? <span className="block truncate px-2.5 py-2 text-caption text-muted-foreground">{host}</span> : null}
+        {/* Without the page's words, the host is still shown: it is where the link goes. */}
+        {!hasText ? <span className={cn("block truncate px-2.5 py-2 text-caption text-muted-foreground", onRemove && !preview.image && "pe-8")}>{host}</span> : null}
       </a>
       {onRemove ? (
         <Tooltip label="Remove preview">

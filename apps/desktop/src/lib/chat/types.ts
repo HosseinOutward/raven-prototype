@@ -99,7 +99,8 @@ export interface ChatLinkPreview {
   description?: string;
   siteName?: string;
   /** The page's picture, fetched from the message's link-preview/image route. */
-  image?: { contentType: string; width: number; height: number };
+  /** `version` changes whenever the picture does; older servers leave it out. */
+  image?: { version?: string; contentType: string; width: number; height: number };
 }
 
 export interface ChatMessage {

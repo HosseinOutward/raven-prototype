@@ -16,14 +16,14 @@ export function getAttachmentUrl(conversationId: string, attachmentId: string, v
 }
 
 /**
- * The key of a link preview's picture. An edit can give a message a card for another
- * address, with another picture, so the address is part of it.
+ * The key of a link preview's picture. An edit can give a message a new card, with
+ * another picture, so the address and the picture's version are part of it.
  */
-export const linkPreviewKey = (messageId: string, url: string) => `link:${messageId}:${url}`;
+export const linkPreviewKey = (messageId: string, url: string, version = "") => `link:${messageId}:${url}:${version}`;
 
 /** An object URL for the picture of a message's link preview. */
-export function getLinkPreviewImageUrl(conversationId: string, messageId: string, url: string): Promise<string> {
-  return mediaCache.get(linkPreviewKey(messageId, url), () => chatApi.fetchLinkPreviewImage(conversationId, messageId));
+export function getLinkPreviewImageUrl(conversationId: string, messageId: string, url: string, version?: string): Promise<string> {
+  return mediaCache.get(linkPreviewKey(messageId, url, version), () => chatApi.fetchLinkPreviewImage(conversationId, messageId));
 }
 
 /** After one's own send: the bytes just uploaded, so the image doesn't load twice. */
