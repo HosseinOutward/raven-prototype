@@ -643,10 +643,19 @@ export function parseNestLiveUpdateData(data: string): NestLiveUpdate | null {
       share: parsed.share && typeof parsed.share === "object" ? (parsed.share as WorkshopShare) : undefined,
       reason: typeof parsed.reason === "string" && parsed.reason ? parsed.reason : undefined,
       at: typeof parsed.at === "string" && parsed.at ? parsed.at : undefined,
+      event: parseEventNotice(parsed.event),
     };
   } catch {
     return null;
   }
+}
+
+function parseEventNotice(value: unknown): EventNotice | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const notice = value as Record<string, unknown>;
+  const text = (key: string) => (typeof notice[key] === "string" ? (notice[key] as string) : "");
+  if (!text("id") || !text("title")) return undefined;
+  return { id: text("id"), treeId: text("treeId"), title: text("title"), space: text("space"), room: text("room"), host: text("host"), startsAt: text("startsAt") };
 }
 
 export class ApiClient {

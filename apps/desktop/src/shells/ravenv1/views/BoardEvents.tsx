@@ -314,7 +314,9 @@ function EventDialog({
           </Field>
         </div>
         <Field label="Invite">
-          <SegmentedChoice label="Invite" options={INVITE} selected={inviteAll ? "all" : "chosen"} disabled={saving} onSelect={(next) => setInviteAll(next === "all")} />
+          <div className="flex">
+            <SegmentedChoice label="Invite" options={INVITE} selected={inviteAll ? "all" : "chosen"} disabled={saving} onSelect={(next) => setInviteAll(next === "all")} />
+          </div>
           {!inviteAll ? (
             <div className="flex flex-wrap gap-1.5 pt-1" role="group" aria-label="Members to invite">
               {members.map((member) => {
@@ -369,16 +371,18 @@ function EventDialog({
           </div>
         </Field>
         <Field label="Repeats">
-          <SegmentedChoice
-            label="Repeats"
-            options={REPEATS}
-            selected={freq}
-            disabled={saving}
-            onSelect={(next) => {
-              setFreq(next);
-              if (next === "weekly" && days.length === 0 && Number.isFinite(startDay)) setDays([startDay]);
-            }}
-          />
+          <div className="flex">
+            <SegmentedChoice
+              label="Repeats"
+              options={REPEATS}
+              selected={freq}
+              disabled={saving}
+              onSelect={(next) => {
+                setFreq(next);
+                if (next === "weekly" && days.length === 0 && Number.isFinite(startDay)) setDays([startDay]);
+              }}
+            />
+          </div>
           {freq === "weekly" ? (
             <div className="flex flex-wrap gap-1.5 pt-1" role="group" aria-label="Days of the week">
               {WEEK.map((day) => {

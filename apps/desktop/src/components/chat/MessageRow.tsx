@@ -250,7 +250,7 @@ function EventInvitation({ system, onOpenSpace }: { system: ChatSystemPayload; o
         </p>
       ) : null}
       {onOpenSpace && system.treeId ? (
-        <Button size="sm" variant="secondary" className="mt-2" onClick={() => onOpenSpace(system.treeId!)}>
+        <Button size="sm" variant="outline" className="mt-2" onClick={() => onOpenSpace(system.treeId!)}>
           Open <bdi className="ms-1 min-w-0 truncate">{system.space}</bdi>
         </Button>
       ) : null}
