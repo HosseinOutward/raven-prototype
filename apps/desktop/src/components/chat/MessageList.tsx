@@ -106,6 +106,8 @@ export interface MessageListProps {
   onDeleteForEveryone: (message: ChatMessage) => void;
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
   onOpenPerson: (userId: string) => void;
+  /** Opens a space's lobby, from an event invitation. */
+  onOpenSpace?: (treeId: string) => void;
   /** Adds a message to Saved messages. Absent inside Saved messages. */
   onSave?: (message: ChatMessage) => void;
   /** Opens the chat a copied message came from, at the original. */
@@ -125,7 +127,7 @@ export interface MessageListProps {
  * length scrolls the same.
  */
 export const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, onSave, onOpenSource, onForward, onStartSelecting, selection, onToggleSelected, mentions },
+  { store, conversation, me, windowActive, intro, reactionLimits, onReply, onEdit, onRemoveForMe, onDeleteForEveryone, onOpenImage, onOpenPerson, onOpenSpace, onSave, onOpenSource, onForward, onStartSelecting, selection, onToggleSelected, mentions },
   ref,
 ) {
   const { summary, messages, pending } = conversation;
@@ -317,6 +319,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 onOpenReply={openReply}
                 onOpenImage={onOpenImage}
                 onOpenPerson={onOpenPerson}
+                onOpenSpace={onOpenSpace}
                 onSave={onSave}
                 onOpenSource={onOpenSource}
                 onForward={onForward}

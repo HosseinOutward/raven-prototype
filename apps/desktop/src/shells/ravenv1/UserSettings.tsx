@@ -189,6 +189,7 @@ export function UserSettingsView({
     case "notifications":
       return (
         <SettingsPage title="Notifications" description="What Raven tells you about while you are in another app or it is in the tray.">
+          <RavenMessagesSetting data={data} />
           <NotificationSettingsPanel />
         </SettingsPage>
       );
@@ -375,7 +376,7 @@ function SwatchRow<Id extends string>({
 }
 
 /** Three or so short options on one track. */
-function SegmentedChoice<Id extends string>({
+export function SegmentedChoice<Id extends string>({
   label,
   options,
   selected,
@@ -567,6 +568,23 @@ function SoundCueVolume({ value, disabled, onCommit }: { value: number; disabled
       />
       <span className="w-10 text-right text-small tabular-nums text-muted-foreground">{percent}</span>
     </div>
+  );
+}
+
+/** The one switch for everything Raven itself writes to you, the server admin's notes included. */
+function RavenMessagesSetting({ data }: { data: RavenShellData }) {
+  const [on, setOn] = useAppliedPreference(data.preferences.ravenMessages !== false, (value) => data.updatePreferences({ ravenMessages: value }));
+  return (
+    <SettingsSection title="Messages">
+      <SettingsRows>
+        <SettingsToggleRow
+          label="Messages from Raven"
+          description={"Raven uses this to send you event invitations and their updates from your spaces, and notes from the person who runs this server, such as planned maintenance. Turn it off and you won't get any of these, including the admin's. Event notifications have their own switch under Notifications."}
+          checked={on}
+          onChange={setOn}
+        />
+      </SettingsRows>
+    </SettingsSection>
   );
 }
 

@@ -296,8 +296,8 @@ func (s *Server) deleteAccountCore(user User, erase bool) error {
 			}
 			return err
 		}
-		if kind == chatKindSaved && creatorID == user.ID {
-			// Nobody else can read their Saved messages, so it goes with the account.
+		if (kind == chatKindSaved || kind == chatKindRaven) && creatorID == user.ID {
+			// Nobody else can read their Saved messages or Raven messages, so they go with the account.
 			if err := chatDeleteConversationTx(tx, conversationID); err != nil {
 				return err
 			}

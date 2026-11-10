@@ -36,6 +36,9 @@ const (
 	treeActionModerateVoice treeAction = "voice.moderate"
 	// treeActionRenameMember sets another person's name in the space. Aimed at a person too.
 	treeActionRenameMember treeAction = "members.rename"
+	// treeActionManageBoard covers the space board: house rules, and later pinned notes
+	// and events.
+	treeActionManageBoard treeAction = "board.manage"
 	treeActionEditSettings     treeAction = "settings.edit"
 	treeActionAssignRoles      treeAction = "roles.assign"
 	treeActionTransfer         treeAction = "ownership.transfer"
@@ -81,6 +84,7 @@ var treeActionMinimumRole = map[treeAction]string{
 	treeActionModerateMessages: treeRoleModerator,
 	treeActionModerateVoice:    treeRoleModerator,
 	treeActionRenameMember:     treeRoleModerator,
+	treeActionManageBoard:      treeRoleModerator,
 	treeActionEditSettings:     treeRoleOwner,
 	treeActionAssignRoles:      treeRoleOwner,
 	treeActionTransfer:         treeRoleOwner,
@@ -96,6 +100,7 @@ var treeViewerActions = []treeAction{
 	treeActionModerateMessages,
 	treeActionModerateVoice,
 	treeActionRenameMember,
+	treeActionManageBoard,
 	treeActionEditSettings,
 	treeActionAssignRoles,
 	treeActionTransfer,
@@ -325,6 +330,9 @@ func (s *Server) requireNestEntry(user User, nest Nest) error {
 	}
 	if level < nestAccessMember || !joined {
 		return fiber.NewError(fiber.StatusForbidden, "admission is required before LiveKit access")
+	}
+	if err := s.requireDoor(user.ID, nest); err != nil {
+		return err
 	}
 	return s.requireNotVotedOut(nest.ID, user.ID)
 }

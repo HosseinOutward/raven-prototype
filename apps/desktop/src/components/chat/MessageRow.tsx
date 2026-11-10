@@ -1,5 +1,5 @@
 import { memo, useState, type ReactNode } from "react";
-import { AlertCircle, Bookmark, Check, CheckCheck, CheckCircle2, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, Forward, MoreHorizontal, Pencil, SmilePlus, Trash2, Users } from "lucide-react";
+import { AlertCircle, Bookmark, CalendarClock, Check, CheckCheck, CheckCircle2, Clock, ChevronDown, Copy, CornerUpLeft, Download, EyeOff, Forward, MoreHorizontal, Pencil, SmilePlus, Trash2, Users } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -13,12 +13,16 @@ import { failureText } from "@/lib/chat/errors";
 import { saveAttachment } from "@/lib/chat/imageActions";
 import { excerptOf, summarize } from "@/lib/chat/reducer";
 import { emojiOnlyCount } from "@/lib/chat/format";
-import { systemLine } from "@/lib/chat/text";
+import { eventCancelledLine, eventInviteLine, systemLine, UNKNOWN_RAVEN_MESSAGE } from "@/lib/chat/text";
+import { repeatText } from "@/lib/events";
+import { boardTime } from "@/lib/notes";
+import { Button } from "@/components/ui/button";
 import { clockTime, fullTime, listTime } from "@/lib/chat/time";
-import type { ChatAttachment, ChatMessage, ChatOrigin, ChatReplyRef, PendingMessage } from "@/lib/chat/types";
+import type { ChatAttachment, ChatMessage, ChatOrigin, ChatReplyRef, ChatSystemPayload, PendingMessage } from "@/lib/chat/types";
 import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
+import { RavenAvatar, SystemBadge } from "./ConversationRow";
 import { EmojiPicker } from "./EmojiPicker";
 import { Reactions } from "./Reactions";
 import { MessageText, type MentionContext } from "./MessageText";
@@ -139,6 +143,8 @@ export interface MessageRowProps {
   onOpenImage: (message: ChatMessage, attachment: ChatAttachment) => void;
   /** Opens the sender's profile page. Without it the avatar and name are plain. */
   onOpenPerson?: (userId: string) => void;
+  /** Opens a space's lobby, from an event invitation. Without it the card has no button. */
+  onOpenSpace?: (treeId: string) => void;
   /** Adds the message to Saved messages. Without it the menu does not offer that. */
   onSave?: (message: ChatMessage) => void;
   /** Opens the chat a copy came from, at the original. */
@@ -192,6 +198,66 @@ function MessageMeta({ message, mine, deleted, status, overImage, alignStart, cl
   );
 }
 
+/**
+ * A message from Raven or the server admin, in the Raven contact. It comes from Raven, not
+ * from the person it is addressed to, whatever sender the server records. The admin's words
+ * are plain text: they are shown as written, never parsed for mentions or formatting.
+ */
+function RavenMessageRow({ message, dayHeading, newDivider, onOpenSpace }: { message: ChatMessage; dayHeading?: string; newDivider?: boolean; onOpenSpace?: (treeId: string) => void }) {
+  const system = message.system;
+  const admin = system?.type === "admin";
+  return (
+    <div>
+      <Decorations dayHeading={dayHeading} newDivider={newDivider} />
+      <div className="flex items-start gap-2 pt-2.5">
+        <RavenAvatar className="h-7 w-7" />
+        <div className="min-w-0 max-w-[min(100%,34rem)] rounded-card bg-secondary px-3 py-1.5">
+          <div className="flex items-center gap-1.5 text-caption">
+            <span className="font-medium text-muted-foreground">Raven</span>
+            <SystemBadge />
+            {system?.type === "event" && system.updated && !system.cancelled ? <span className="shrink-0 rounded-full bg-accent px-1.5 text-caption text-foreground">Updated</span> : null}
+          </div>
+          {system?.type === "event" ? (
+            <EventInvitation system={system} onOpenSpace={onOpenSpace} />
+          ) : admin ? (
+            <>
+              <p className="pt-0.5 text-caption text-subtle">From the server admin</p>
+              <p dir="auto" className="whitespace-pre-wrap break-words text-body text-foreground">{message.system?.text ?? ""}</p>
+            </>
+          ) : (
+            <p className="text-body text-muted-foreground">{UNKNOWN_RAVEN_MESSAGE}</p>
+          )}
+          <time className="mt-0.5 block text-caption tabular-nums text-subtle" dateTime={message.createdAt} title={fullTime(message.createdAt)}>{clockTime(message.createdAt)}</time>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Raven's message about an event: who invited you to what, when and where. Times are the viewer's own. */
+function EventInvitation({ system, onOpenSpace }: { system: ChatSystemPayload; onOpenSpace?: (treeId: string) => void }) {
+  if (system.cancelled) return <p dir="auto" className="pt-0.5 text-body text-foreground">{eventCancelledLine(system)}</p>;
+  const repeats = repeatText(system.rrule ?? null);
+  const when = [system.startsAt ? boardTime(system.startsAt) : "", repeats].filter(Boolean).join(" · ");
+  return (
+    <div className="pt-0.5">
+      <p dir="auto" className="text-body text-foreground">{eventInviteLine(system)}</p>
+      {when ? <p className="mt-1 flex items-center gap-1.5 text-small text-muted-foreground"><CalendarClock className="h-3.5 w-3.5 shrink-0 text-subtle" aria-hidden />{when}</p> : null}
+      {system.target?.name ? (
+        <p className="mt-0.5 flex items-center gap-1.5 text-small text-muted-foreground">
+          <NestGlyph kind={system.target.kind === "text" ? "text" : "voice"} className="h-3.5 w-3.5 shrink-0 text-subtle" />
+          <bdi className="min-w-0 truncate">{system.target.name}</bdi>
+        </p>
+      ) : null}
+      {onOpenSpace && system.treeId ? (
+        <Button size="sm" variant="outline" className="mt-2" onClick={() => onOpenSpace(system.treeId!)}>
+          Open <bdi className="ms-1 min-w-0 truncate">{system.space}</bdi>
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 /** One message in a conversation. */
 export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
   const { message, mine, showSender, continuation, status, parent } = props;
@@ -204,6 +270,9 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
     onReply: () => props.onReply(message),
   });
 
+  if (message.kind === "system" && message.system?.type) {
+    return <RavenMessageRow message={message} dayHeading={props.dayHeading} newDivider={props.newDivider} onOpenSpace={props.onOpenSpace} />;
+  }
   if (message.kind === "system") {
     return (
       <div>

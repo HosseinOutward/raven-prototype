@@ -186,7 +186,7 @@ func (s *Server) chatOriginSourceFor(q chatQuerier, conversationID, viewerID str
 	access, err := s.chatAccessFor(q, conversationID, viewerID)
 	if err == nil {
 		// Saved messages is nobody's place to go: a note forwarded from it has no source.
-		if access.Kind == chatKindSaved {
+		if access.Kind == chatKindSaved || access.Kind == chatKindRaven {
 			return nil, nil
 		}
 		source := &ChatOriginSource{ConversationID: conversationID, Kind: access.Kind, Name: access.Name, TreeID: access.TreeID}
