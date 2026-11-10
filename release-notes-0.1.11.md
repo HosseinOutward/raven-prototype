@@ -8,6 +8,7 @@
 - **House rules and pinned notes.** Owners and moderators can give a space a short list of house rules, each with an icon, and pin a few notes to the top of the lobby. A note can stay up or end at a time its author chooses. Notes and event descriptions can mention people and rooms from the same space.
 - **Room doors.** A room can now ask people to knock first, and anyone already inside can let them in. A room can also be quiet, so everyone joins muted. A small icon on the room shows which rule applies before you enter.
 - **Messages from Raven.** A new Raven contact in your conversations carries event invitations and their updates, and notes from the person who runs your server, such as planned maintenance. You can't reply to it, and you can turn it off in Settings › Notifications. Server admins can send these messages to one person, several people or everyone from the admin dashboard.
+- **Link previews in chat.** A message with a web address now shows a card for it: the page's title, description, site name and picture. Your server reads the page, not the people reading the message, so a link never tells a site who opened it, and the card always shows the real address it goes to. You can remove the card from your own message with the × on it. Server operators turn this on with `RAVEN_LINK_PREVIEWS=on`; it is off by default. This feature was contributed by **Sepehr Rajabi**.
 - **Launch at Startup.** Raven can launch automatically when you sign in to your computer. It starts in the tray (the menu bar on macOS) with its window closed. This is off by default; turn it on in the tray settings. Available on Windows and macOS.
 
 ## Changed
@@ -19,7 +20,7 @@
 
 ## Acknowledgements
 
-Sepehr Rajabi ([@SepehrRajabi](https://github.com/SepehrRajabi)) is Raven's first contributor. His pull request is the first code from outside the project to ship in Raven: it brings Raven to macOS and fixes live display name updates in calls. We are grateful for his work and for opening Raven to outside contributions.
+Sepehr Rajabi ([@SepehrRajabi](https://github.com/SepehrRajabi)) is Raven's first contributor. His first pull request is the first code from outside the project to ship in Raven: it brings Raven to macOS and fixes live display name updates in calls. His second adds link previews to chat. We are grateful for his work and for opening Raven to outside contributions.
 
 Ali Esmaili Seraji ([@hu13er](https://github.com/hu13er)) proposed port sharing, which shipped in Raven 0.1.9. That proposal grew into an entirely new part of Raven, the Workshop. Ali has also provided invaluable guidance on Raven's architecture and software design, particularly for its most complex features. His contribution was not acknowledged in the 0.1.9 release notes, and we are pleased to recognise it here.
 
