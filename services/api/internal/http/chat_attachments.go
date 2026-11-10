@@ -9,9 +9,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"log"
 	stdhttp "net/http"
-	"os"
 	"path"
 	"strings"
 	"unicode/utf8"
@@ -417,19 +415,15 @@ func (s *Server) uploadChatAttachment(c *fiber.Ctx) error {
 	if err := validateChatVariant(a, variant, contentType, body); err != nil {
 		return err
 	}
-	prefix := strings.Trim(strings.TrimSpace(os.Getenv("RAVEN_CHAT_MEDIA_PREFIX")), "/")
-	if prefix == "" {
-		prefix = "chat-attachments"
-	}
 	extension := map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}[contentType]
-	objectKey := path.Join(prefix, conversation, id, variant+"-"+auth.NewID()+extension)
+	objectKey := path.Join(chatMediaPrefix(), conversation, id, variant+"-"+auth.NewID()+extension)
 	if err := s.profileMedia.Put(c.UserContext(), objectKey, body, contentType); err != nil {
 		return fiber.NewError(503, "The image couldn't be stored. Try again.")
 	}
 	recorded := false
 	defer func() {
 		if !recorded {
-			s.cleanupChatUpload(c, objectKey)
+			s.discardChatObject(objectKey)
 		}
 	}()
 
@@ -469,15 +463,6 @@ func (s *Server) uploadChatAttachment(c *fiber.Ctx) error {
 	return c.JSON(response)
 }
 
-func (s *Server) cleanupChatUpload(c *fiber.Ctx, key string) {
-	if err := s.profileMedia.Delete(c.UserContext(), key); err != nil {
-		// Preserve cleanup even when both the database update and object deletion fail.
-		_, queueErr := s.db.Exec(`INSERT INTO chat_object_purges (object_key, queued_at) VALUES (?, ?) ON CONFLICT (object_key) DO NOTHING`, key, database.Now())
-		if queueErr != nil {
-			log.Printf("chat upload cleanup: key=%s could not queue purge: %v", key, queueErr)
-		}
-	}
-}
 func (s *Server) fetchChatAttachment(c *fiber.Ctx) error {
 	conversation, id, variant, user := c.Params("id"), c.Params("attachmentId"), c.Params("variant"), currentUser(c).ID
 	access, err := s.chatAccessFor(s.db, conversation, user)
@@ -514,6 +499,12 @@ func (s *Server) fetchChatAttachment(c *fiber.Ctx) error {
 			return errChatMessageGone
 		}
 	}
+	return s.sendChatObject(c, key, contentType)
+}
+
+// sendChatObject answers with a stored chat object. Its key never changes once written,
+// so it is its ETag and it may be cached for good, privately. Authorization comes first.
+func (s *Server) sendChatObject(c *fiber.Ctx, key, contentType string) error {
 	c.Set(fiber.HeaderCacheControl, "private, max-age=31536000, immutable")
 	c.Set(fiber.HeaderETag, avatarETag(key))
 	c.Set("X-Content-Type-Options", "nosniff")

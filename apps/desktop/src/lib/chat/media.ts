@@ -15,6 +15,17 @@ export function getAttachmentUrl(conversationId: string, attachmentId: string, v
   return mediaCache.get(serverKey(attachmentId, variant), () => chatApi.fetchVariant(conversationId, attachmentId, variant));
 }
 
+/**
+ * The key of a link preview's picture. An edit can give a message a card for another
+ * address, with another picture, so the address is part of it.
+ */
+export const linkPreviewKey = (messageId: string, url: string) => `link:${messageId}:${url}`;
+
+/** An object URL for the picture of a message's link preview. */
+export function getLinkPreviewImageUrl(conversationId: string, messageId: string, url: string): Promise<string> {
+  return mediaCache.get(linkPreviewKey(messageId, url), () => chatApi.fetchLinkPreviewImage(conversationId, messageId));
+}
+
 /** After one's own send: the bytes just uploaded, so the image doesn't load twice. */
 export function seedAttachment(attachmentId: string, variant: string, blob: Blob): void {
   mediaCache.seed(serverKey(attachmentId, variant), blob);

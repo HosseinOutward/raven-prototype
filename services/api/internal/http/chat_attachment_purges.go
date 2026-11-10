@@ -81,10 +81,11 @@ func (s *Server) drainChatObjectPurges() error {
 	}
 	for _, key := range keys {
 		// A copy (Saved messages, a forward) shares the original's objects. While any
-		// variant row still names this one, it stays stored; the last row's delete queues
-		// it again.
+		// variant row or link preview still names this one, it stays stored; the last
+		// row's delete queues it again.
 		var inUse int
-		err := s.db.QueryRow(`SELECT COUNT(*) FROM chat_attachment_variants WHERE object_key = ?`, key).Scan(&inUse)
+		err := s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM chat_attachment_variants WHERE object_key = ?)
+ + (SELECT COUNT(*) FROM chat_link_previews WHERE image_key = ?)`, key, key).Scan(&inUse)
 		if err != nil {
 			return err
 		}

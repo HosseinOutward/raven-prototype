@@ -424,6 +424,9 @@ func (s *Server) chatCopyMessagesTx(tx *database.Tx, caller User, sourceIDs []st
 		if err := chatCopyAttachmentsTx(tx, source.id, copyID, targetID, caller.ID, now); err != nil {
 			return result, err
 		}
+		if err := chatCopyLinkPreviewTx(tx, source.id, copyID, targetID, now); err != nil {
+			return result, err
+		}
 		result.Copied = append(result.Copied, copyID)
 	}
 	if len(result.Copied) == 0 {

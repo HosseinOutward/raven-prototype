@@ -55,9 +55,37 @@ Defaults chosen during the build. Each is one constant or one check to change:
   is how people are tricked.
 
 Not in the desktop client yet: attachments (the server supports stored images).
-Not in this version: mentions, search, forwarding, pinning, link
-previews, end-to-end
+Not in this version: mentions, search, forwarding, pinning, end-to-end
 encryption, auto-delete timers, per-nest permissions, and "last seen".
+
+### Link previews
+
+A message with a web address can show a card for it: the page's title, description, site
+name and picture. Decided with Sepehr on 2026-11-10: **the server fetches**, not the
+people reading, so a link never tells a site who read it, and every reader sees the same
+card. It is off unless the operator sets `RAVEN_LINK_PREVIEWS=on`, because the server then
+opens addresses its users choose.
+
+- Only the first address written out in full (found as the client finds links: not in
+  code), and not on a message with attachments.
+- The send is answered first. Four workers fetch in the background (queue of 256; a full
+  queue means no card). The card arrives as a change to the message, like a reaction.
+- An edit that changes the first address replaces the card; one that keeps it keeps it.
+  The sender can remove the card for everyone, also before it arrives; it then stays
+  away, even after an edit that keeps the address.
+- Delete for everyone, and deleting a group or tree, remove the card and queue its
+  picture. Saved and forwarded copies share the original's picture.
+- The fetcher (`internal/linkpreview`) connects only to public addresses on ports 80 and
+  443. The check runs on the address actually dialled, so DNS answers and redirects (at
+  most 5) that point at the server's own network are refused. It never uses a proxy from
+  the environment. A page is read up to 1 MB, only its head; a picture up to 5 MB,
+  8,192 px a side and 16 megapixels. The picture is decoded and encoded again at most
+  800 px (JPEG, or PNG with transparency), so readers never decode the site's file.
+  Words lose control and direction characters and are cut to 200 (title), 300
+  (description) and 80 (site name) characters. The card names the real host beside the
+  site's own name.
+- Addresses are message content: they are never logged. `raven_chat_link_previews_total`
+  counts outcomes.
 
 ## Architecture
 
@@ -226,6 +254,7 @@ The SQL runs on PostgreSQL (production) and SQLite (local use and the default te
 | `chat_attachments` | Ordered attachment descriptions, uploader and retry id, conversation, optional message, open `kind`/`source`, dimensions, placeholder and metadata. `message_id` deliberately has no foreign key so bulk message deletes never depend on order. |
 | `chat_attachment_variants` | Named variants declared at create time; an immutable object key and upload time are filled by PUT. All declared variants must have keys before send; a future peer source with no variants is ready immediately. |
 | `chat_object_purges` | Durable object keys queued inside the deletion transaction, with retry attempts. |
+| `chat_link_previews` | One card per message: address, title, description, site name, picture key, type and size. Migration `2026111001_chat_link_previews`. `removed_at` marks a card its sender removed; such a row keeps only the address. |
 | `chat_reactions` | Emoji, message, conversation, person and creation time; unique on `(message_id, user_id, emoji)`. Migration `2026103102_chat_reactions` runs on SQLite and PostgreSQL. Delete for everyone and group/tree deletion remove the rows; hiding and clearing retain them. |
 | `chat_message_hides` | "Remove for me": person, message. |
 | `chat_user_settings` | `read_dm`, `read_group`, `read_private_space`, `read_public_space` (the four read-status switches; `share_read_status` is kept in step with `read_dm` for older clients). `chat_members.shared_read_at` is when `shared_read_seq` last moved. |

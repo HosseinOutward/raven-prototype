@@ -9,6 +9,7 @@ import (
 
 	"raven/services/api/internal/auth"
 	"raven/services/api/internal/database"
+	"raven/services/api/internal/linkpreview"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -110,6 +111,9 @@ func (s *Server) queryChatMessages(q chatQuerier, viewerID string, floor int64, 
 	if err := withChatReactions(q, messages); err != nil {
 		return nil, err
 	}
+	if err := withChatLinkPreviews(q, messages); err != nil {
+		return nil, err
+	}
 	if err := s.withChatOrigins(q, viewerID, messages); err != nil {
 		return nil, err
 	}
@@ -131,6 +135,9 @@ func (s *Server) loadChatMessage(q chatQuerier, conversationID, messageID, viewe
 		return ChatMessage{}, err
 	}
 	if err = withChatReactions(q, messages); err != nil {
+		return ChatMessage{}, err
+	}
+	if err = withChatLinkPreviews(q, messages); err != nil {
 		return ChatMessage{}, err
 	}
 	err = s.withChatOrigins(q, viewerID, messages)
@@ -355,6 +362,9 @@ func (s *Server) sendChatMessage(c *fiber.Ctx) error {
 	event := sent.message
 	event.ReplyTo = nil
 	s.publishChatMessage("message.created", event, sent.message.Seq, sent.reply, sent.recipients, sent.committedAt)
+	if len(sent.message.Attachments) == 0 {
+		s.queueChatLinkPreview(conversationID, sent.message.ID, linkpreview.FirstLink(sent.message.Body))
+	}
 	s.metrics.chatSends.inc("ok")
 	s.metrics.sendDuration.observeSince(started)
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": sent.message})
@@ -635,6 +645,10 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	); err != nil {
 		return err
 	}
+	fetchLink, err := chatLinkPreviewAfterEditTx(tx, messageID, body)
+	if err != nil {
+		return err
+	}
 	reply, err := chatReplyTargetFor(tx, conversationID, replyToID.String)
 	if err != nil {
 		return err
@@ -655,6 +669,7 @@ func (s *Server) editChatMessage(c *fiber.Ctx) error {
 	event := message
 	event.ReplyTo = nil
 	s.publishChatMessage("message.updated", event, seq, reply, recipients, committedAt)
+	s.queueChatLinkPreview(conversationID, messageID, fetchLink)
 	return c.JSON(fiber.Map{"message": message})
 }
 
@@ -774,6 +789,9 @@ func (s *Server) chatEraseMessageTx(tx *database.Tx, access chatAccess, messageI
 		return nil, err
 	}
 	if err := chatQueuePurgesTx(tx, `message_id = ?`, messageID); err != nil {
+		return nil, err
+	}
+	if err := chatQueueLinkPreviewPurgesTx(tx, `message_id = ?`, messageID); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(

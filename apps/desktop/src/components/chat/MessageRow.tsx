@@ -19,6 +19,7 @@ import type { ChatAttachment, ChatMessage, ChatOrigin, ChatReplyRef, PendingMess
 import { NestGlyph } from "@/shells/ravenv1/atoms";
 import { cn } from "@/lib/utils";
 import { MessageAttachments, PendingAttachments } from "./Attachments";
+import { LinkPreviewCard } from "./LinkPreview";
 import { EmojiPicker } from "./EmojiPicker";
 import { Reactions } from "./Reactions";
 import { MessageText, type MentionContext } from "./MessageText";
@@ -132,6 +133,8 @@ export interface MessageRowProps {
   highlighted?: boolean;
   onReply: (message: ChatMessage) => void;
   onEdit: (message: ChatMessage) => void;
+  /** Takes the link preview off this message for everyone. Set on your own messages. */
+  onRemoveLinkPreview?: () => Promise<void>;
   onRemoveForMe: (message: ChatMessage) => void;
   onDeleteForEveryone: (message: ChatMessage) => void;
   onOpenReply: (seq: number) => void;
@@ -236,6 +239,10 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
       },
       () => toast({ title: "Couldn’t save the image", description: "Try again in a moment.", tone: "error" }),
     );
+  };
+
+  const removeLinkPreview = () => {
+    void props.onRemoveLinkPreview?.().catch((failure: unknown) => toast({ title: failureText(failure, "Couldn’t remove the preview."), tone: "error" }));
   };
 
   const copy = () => {
@@ -466,6 +473,14 @@ export const MessageRow = memo(function MessageRow(props: MessageRowProps) {
               <p className="text-body italic text-subtle">Message deleted</p>
             ) : hasText ? (
               <MessageText body={message.body} mentions={props.mentions} />
+            ) : null}
+            {!deleted && message.linkPreview ? (
+              <LinkPreviewCard
+                conversationId={message.conversationId}
+                messageId={message.id}
+                preview={message.linkPreview}
+                onRemove={props.onRemoveLinkPreview ? removeLinkPreview : undefined}
+              />
             ) : null}
             {hasChips ? (
               // Reactions share the last line with the time, as in a printed note's footer.
