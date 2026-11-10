@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, ImagePlay, Plus, Search, Sticker } from "lucide-react";
+import { Tooltip } from "@/components/ui/tooltip";
+import { SCOPE_ICONS, SECTION_ICONS } from "./icons";
 import { Input } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
 import { neighbour } from "@/lib/gridNavigation";
@@ -184,7 +186,13 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
   );
   const section = (entry: PickerSection) => (
     <section key={entry.id} aria-label={entry.title}>
-      <h3 className="px-0.5 pb-1 pt-2 text-caption font-medium text-subtle">{entry.title}</h3>
+      <h3 className="flex items-center gap-1.5 px-0.5 pb-1 pt-2 text-caption font-medium text-subtle">
+        {(() => {
+          const Icon = SECTION_ICONS[entry.id];
+          return Icon ? <Icon className="h-3.5 w-3.5" aria-hidden /> : null;
+        })()}
+        {entry.title}
+      </h3>
       {tiles(entry.items)}
     </section>
   );
@@ -248,6 +256,7 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
                     className="flex h-8 w-full items-center gap-1 rounded-control px-0.5 text-caption font-medium text-subtle transition-colors hover:text-foreground"
                   >
                     {expanded ? <ChevronDown className="h-3.5 w-3.5" aria-hidden /> : <ChevronRight className="h-3.5 w-3.5" aria-hidden />}
+                    <Folder className="h-3.5 w-3.5 shrink-0" aria-hidden />
                     <span className="truncate">{collection.name}</span>
                   </button>
                   {!expanded ? null : items === "loading" || items === undefined ? (
@@ -289,8 +298,8 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
             rememberTab(next);
           }}
           tabs={[
-            { value: "gif", label: "GIFs", content: null },
-            { value: "sticker", label: "Stickers", content: null },
+            { value: "gif", label: <><ImagePlay className="h-4 w-4" aria-hidden />GIFs</>, content: null },
+            { value: "sticker", label: <><Sticker className="h-4 w-4" aria-hidden />Stickers</>, content: null },
           ]}
         />
         <div className="relative">
@@ -318,20 +327,25 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
           />
         </div>
         <div className="flex gap-1" role="group" aria-label="Where to look">
-          {PICKER_SCOPES.filter((entry) => inSpace || entry.id !== "tree").map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              aria-pressed={scope === entry.id}
-              onClick={() => setScope(entry.id)}
-              className={cn(
-                "h-7 rounded-chip px-2.5 text-caption font-medium transition-colors",
-                scope === entry.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-              )}
-            >
-              {entry.label}
-            </button>
-          ))}
+          {PICKER_SCOPES.filter((entry) => inSpace || entry.id !== "tree").map((entry) => {
+            const Icon = SCOPE_ICONS[entry.id];
+            return (
+              <Tooltip key={entry.id} label={entry.label}>
+                <button
+                  type="button"
+                  aria-label={entry.label}
+                  aria-pressed={scope === entry.id}
+                  onClick={() => setScope(entry.id)}
+                  className={cn(
+                    "flex h-7 w-8 items-center justify-center rounded-chip transition-colors",
+                    scope === entry.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4" aria-hidden />
+                </button>
+              </Tooltip>
+            );
+          })}
         </div>
       </div>
       <div ref={grid} className="mt-1 min-h-0 flex-1 overflow-y-auto px-3 pb-3">
@@ -345,7 +359,7 @@ function PickerBody({ conversationId, userId, inSpace, replyToMessageId, onPick,
             className="flex h-9 w-full items-center justify-center gap-1.5 rounded-control border border-dashed text-small text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
           >
             <Plus className="h-4 w-4" aria-hidden />
-            Add…
+            Add
           </button>
         </div>
       </div>

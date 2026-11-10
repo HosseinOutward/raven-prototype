@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import { FolderInput, Globe, Lock, PackageOpen, Plus, Search, Tag, Trash2, X } from "lucide-react";
+import { Ellipsis, FolderInput, Globe, ImagePlay, Inbox, LayoutGrid, Lock, PackageOpen, Plus, Search, Sticker, Tag, Trash2, User, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -278,18 +278,18 @@ function ManagerBody({ owner, capabilities, serverSearch, api }: { owner: Librar
           value={kind}
           onValueChange={(value) => setKind(value === "gif" ? "gif" : "sticker")}
           tabs={[
-            { value: "sticker", label: "Stickers", content: null },
-            { value: "gif", label: "GIFs", content: null },
+            { value: "sticker", label: <><Sticker className="h-4 w-4" aria-hidden />Stickers</>, content: null },
+            { value: "gif", label: <><ImagePlay className="h-4 w-4" aria-hidden />GIFs</>, content: null },
           ]}
         />
         <div className="flex gap-2">
           <Button type="button" variant="secondary" onClick={() => void importPack()}>
             <PackageOpen className="h-4 w-4" />
-            Import pack…
+            Import pack
           </Button>
           <Button type="button" onClick={() => files.current?.click()}>
             <Plus className="h-4 w-4" />
-            Add…
+            Add
           </Button>
         </div>
       </div>
@@ -301,15 +301,15 @@ function ManagerBody({ owner, capabilities, serverSearch, api }: { owner: Librar
         </div>
         {personal && serverSearch ? (
           <div className="flex gap-1" role="group" aria-label="Where to look">
-            <button type="button" aria-pressed={!server} onClick={() => setServer(false)} className={chip(!server)}>Mine</button>
-            <button type="button" aria-pressed={server} onClick={() => setServer(true)} className={chip(server)}>Server</button>
+            <button type="button" aria-pressed={!server} onClick={() => setServer(false)} className={cn(chip(!server), "flex items-center gap-1.5")}><User className="h-3.5 w-3.5" aria-hidden />Mine</button>
+            <button type="button" aria-pressed={server} onClick={() => setServer(true)} className={cn(chip(server), "flex items-center gap-1.5")}><Globe className="h-3.5 w-3.5" aria-hidden />Server</button>
           </div>
         ) : null}
       </div>
 
       {!server ? (
         <div className="flex flex-wrap gap-1" role="group" aria-label="Collections">
-          <button type="button" aria-pressed={filter.kind === "all"} onClick={() => setFilter({ kind: "all" })} className={chip(filter.kind === "all")}>All</button>
+          <button type="button" aria-pressed={filter.kind === "all"} onClick={() => setFilter({ kind: "all" })} className={cn(chip(filter.kind === "all"), "flex items-center gap-1.5")}><LayoutGrid className="h-3.5 w-3.5" aria-hidden />All</button>
           {collections.map((collection, index) => {
             const active = filter.kind === "collection" && filter.id === collection.id;
             return (
@@ -321,7 +321,7 @@ function ManagerBody({ owner, capabilities, serverSearch, api }: { owner: Librar
                   {active ? (
                     <DropdownMenuTrigger asChild>
                       <button type="button" aria-label={`Manage ${collection.name}`} className="-ml-1 flex h-8 w-6 items-center justify-center rounded-chip text-subtle hover:text-foreground">
-                        <span aria-hidden>⋯</span>
+                        <Ellipsis className="h-4 w-4" aria-hidden />
                       </button>
                     </DropdownMenuTrigger>
                   ) : null}
@@ -336,7 +336,7 @@ function ManagerBody({ owner, capabilities, serverSearch, api }: { owner: Librar
               </DropdownMenu>
             );
           })}
-          <button type="button" aria-pressed={filter.kind === "untagged"} onClick={() => setFilter({ kind: "untagged" })} className={chip(filter.kind === "untagged")}>Untagged</button>
+          <button type="button" aria-pressed={filter.kind === "untagged"} onClick={() => setFilter({ kind: "untagged" })} className={cn(chip(filter.kind === "untagged"), "flex items-center gap-1.5")}><Inbox className="h-3.5 w-3.5" aria-hidden />Untagged</button>
           <button type="button" onClick={() => setNaming({ collection: null, name: "" })} className={cn(chip(false), "flex items-center gap-1")}>
             <Plus className="h-3.5 w-3.5" aria-hidden />
             New collection
