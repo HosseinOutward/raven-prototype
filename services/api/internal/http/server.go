@@ -290,7 +290,7 @@ func (s *Server) routes() {
 		AllowHeaders:  "Origin, Content-Type, Accept, X-Session-ID, X-Raven-OS, X-Raven-Device, X-Raven-Client-Version, X-Raven-Capabilities, X-Request-ID, X-Idempotency-Key",
 		ExposeHeaders: "X-Session-ID, X-Request-ID, Retry-After",
 		// PUT carries the bytes of a chat attachment's variant.
-		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+		AllowMethods: "GET,POST,PUT,PATCH,DELETE,OPTIONS",
 	}))
 	s.app.Get("/healthz", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{

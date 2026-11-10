@@ -12,6 +12,7 @@ import (
 	"image/color/palette"
 	"image/gif"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -599,5 +600,22 @@ func TestLibraryConvertsStaticSticker(t *testing.T) {
 	}
 	if _, err := s.libraryConversion.convert(context.Background(), libraryKindSticker, "image/png", []byte("not a png")); err == nil {
 		t.Fatal("garbage converted")
+	}
+}
+
+// Library edits are PATCHes from the desktop WebView, another origin, so the
+// preflight must allow the method.
+func TestLibraryEditPassesCORSPreflight(t *testing.T) {
+	s, _, _, _ := chatPair(t)
+	req := httptest.NewRequest("OPTIONS", "/v1/library/items", nil)
+	req.Header.Set("Origin", "http://tauri.localhost")
+	req.Header.Set("Access-Control-Request-Method", "PATCH")
+	req.Header.Set("Access-Control-Request-Headers", "content-type,x-session-id")
+	resp, err := s.app.Test(req, 30000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(allowed, "PATCH") {
+		t.Fatalf("preflight allows %q", allowed)
 	}
 }

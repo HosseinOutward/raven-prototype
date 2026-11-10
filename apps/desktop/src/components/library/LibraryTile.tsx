@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent, type MouseEvent } from "react";
-import { AlertCircle, Bookmark, Check, FolderInput, Loader2, Pencil, Star, StarOff, Trash2 } from "lucide-react";
+import { AlertCircle, Bookmark, Check, FolderInput, Globe, Loader2, Pencil, Star, StarOff, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,7 +50,8 @@ export function LibraryTile({
   const [active, setActive] = useState(false);
   const [focused, setFocused] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const label = libraryLabel(item);
+  const markPublic = selected !== undefined && item.public && item.canEdit;
+  const label = markPublic ? `${libraryLabel(item)}, public` : libraryLabel(item);
   const ready = item.status === "ready";
   const own = item.canEdit;
   const scope = scopeOf(item);
@@ -101,6 +102,12 @@ export function LibraryTile({
         ) : null}
         {(active || focused) && item.title && ready ? (
           <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/55 px-1.5 py-0.5 text-caption text-white backdrop-blur-md">{item.title}</span>
+        ) : null}
+        {markPublic ? (
+          // In the manager, mark your own items anyone on the server can find.
+          <span title="Public" className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-md">
+            <Globe className="h-3 w-3" aria-hidden />
+          </span>
         ) : null}
         {selected ? (
           <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
