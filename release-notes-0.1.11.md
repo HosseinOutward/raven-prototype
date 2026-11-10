@@ -2,20 +2,20 @@
 
 ## New
 
-- **Raven runs on macOS.** Calls, screen sharing, the voice overlay and the menu bar icon all work on a Mac. Thanks to **Sepehr Rajabi**, who built and tested it there.
+- **Raven is now available on macOS.** Calls, screen sharing and the voice overlay work on the Mac, and Raven lives in the menu bar with an icon that follows a light or dark menu bar. Maximize enters full screen, and macOS keeps your microphone, camera and screen recording permissions between updates. This work was contributed by **Sepehr Rajabi**, Raven's first outside contributor, who built, tested and refined it on macOS.
 
 ## Changed
 
-- **Your new name shows at once.** When you change your display name, people in your call and in your lists see it straight away, without you rejoining. A name you set in a space still wins there.
-- **Server names default to a secure connection.** A server address typed without `http://` or `https://` now uses `https://`, unless it is a local or LAN address or has a port.
+- **Name changes appear immediately.** When you change your display name, people in your call and in your lists see the new name without you rejoining. A name you set in a space still takes precedence there.
+- **Server addresses default to a secure connection.** A server address entered without `http://` or `https://` now uses `https://`, unless it is a local or LAN address or includes a port.
 
-## Thanks
+## Acknowledgements
 
-Sepehr Rajabi ([@SepehrRajabi](https://github.com/SepehrRajabi)) brought Raven to macOS in this release, and found and fixed the live rename along the way.
+Sepehr Rajabi ([@SepehrRajabi](https://github.com/SepehrRajabi)) is Raven's first contributor. His pull request is the first code from outside the project to ship in Raven: it brings Raven to macOS and fixes live display name updates in calls. We are grateful for his work and for opening Raven to outside contributions.
 
-Ali Esmaili Seraji ([@hu13er](https://github.com/hu13er)) came up with the idea of port sharing in the Workshop, which arrived in Raven 0.1.9. We missed thanking him in those notes, so we are doing it here.
+Ali Esmaili Seraji ([@hu13er](https://github.com/hu13er)) proposed port sharing, which shipped in Raven 0.1.9. That proposal grew into an entirely new part of Raven, the Workshop. Ali has also provided invaluable guidance on Raven's architecture and software design, particularly for its most complex features. His contribution was not acknowledged in the 0.1.9 release notes, and we are pleased to recognise it here.
 
-And thank you to our alpha testers, who have been with Raven from the very beginning, not just for this release. Your feedback has shaped Raven into what it is today, and it would not be this good without you:
+We also thank our alpha testers, who have been with Raven since its earliest days, not only for this release. Their feedback has had a substantial and lasting impact on the quality of Raven today:
 
 - Saba Taheri
 - Ali Mirlou ([@alimirlou](https://github.com/alimirlou))
@@ -25,3 +25,4 @@ And thank you to our alpha testers, who have been with Raven from the very begin
 - Ali Esmaili Seraji ([@hu13er](https://github.com/hu13er))
 - Sepehr Rajabi ([@SepehrRajabi](https://github.com/SepehrRajabi))
 - Sadra Emam
+- Hamed F. Masaeli ([@hfmasaeli](https://github.com/hfmasaeli))
