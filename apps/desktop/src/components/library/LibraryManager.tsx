@@ -297,7 +297,7 @@ function ManagerBody({ owner, capabilities, serverSearch, api }: { owner: Librar
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle" aria-hidden />
-          <Input value={query} placeholder={server ? `Search public ${noun}` : `Search your ${noun}`} aria-label={`Search ${noun}`} className="pl-8" onChange={(event) => setQuery(event.target.value)} />
+          <Input value={query} placeholder={server ? `Search public ${noun}` : personal ? `Search your ${noun}` : `Search the set’s ${noun}`} aria-label={`Search ${noun}`} className="pl-8" onChange={(event) => setQuery(event.target.value)} />
         </div>
         {personal && serverSearch ? (
           <div className="flex gap-1" role="group" aria-label="Where to look">
