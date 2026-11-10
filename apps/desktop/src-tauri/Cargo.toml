@@ -1,6 +1,6 @@
 [package]
 name = "raven-desktop"
-version = "0.1.10"
+version = "0.1.11"
 description = "Raven desktop client"
 authors = ["Raven"]
 license = ""
