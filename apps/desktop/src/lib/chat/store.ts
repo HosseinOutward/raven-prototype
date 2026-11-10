@@ -789,6 +789,11 @@ export class ChatStore {
     this.apply(applyOwnMessage(this.state, message, this.atBottom.get(conversationId) ?? true));
   }
 
+  async removeLinkPreview(conversationId: string, messageId: string) {
+    const { message } = await this.api.removeLinkPreview(conversationId, messageId);
+    this.apply(applyOwnMessage(this.state, message, this.atBottom.get(conversationId) ?? true));
+  }
+
   async deleteForEveryone(conversationId: string, messageId: string) {
     const { message } = await this.api.deleteForEveryone(conversationId, messageId);
     this.apply(applyOwnMessage(this.state, message, this.atBottom.get(conversationId) ?? true));

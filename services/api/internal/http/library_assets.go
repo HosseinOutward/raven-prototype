@@ -317,7 +317,7 @@ func (s *Server) uploadLibraryOriginal(c *fiber.Ctx) error {
 	recorded := false
 	defer func() {
 		if !recorded {
-			s.cleanupChatUpload(c, key)
+			s.discardChatObject(key)
 		}
 	}()
 	tx, err := s.db.Begin()

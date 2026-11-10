@@ -63,6 +63,7 @@ func migrateVersioned(db *sql.DB, driver string) error {
 		{version: "2026111003_board_notes", statements: boardNoteStatements()},
 		ravenMessagesMigration(driver),
 		{version: "2026111005_board_events", statements: boardEventStatements()},
+		{version: "2026111006_chat_link_previews", statements: chatLinkPreviewStatements()},
 		{version: "2026111006_library", statements: libraryStatements()},
 	}
 	for _, migration := range migrations {

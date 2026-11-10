@@ -131,6 +131,7 @@ type ChatMessage struct {
 	Kind            string           `json:"kind"`
 	Body            string           `json:"body"`
 	Attachments     []ChatAttachment `json:"attachments,omitempty"`
+	LinkPreview     *ChatLinkPreview `json:"linkPreview,omitempty"`
 	ReplyTo         *ChatReplyRef    `json:"replyTo,omitempty"`
 	System          json.RawMessage  `json:"system,omitempty"`
 	CreatedAt       string           `json:"createdAt"`
@@ -243,6 +244,8 @@ func (s *Server) registerChatRoutes(service fiber.Router) {
 	conversation.Post("/messages/:messageId/reactions", s.chatLimiter("react", 60, time.Minute), s.chatRoute("react", s.reactToChatMessage))
 	conversation.Post("/messages/:messageId/edit", s.chatLimiter("edit", 30, time.Minute), s.chatRoute("edit", s.editChatMessage))
 	conversation.Delete("/messages/:messageId", s.chatLimiter("delete", 60, time.Minute), s.chatRoute("delete message", s.deleteChatMessage))
+	conversation.Get("/messages/:messageId/link-preview/image", s.chatRoute("fetch link preview image", s.fetchChatLinkPreviewImage))
+	conversation.Delete("/messages/:messageId/link-preview", s.chatLimiter("edit", 30, time.Minute), s.chatRoute("remove link preview", s.removeChatLinkPreview))
 	conversation.Post("/read", s.chatRoute("read", s.markChatRead))
 	conversation.Get("/seen", s.chatRoute("seen", s.getChatSeen))
 	conversation.Post("/typing", s.chatLimiter("typing", 20, 10*time.Second), s.chatRoute("typing", s.chatTyping))
