@@ -28,7 +28,7 @@ const ID_CHECK_UPDATES: &str = "tray:check-updates";
 const ID_OPEN: &str = "tray:open";
 const ID_QUIT: &str = "tray:quit";
 const ID_PRESENCE_PREFIX: &str = "tray:presence:";
-/// Passed by the sign-in entry that "Start Raven when you sign in" registers, so that
+/// Passed by the sign-in entry that "Launch at Startup" registers, so that
 /// launch leaves the window closed and Raven in the tray.
 pub const AUTOSTART_FLAG: &str = "--hidden";
 

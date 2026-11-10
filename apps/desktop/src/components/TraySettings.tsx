@@ -58,7 +58,7 @@ export function TraySettingsPanel() {
         }
       />
       <SettingsToggleRow
-        label="Start Raven when you sign in"
+        label="Launch at Startup"
         description="Raven opens in the tray, ready for knocks and messages, without opening its window."
         checked={settings.launchAtStartup}
         onChange={(launchAtStartup) =>

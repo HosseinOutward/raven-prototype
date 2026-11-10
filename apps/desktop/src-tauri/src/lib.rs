@@ -270,7 +270,7 @@ pub fn run() {
     #[cfg(windows)]
     let builder = builder.plugin(tauri_plugin_notification::init());
 
-    // "Start Raven when you sign in" (off by default) starts it in the tray.
+    // "Launch at Startup" (off by default) starts it in the tray.
     #[cfg(any(windows, target_os = "macos"))]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
