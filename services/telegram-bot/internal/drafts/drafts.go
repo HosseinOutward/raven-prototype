@@ -53,12 +53,22 @@ func New(root string, now func() time.Time) *Store {
 	return &Store{root: root, now: now, byID: map[int64]*Draft{}, quota: map[int64]quota{}}
 }
 
-// CleanRoot empties the data directory (left over from a crash) and creates it.
+// CleanRoot creates the data directory and empties it of drafts left over from a
+// crash. It keeps the directory itself, which may be a mount point the bot can't remove.
 func (s *Store) CleanRoot() error {
-	if err := os.RemoveAll(s.root); err != nil {
+	if err := os.MkdirAll(s.root, 0o755); err != nil {
 		return err
 	}
-	return os.MkdirAll(s.root, 0o755)
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(s.root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Get returns the user's draft, or nil.

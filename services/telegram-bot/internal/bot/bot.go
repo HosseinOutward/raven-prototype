@@ -308,8 +308,8 @@ func (b *Bot) handleCallback(ctx context.Context, cq *botapi.CallbackQuery) {
 // cand is one Telegram file that may become an item.
 type cand struct {
 	label, fileID, uniqueID, extHint, kind, title, emoji string
-	size                                                  int64
-	skip                                                  string // reason, when it must be skipped
+	size                                                 int64
+	skip                                                 string // reason, when it must be skipped
 }
 
 func stickerCand(st botapi.Sticker, setTitle string) cand {
