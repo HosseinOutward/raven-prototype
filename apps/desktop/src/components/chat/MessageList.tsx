@@ -304,6 +304,7 @@ export const MessageList = forwardRef<MessageListHandle, MessageListProps>(funct
                 reactionLimits={reactionLimits}
                 nameOf={nameOf}
                 onReact={(emoji) => store.react(id, message.id, emoji)}
+                onRemoveLinkPreview={mine && summary.canSend ? () => store.removeLinkPreview(id, message.id) : undefined}
                 canReply={summary.canSend}
                 canEdit={editable}
                 canDeleteForEveryone={mine || summary.canManage}

@@ -50,6 +50,8 @@ type Server struct {
 	metrics                  *serverMetrics
 	chatLocks                *keyedMutex
 	chatForwards             chatForwardBudget
+	// linkPreviews fetches the cards for links in messages; nil when they are off.
+	linkPreviews *chatLinkPreviewer
 	// inviteLocks keeps one account's invite count and insert together.
 	inviteLocks *keyedMutex
 	// workshop is the Workshop's port sharing: every active share, in memory.
@@ -216,6 +218,7 @@ func New(db *database.DB) *Server {
 		events:            newEventBroker(),
 		metrics:           newServerMetrics(),
 		chatLocks:         newKeyedMutex(),
+		linkPreviews:      newChatLinkPreviewerFromEnv(),
 		inviteLocks:       newKeyedMutex(),
 		serverVersion:     fallbackString(os.Getenv("RAVEN_VERSION"), "0.1.0"),
 		minClientVersion:  fallbackString(os.Getenv("RAVEN_MINIMUM_CLIENT_VERSION"), "0.1.0"),
@@ -231,6 +234,7 @@ func New(db *database.DB) *Server {
 	s.workshop.OnEvent = s.publishWorkshopEvent
 	s.relayServer = relay.NewServer(s.workshop, relayPolicy{s})
 	s.loginThrottle = newLoginThrottle()
+	s.startChatLinkPreviews()
 	s.routes()
 	return s
 }
@@ -403,6 +407,9 @@ func (s *Server) getServerProperties(c *fiber.Ctx) error {
 	chat["reactions"] = map[string]any{"maxPerPerson": chatMaxReactionsPerPerson, "maxKinds": chatMaxReactionKinds}
 	if attachments := s.chatAttachmentCapabilities(); attachments != nil {
 		chat["attachments"] = attachments
+	}
+	if linkPreviews := s.chatLinkPreviewCapabilities(); linkPreviews != nil {
+		chat["linkPreviews"] = linkPreviews
 	}
 	accounts, err := s.accountSettings(s.db)
 	if err != nil {
