@@ -33,7 +33,7 @@ The following are not acceptable:
 If you experience or see behaviour that breaks this code:
 
 - Use GitHub's **Report content** on the comment, issue or discussion, or
-- Contact the maintainers privately at **[CONTACT ADDRESS]**.
+- Contact the maintainers privately at **[soroushtgh@gmail.com](mailto:soroushtgh@gmail.com)**.
 
 Security vulnerabilities are not conduct reports. Report them privately through [Security › Report a vulnerability](https://github.com/raven-collective/raven-prototype/security/advisories/new).
 
