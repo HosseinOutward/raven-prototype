@@ -1,0 +1,17 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+# Unpacked from Capacitor's Android template, unchanged, by `bun run web:android`.
+gradlew
+gradlew.bat
+gradle/
+settings.gradle
+gradle.properties
+# Written by `cap sync`, which `bun run web:android` runs first.
+capacitor-cordova-android-plugins/
+capacitor.settings.gradle
+app/capacitor.build.gradle
+app/src/main/assets/
+app/src/main/res/xml/config.xml

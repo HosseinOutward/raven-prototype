@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Builds, signs and publishes a Raven desktop release. See docs/releasing.md.
+  Builds, signs and publishes a Raven release, desktop and Android. See docs/releasing.md.
 
 .EXAMPLE
   .\release.ps1 build   -Version 0.1.0
@@ -49,6 +49,9 @@ $RemoteRoot = "/srv/raven/releases"
 $PublicKey = Join-Path $Desktop "src-tauri\updater\raven-updater.key.pub"
 $KeepVersions = 5
 $GitHubRepo = "raven-collective/raven-prototype"
+# The Android app (apps/desktop/web). $true builds, signs and publishes its APK with the
+# installers; $false leaves it out of the release entirely.
+$ReleaseAndroid = $false
 
 if ($Scratch) {
   if ($Scratch -notmatch '^[a-z0-9-]+$') { throw "-Scratch must be a simple folder name such as 'test'." }
@@ -111,10 +114,12 @@ function Get-Stage {
 
 function Get-Artifacts {
   param([string]$Stage)
-  return [ordered]@{
+  $artifacts = [ordered]@{
     "windows-x86_64" = Join-Path $Stage "Raven_${Version}_x64-setup.exe"
     "linux-x86_64"   = Join-Path $Stage "Raven_${Version}_amd64.AppImage"
   }
+  if ($ReleaseAndroid) { $artifacts["android"] = Join-Path $Stage "Raven_${Version}.apk" }
+  return $artifacts
 }
 
 function Get-Sha256 {
@@ -207,6 +212,30 @@ cp "`$base/out/Raven_${Version}_amd64.AppImage" "`$base/out/compatibility-linux.
   if (-not (Test-Path -LiteralPath $Destination)) { throw "The Linux build did not produce $Destination." }
 }
 
+# Android only installs an app over an older one signed with the same key, so every
+# release is signed with this one key, kept beside the updater key on this PC.
+function Build-Android {
+  param([string]$Destination)
+  Write-Host "== Building the Android app"
+  $keyDirectory = Join-Path $env:USERPROFILE ".raven\android"
+  $keystore = Join-Path $keyDirectory "raven-android.keystore"
+  $passwordFile = Join-Path $keyDirectory "raven-android.password.dpapi"
+  if (-not (Test-Path -LiteralPath $keystore) -or -not (Test-Path -LiteralPath $passwordFile)) {
+    throw "The Android signing key or its password file is missing from $keyDirectory. See docs/releasing.md."
+  }
+  $apksigner = Join-Path (Get-ChildItem -Directory -LiteralPath (Join-Path $env:ANDROID_HOME "build-tools") | Sort-Object { [version]$_.Name } | Select-Object -Last 1).FullName "apksigner.bat"
+  $env:VITE_RAVEN_API_URL = $ApiUrl
+  Invoke-Native "bun" @("run", "web:android") $Desktop
+  $secure = ConvertTo-SecureString ((Get-Content -Raw -LiteralPath $passwordFile).Trim())
+  $env:RAVEN_ANDROID_KEY_PASSWORD = [System.Net.NetworkCredential]::new("", $secure).Password
+  try {
+    $unsigned = Join-Path $Desktop "web\android\app\build\outputs\apk\release\app-release-unsigned.apk"
+    Invoke-Native $apksigner @("sign", "--ks", $keystore, "--ks-pass", "env:RAVEN_ANDROID_KEY_PASSWORD", "--out", $Destination, $unsigned) | Out-Null
+  }
+  finally { Remove-Item Env:RAVEN_ANDROID_KEY_PASSWORD -ErrorAction SilentlyContinue }
+  Invoke-Native $apksigner @("verify", $Destination) | Out-Null
+}
+
 # The notes of every version before this one, so someone several versions behind sees them all.
 function Get-NotesHistory([string]$Current) {
   $currentCore = [version]($Current -replace '-.*$', '')
@@ -255,6 +284,10 @@ function Invoke-Build {
   Invoke-Sign $artifacts["windows-x86_64"]
   Build-Linux $stage $artifacts["linux-x86_64"] $commit
   Invoke-Sign $artifacts["linux-x86_64"]
+  if ($ReleaseAndroid) {
+    Build-Android $artifacts["android"]
+    Invoke-Sign $artifacts["android"]
+  }
 
   $notesPath = if ($NotesFile) { $NotesFile } else { Join-Path $Root "release-notes-$Version.md" }
   $notes = if (Test-Path -LiteralPath $notesPath) { (Get-Content -Raw -Encoding UTF8 -LiteralPath $notesPath).Trim() } else { "" }
@@ -279,7 +312,7 @@ function Invoke-Build {
   Write-Host ""
   Write-Host "Raven $Version is built and signed in $stage"
   foreach ($artifact in $artifacts.Values) { Write-Host ("  {0}  {1:N1} MB" -f (Split-Path -Leaf $artifact), ((Get-Item $artifact).Length / 1MB)) }
-  Write-Host "Send these two files to friends for a first install. Then: .\release.ps1 publish -Version $Version"
+  Write-Host "Send these files to friends for a first install. Then: .\release.ps1 publish -Version $Version"
 }
 
 # Fetches the manifest and both installers the way a friend's Raven will (through the
@@ -373,6 +406,13 @@ mv '$incoming' '$final'
 # Makes <version>/latest.json the live manifest. The swap is a rename, so a client never
 # reads a half-written file; the manifest it replaces is kept as latest.previous.json.
 function Get-DownloadPage {
+  $android = if ($ReleaseAndroid) { @"
+  <div class="card">
+    <h2>Android</h2>
+    <a class="button" href="$Version/Raven_${Version}.apk">Download for Android</a>
+    <p>Open the file and allow installing from your browser when Android asks. For a newer version, download and open the new file the same way.</p>
+  </div>
+"@ } else { "" }
   return @"
 <!doctype html>
 <html lang="en">
@@ -408,6 +448,7 @@ function Get-DownloadPage {
     <a class="button" href="$Version/Raven_${Version}_amd64.AppImage">Download the AppImage</a>
     <p>Make it executable with <code>chmod +x Raven_${Version}_amd64.AppImage</code>. On newer Ubuntu, install <code>libfuse2t64</code> first.</p>
   </div>
+$android
   <p>Running your own server? See the <a href="https://github.com/raven-collective/raven-prototype/blob/main/docs/self-hosting.md">self-hosting guide</a>.</p>
 </main>
 </body>
@@ -548,13 +589,14 @@ function Invoke-GitHub {
   if ($exists) { Write-Host "  release $tag is already on GitHub" }
   else {
     $notes = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $stage "latest.json") | ConvertFrom-Json).notes
+    $android = if ($ReleaseAndroid) { "`n- **Android:** ``Raven_${Version}.apk``. Open it and allow installing from your browser when Android asks." } else { "" }
     $body = @"
 $notes
 
 ## Install
 
 - **Windows:** ``Raven_${Version}_x64-setup.exe``. Windows may say the publisher is unknown: choose "More info", then "Run anyway".
-- **Linux:** ``Raven_${Version}_amd64.AppImage``. Run ``chmod +x`` on it. On newer Ubuntu, install ``libfuse2t64`` first.
+- **Linux:** ``Raven_${Version}_amd64.AppImage``. Run ``chmod +x`` on it. On newer Ubuntu, install ``libfuse2t64`` first.$android
 
 Raven tells you when a newer version is out.
 

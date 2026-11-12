@@ -6,6 +6,7 @@ This repository is a monorepo:
 
 ```text
 apps/desktop   Tauri v2 + React + TypeScript desktop app
+apps/desktop/web Browser client, with an optional Capacitor Android wrapper
 apps/admin     Web dashboard for the server's administrator (docs/permissions.md)
 services/api   Go 1.26.3 + Fiber API with PostgreSQL or SQLite
 packages/shared shared TypeScript domain types

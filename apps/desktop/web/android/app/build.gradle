@@ -1,0 +1,38 @@
+apply plugin: 'com.android.application'
+
+// Desktop's version, so a release's APK says the same as its installers. Android only
+// installs over a lower versionCode: 0.1.12 is 112.
+def ravenVersion = new groovy.json.JsonSlurper().parse(file('../../../package.json')).version
+def ravenVersionCode = ravenVersion.replaceAll(/-.*$/, '').tokenize('.').inject(0) { code, part -> code * 100 + part.toInteger() }
+
+android {
+    namespace = "org.raven.mobile"
+    compileSdk = 36
+    defaultConfig {
+        applicationId "org.raven.mobile"
+        minSdkVersion 24
+        targetSdkVersion 36
+        versionCode ravenVersionCode
+        versionName ravenVersion
+        aaptOptions {
+            // Package every web file: aapt's default skips names starting with "_", which Vite uses.
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    sourceSets.main.res.srcDir "$buildDir/generated/icon"
+}
+
+// The launcher icon is desktop's, taken at build time rather than kept as a copy.
+tasks.register('desktopIcon', Copy) {
+    from '../../../src-tauri/icons/icon.png'
+    into "$buildDir/generated/icon/mipmap"
+    rename { 'ic_launcher.png' }
+}
+preBuild.dependsOn 'desktopIcon'
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'

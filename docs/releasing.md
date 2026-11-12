@@ -8,9 +8,15 @@ and one script, `release.ps1`, builds, signs and publishes.
 release.ps1 (this PC)                    raven: /srv/raven/releases/          a friend's Raven
   build Windows (here)                     0.1.0/Raven_0.1.0_x64-setup.exe     reads latest.json,
   build Linux (Docker in WSL)   scp ──►    0.1.0/Raven_0.1.0_amd64.AppImage    says "update available",
-  sign and verify both (here)              0.1.0/latest.json                   downloads and restarts
-  write latest.json last                   latest.json                         when the person asks
+  build Android (here)                     0.1.0/Raven_0.1.0.apk               downloads and restarts
+  sign and verify all (here)               0.1.0/latest.json                   when the person asks
+  write latest.json last                   latest.json
 ```
+
+The Android app can be released with desktop: the same version, the same commands, and a
+download on the same page. It is off until `$ReleaseAndroid = $true` near the top of
+`release.ps1`; while it is off, nothing about Android is built or published. It does not
+update itself; people download the new APK.
 
 The files are served at `https://updates.rvn.bluehour.cloud`.
 
@@ -65,6 +71,23 @@ The files are served at `https://updates.rvn.bluehour.cloud`.
 
 A fresh install signs in to `https://mimir.rvn.bluehour.cloud` by default; `-ApiUrl` on
 `build` changes that.
+
+## Web app
+
+The phone app also runs in a browser, for iPhones: `https://updates.rvn.bluehour.cloud/app/`.
+In Safari, Share → Add to Home Screen gives it an icon and a full screen. Calls end when
+the phone locks or the app is in the background; chat is not affected. It is uploaded by
+hand, not by `release.ps1`:
+
+```powershell
+cd apps\desktop; bun run web:build
+ssh raven "rm -rf /srv/raven/releases/app.new"
+scp -r web\dist raven:/srv/raven/releases/app.new
+ssh raven "cd /srv/raven/releases && rm -rf app.old && { [ ! -d app ] || mv app app.old; } && mv app.new app"
+```
+
+The releases container never caches `/app/` itself (`releases-nginx.conf`), and the API
+allows the page's origin (`RAVEN_CORS_ALLOWED_ORIGINS` in `compose.yaml`).
 
 ## Server images
 
@@ -149,7 +172,9 @@ That is the only server-side update setting.
 - Installers are uploaded and hash-checked before `latest.json` moves, and `latest.json`
   is swapped by a rename, so a client never reads a half-published release.
 - The signing key (`%USERPROFILE%\.raven\updater\raven-updater.key`, password in the
-  DPAPI file beside it) never leaves this PC. The Raven host only stores files. If the key is lost,
+  DPAPI file beside it) never leaves this PC. The same goes for the Android key
+  (`%USERPROFILE%\.raven\android\raven-android.keystore`): Android installs a new APK over
+  an old one only when both carry the same key, so without it everyone uninstalls first. The Raven host only stores files. If the key is lost,
   existing installs can no longer be updated and everyone reinstalls by hand, so keep a
   backup of that folder somewhere safe.
 
@@ -166,6 +191,15 @@ That is the only server-side update setting.
 
   Then restart WSL (`wsl --shutdown`). If Docker Hub is unreachable, add a registry mirror
   to `/etc/docker/daemon.json`, as on Saye.
+- For Android: JDK 21 (`JAVA_HOME`) and the Android SDK (`ANDROID_HOME`, with build-tools),
+  and the Android signing key, made once. Back up the folder; a lost key cannot be replaced.
+
+  ```powershell
+  $dir = "$env:USERPROFILE\.raven\android"; New-Item -ItemType Directory -Force $dir | Out-Null
+  $password = Read-Host -AsSecureString "Android key password"
+  $password | ConvertFrom-SecureString | Set-Content "$dir\raven-android.password.dpapi"
+  & "$env:JAVA_HOME\bin\keytool" -genkeypair -keystore "$dir\raven-android.keystore" -alias raven -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=Raven" -storepass ([Net.NetworkCredential]::new("", $password).Password)
+  ```
 
 The Linux build runs in a pinned Ubuntu 22.04 image
 (`infra/release/Dockerfile.linux-appimage`), so the AppImage works on Ubuntu 22.04,

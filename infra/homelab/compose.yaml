@@ -116,6 +116,9 @@ services:
       # is X-Forwarded-For believed, so sign-in throttling and the address shown beside a
       # session are the person's and cannot be made up by them.
       RAVEN_TRUSTED_PROXIES: ${RAVEN_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+      # The Android app's page is https://capacitor.localhost, and the web app is served from
+      # the updates host (/app/); desktop's origins are allowed already.
+      RAVEN_CORS_ALLOWED_ORIGINS: ${RAVEN_CORS_ALLOWED_ORIGINS:-https://capacitor.localhost,https://updates.rvn.bluehour.cloud}
     # The storage gateway only accepts requests signed for its public name, and from inside
     # this machine that name leads out to the CDN and never comes back. This makes the name
     # reach the edge proxy on the host instead; S3_ENDPOINT is then http://<that name>.
