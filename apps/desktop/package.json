@@ -11,6 +11,11 @@
     "test": "bun test",
     "preview": "vite preview",
     "tauri": "bun ./scripts/tauri.ts",
+    "mobile-native:init": "bun run tauri android init",
+    "mobile-native:dev": "bun run tauri android dev",
+    "mobile-native:build": "bun run tauri android build",
+    "mobile-native:check": "bun test && bun run mobile-native:build --debug --apk",
+    "mobile-native:phone": "bun run tauri android phone",
     "web:dev": "vite --config web/vite.config.ts",
     "web:build": "tsc -p web && vite build --config web/vite.config.ts",
     "web:android": "bun run web:build && tar -xzf node_modules/@capacitor/cli/assets/android-template.tar.gz -C web/android gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties settings.gradle gradle.properties && cap sync android && cd web/android && ./gradlew assemble"

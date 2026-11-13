@@ -87,6 +87,20 @@ bun run tauri build
 
 ## Notes
 
+MobileNative (native Android) uses the same frontend and Rust crate. The pinned host inputs and
+device-validation limits are documented in
+[MobileNative foundation](plans/mobile-native/foundation.md).
+From `apps/desktop`, `bun run mobile-native:check` runs the frontend tests and native
+arm64 debug APK build. Initialize its ignored native project with
+`bun run mobile-native:init`
+on a newly configured checkout. This is independent of the older Capacitor
+`web:*` commands.
+
+Windows MobileNative commands use the TypeScript environment wrapper directly so flags
+such as `--debug` reach Tauri intact; Windows desktop commands still use the
+PowerShell/MSVC wrapper. Keep the pinned JDK/NDK and Rust on the build shell's PATH,
+and use a short `CARGO_TARGET_DIR` when the checkout path is long.
+
 - Use Bun for all JavaScript and TypeScript package operations.
 - The desktop app is not a browser meeting interface.
 - Do not add public registration.

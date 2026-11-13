@@ -6,6 +6,10 @@ and watching streams. Written 2026-11-10 and built the same day; calls are not y
 
 Scope rule: a feature stays only if it is voice, or comes nearly free from desktop code.
 
+The separate native Tauri Android app (MobileNative) is described in
+[MobileNative foundation](../mobile-native/foundation.md). The Capacitor client below
+remains intact while that replacement is qualified.
+
 ## Scope
 
 - Sign in.

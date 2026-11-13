@@ -29,9 +29,12 @@ use crate::audio::state::{
     add_and_publish_shared_audio_source, linked_app_audio_name, remove_shared_audio_source,
     resolve_app_identity, AudioStateError, SharedAudioEngineState,
 };
+use crate::media_eligibility;
+#[cfg(not(mobile))]
+use crate::video::capture::list_cameras;
 use crate::video::capture::{
-    list_cameras, list_displays, list_windows, screen_capture_runtime_readiness, window_share_size,
-    CaptureEvent, CaptureEvents, VideoCaptureError, VideoCaptureManager,
+    list_displays, list_windows, screen_capture_runtime_readiness, window_share_size, CaptureEvent,
+    CaptureEvents, VideoCaptureError, VideoCaptureManager,
 };
 use crate::video::domain::{
     CameraDevice, DisplayTarget, PublishedVideoTrack, PublishedVideoTrackId, SelfPreviewMode,
@@ -392,8 +395,15 @@ pub async fn video_set_remote_video_receiving(
 }
 
 #[tauri::command]
-pub fn video_list_cameras() -> Result<Vec<CameraDevice>, VideoStateError> {
-    Ok(list_cameras()?)
+pub fn video_list_cameras(
+    #[allow(unused_variables)] app: AppHandle,
+) -> Result<Vec<CameraDevice>, VideoStateError> {
+    #[cfg(mobile)]
+    let cameras = crate::mobile_native::camera::list_cameras(&app)
+        .map_err(|message| VideoCaptureError::StreamFailed { message })?;
+    #[cfg(not(mobile))]
+    let cameras = list_cameras()?;
+    Ok(cameras)
 }
 
 #[tauri::command]
@@ -414,6 +424,8 @@ pub async fn video_connect_room(
     token: String,
     viewer_token: String,
 ) -> Result<VideoMixerState, VideoStateError> {
+    media_eligibility::require_call(&app)
+        .map_err(|message| VideoStateError::EngineFailed { message })?;
     let runtime = video_runtime(&state)?;
     let mut ops = runtime.ops.lock().await;
     let preferences = {
@@ -736,6 +748,14 @@ async fn finish_video_mutation(
         let guard = state.read().map_err(|_| VideoStateError::StatePoisoned)?;
         (guard.mixer.local_sources.clone(), guard.preview.clone())
     };
+    if !media_eligibility::camera_permitted(app) {
+        for source in &mut sources {
+            if source.kind == VideoSourceKind::Camera {
+                source.enabled = false;
+                source.publishing = false;
+            }
+        }
+    }
     // Publish/unpublish LiveKit tracks first so the capture manager can attach the
     // matching publish sinks to the capture threads it starts.
     let publication_error = ops.engine.reconcile_publications(&sources).await.err();
@@ -746,6 +766,8 @@ async fn finish_video_mutation(
     let sinks = preview.wrap_publish_sinks(ops.engine.sink_map(), &source_types);
     if !ops.capture.has_event_handler() {
         ops.capture.set_event_handler(capture_events(app, state));
+        #[cfg(mobile)]
+        ops.capture.set_mobile_native_app(app.clone());
     }
     let capture = &mut ops.capture;
     let capture_error = tokio::task::block_in_place(|| capture.reconcile(&mut sources, &sinks));

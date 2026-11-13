@@ -9,6 +9,7 @@ import { AppCrashFallback } from "@/shells/ravenv1/RegionFallback";
 import { installGlobalErrorLogging, logUiError } from "@/lib/diagnostics";
 import { parseRoute } from "@/lib/route";
 import { installSpeakingColor } from "@/lib/speakingColor";
+import { isAndroid } from "@/mobileNative/platform";
 import { installTheme } from "@/lib/theme";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
@@ -16,6 +17,8 @@ import "@fontsource-variable/geist-mono";
 import "@/styles.css";
 
 const route = parseRoute();
+
+if (isAndroid) document.body.dataset.platform = "android";
 
 installGlobalErrorLogging();
 installSpeakingColor();

@@ -186,6 +186,12 @@ $env:VITE_RAVEN_API_URL="http://127.0.0.1:6977"
 
 ## Build Commands
 
+The MobileNative (native Android) app builds from this same app and Rust crate:
+`bun run mobile-native:init`, then `bun run mobile-native:build --debug --apk` from
+`apps/desktop`. Toolchain inputs, endpoint configuration and device-validation limits
+are in [MobileNative foundation](docs/plans/mobile-native/foundation.md).
+The Capacitor `web:*` client is separate.
+
 ```powershell
 cd apps/desktop
 bun install

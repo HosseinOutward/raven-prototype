@@ -42,6 +42,7 @@ use crate::audio::safety::{
     chain_cpu_estimate, chain_latency_samples, clamp_channel_gain, clamp_output_volume_db,
     clamp_safety_limiter_ceiling, health_from_meter,
 };
+use crate::media_eligibility;
 use tokio::sync::Mutex as AsyncMutex;
 
 pub const AUDIO_STATE_CHANGED_EVENT: &str = "audio-state-changed";
@@ -2570,6 +2571,8 @@ pub async fn audio_connect_room(
     url: String,
     token: String,
 ) -> Result<AudioMixerState, AudioStateError> {
+    media_eligibility::require_call(&app)
+        .map_err(|message| AudioStateError::MediaPublisherFailed { message })?;
     let shared = Arc::clone(state.inner());
     let runtime = audio_runtime(&shared)?;
     let mut ops = runtime.ops.lock().await;
@@ -2654,7 +2657,12 @@ pub async fn audio_set_call_active(
     state: State<'_, SharedAudioEngineState>,
     active: bool,
 ) -> Result<AudioMixerState, AudioStateError> {
+    if active {
+        media_eligibility::require_call(&app)
+            .map_err(|message| AudioStateError::MediaPublisherFailed { message })?;
+    }
     // Before capture can start: a push to talk user's first samples are already gated.
+    #[cfg(not(mobile))]
     crate::push_to_talk::set_call_active(&app, active);
     mutate_audio_state(&app, &state, |engine| {
         engine.capture_demand.call_active = active;
@@ -3073,10 +3081,24 @@ async fn reconcile_media(
     state: &SharedAudioEngineState,
     ops: &mut AudioOps,
 ) -> Result<Option<String>, AudioStateError> {
-    let (sources, demand) = {
+    let (mut sources, mut demand) = {
         let guard = state.read().map_err(|_| AudioStateError::StatePoisoned)?;
         (guard.mixer.local_sources.clone(), guard.capture_demand)
     };
+    if !media_eligibility::audio_allowed(app) {
+        demand.call_active = false;
+        demand.monitoring = false;
+    }
+    // A denied microphone never prevents receiving or publishing other eligible
+    // sources, and checking the permission never opens an OS prompt.
+    if !media_eligibility::microphone_permitted(app) {
+        for source in &mut sources {
+            if source.source_type == AudioSourceType::Microphone {
+                source.enabled = false;
+                source.publishing = false;
+            }
+        }
+    }
     // Reconcile published LiveKit tracks first so the capture manager can attach the
     // matching publish sinks to the (possibly already running) capture threads.
     // LiveKit refuses a limited connection's audio, and leaves the attempt hanging.
@@ -3116,6 +3138,28 @@ async fn reconcile_media(
         }
     }
     Ok(publication_error.or(outcome.first_error))
+}
+
+/// Re-apply eligibility after a MobileNative lifecycle, focus or permission change.
+#[cfg(mobile)]
+pub(crate) async fn resync_audio_eligibility(app: &AppHandle, stop_output: bool) {
+    let shared = app.state::<SharedAudioEngineState>().inner().clone();
+    let Ok(runtime) = audio_runtime(&shared) else {
+        return;
+    };
+    if stop_output || !media_eligibility::audio_allowed(app) {
+        tokio::task::block_in_place(|| runtime.output.stop());
+    }
+    let mut ops = runtime.ops.lock().await;
+    if let Err(error) = reconcile_media(app, &shared, &mut ops).await {
+        eprintln!("[mobile-native] audio interruption reconcile failed: {error}");
+    }
+    if media_eligibility::audio_allowed(app)
+        && ops.engine.is_connected()
+        && !runtime.output.is_running()
+    {
+        runtime.output.start(app, &shared);
+    }
 }
 
 async fn mutate_audio_state<F>(

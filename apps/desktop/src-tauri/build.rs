@@ -1,6 +1,14 @@
 fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // build.rs runs on the host, so a Mac building for Android must skip this.
     #[cfg(target_os = "macos")]
-    link_swift_runtime();
+    if target_os == "macos" {
+        link_swift_runtime();
+    }
+    // Android devices with 16 KB memory pages need 16 KB-aligned native libraries.
+    if target_os == "android" {
+        println!("cargo:rustc-link-arg=-Wl,-z,max-page-size=16384");
+    }
 
     tauri_build::build()
 }

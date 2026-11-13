@@ -52,6 +52,15 @@ Rules the engines are built around:
 - **Sound cues are played by the engine, into the call's output.** Mute and unmute, a profile knock, a share starting or stopping, someone joining or leaving, and the join heads-up are synthesised in `audio/cues.rs` (no sound files) and mixed into the playback bus before the echo-cancellation reference is taken, so they follow the chosen speaker and the canceller removes them from the microphone. Deafen silences all of them except your own mute toggle. Joined and left are decided natively from the other person's `#audio` participant arriving or leaving (never for the people already in the room, never during a reconnect, and not for a quick reconnect of theirs). The switches and volume are kept on the device with the other media settings and pushed to the engine.
 - **A lost room is rejoined by the app.** The engines report why a connection was lost; the UI rejoins with fresh tokens and backoff, except after a duplicate sign-in, a removal, or a closed room.
 
+MobileNative, the native Android app, uses these same Rust media engines and React
+app state. A local Tauri plugin under `src-tauri/plugins/raven-mobile-native` adapts
+Android permissions, audio focus and routes, Activity lifecycle and CameraX frames.
+Engines ask `media_eligibility` whether media may run, which stops pending capture
+when the app goes to the background or leaves a call; on desktop it always allows.
+React remains the call supervisor, through a per-shell `CallHost`, so calls run only
+in the foreground for now. See
+[MobileNative foundation](plans/mobile-native/foundation.md).
+
 ## Text chat
 
 Direct messages, groups and text Nests are served by the same API process and stored in the same database as everything else; there is no separate chat service, socket server or broker. A message is written with an ordinary HTTP request, which is answered only after the row is committed. It reaches other people over the event stream the client already holds open (`GET /v1/nest-events`), as a second server-sent event name, `chat`.

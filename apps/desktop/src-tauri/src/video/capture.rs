@@ -8,6 +8,7 @@
 //!
 //! Platform backends:
 //! - **Camera** — `nokhwa` (MSMF / AVFoundation / V4L2), cross-platform.
+//!   MobileNative uses CameraX through the raven-mobile-native plugin (`mobile_native/camera.rs`).
 //! - **Display / Window** — Windows.Graphics.Capture via `windows-capture` on Windows;
 //!   ScreenCaptureKit on macOS; xdg-desktop-portal + PipeWire on Linux.
 
@@ -231,8 +232,8 @@ impl CaptureEvents {
         Self(Arc::new(handler))
     }
 
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    fn notify(&self, source_id: VideoSourceId, event: CaptureEvent) {
+    #[cfg_attr(not(any(target_os = "windows", mobile)), allow(dead_code))]
+    pub(crate) fn notify(&self, source_id: VideoSourceId, event: CaptureEvent) {
         (self.0)(source_id, event);
     }
 }
@@ -428,6 +429,9 @@ pub struct VideoCaptureManager {
     counters: HashMap<VideoSourceId, Arc<VideoCaptureCounters>>,
     /// Where running captures report pauses and closed targets.
     events: Option<CaptureEvents>,
+    /// The app whose raven-mobile-native plugin owns CameraX. Held per manager, never globally.
+    #[cfg(mobile)]
+    mobile_native_app: Option<tauri::AppHandle>,
 }
 
 /// A capture-side sink whose destination can be replaced while the capture runs.
@@ -491,6 +495,7 @@ fn errored_runtime_state(message: String) -> VideoSourceRuntimeState {
     }
 }
 
+#[cfg(not(mobile))]
 fn running_runtime_state(profile: &VideoQualityProfile) -> VideoSourceRuntimeState {
     VideoSourceRuntimeState {
         status: VideoSourceRuntimeStatus::Running,
@@ -514,6 +519,11 @@ impl VideoCaptureManager {
     /// Set once; captures started afterwards report to it.
     pub fn set_event_handler(&mut self, events: CaptureEvents) {
         self.events = Some(events);
+    }
+
+    #[cfg(mobile)]
+    pub fn set_mobile_native_app(&mut self, app: tauri::AppHandle) {
+        self.mobile_native_app = Some(app);
     }
 
     pub fn reconcile(
@@ -591,6 +601,8 @@ impl VideoCaptureManager {
                 sink,
                 Arc::clone(&counters),
                 self.events.clone(),
+                #[cfg(mobile)]
+                self.mobile_native_app.clone(),
             ) {
                 Ok(runtime) => {
                     source.runtime = runtime.runtime_state();
@@ -617,6 +629,7 @@ fn start_capture(
     sink: Option<Arc<dyn VideoFrameSink>>,
     counters: Arc<VideoCaptureCounters>,
     events: Option<CaptureEvents>,
+    #[cfg(mobile)] mobile_native_app: Option<tauri::AppHandle>,
 ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
     let Some(sink) = sink else {
         return Err(VideoCaptureError::StreamFailed {
@@ -625,7 +638,15 @@ fn start_capture(
     };
     let profiled = ProfiledVideoFrameSink::new(Arc::clone(&sink), source.profile.clone(), counters);
     match source.kind {
+        #[cfg(not(mobile))]
         VideoSourceKind::Camera => camera::start(source, signature, Arc::new(profiled)),
+        #[cfg(mobile)]
+        VideoSourceKind::Camera => {
+            let app = mobile_native_app.ok_or_else(|| VideoCaptureError::StreamFailed {
+                message: "Android camera is not attached to this app instance".to_string(),
+            })?;
+            crate::mobile_native::camera::start(source, signature, Arc::new(profiled), app, events)
+        }
         VideoSourceKind::Display => screen::start(
             source,
             signature,
@@ -678,6 +699,7 @@ pub fn window_share_size(target_id: &str) -> Option<(u32, u32)> {
 // Enumeration (for the picker dialogs)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(mobile))]
 pub fn list_cameras() -> Result<Vec<CameraDevice>, VideoCaptureError> {
     camera::list()
 }
@@ -705,6 +727,7 @@ pub fn screen_capture_runtime_readiness() -> Result<(), String> {
 // Camera backend (nokhwa, cross-platform)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(mobile))]
 mod camera {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::sync_channel;

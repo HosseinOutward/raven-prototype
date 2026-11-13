@@ -24,6 +24,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: repoRoot,
+    envPrefix: ["VITE_", "TAURI_ENV_"], // meant to distinguish desktop from android/native apps
     define: {
       __RAVEN_CLIENT_VERSION__: JSON.stringify(desktopPackage.version),
     },

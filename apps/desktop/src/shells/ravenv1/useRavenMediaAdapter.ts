@@ -68,6 +68,7 @@ import { NestEntryCancelled } from "./nestEntry";
 import { presenceForActiveNest } from "./state";
 import { callStateCatchUp, callStateSupported, participantCallState } from "@/lib/callState";
 import { rememberActiveNest } from "@/lib/crashRecovery";
+import { desktopCallHost, type CallHost } from "@/lib/callHost";
 
 export type SelfMediaPreviewMode = SelfPreviewMode;
 
@@ -272,8 +273,11 @@ export function useRavenMediaAdapter(
     presenceState?: UserPresenceState;
     presenceReachability?: UserReachability;
     localUserId?: string;
+    /** The platform's share of a call, chosen by the shell. Desktop leaves it to the engines. */
+    callHost?: CallHost;
   } = {},
 ): RavenMediaAdapterState {
+  const callHost = options.callHost ?? desktopCallHost;
   const [phase, setPhase] = useState<MediaAdapterPhase>("idle");
   const [activeNestId, setActiveNestId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -635,6 +639,8 @@ export function useRavenMediaAdapter(
    * reconnect loop itself only calls `connectMedia`, so the mic stays open across it.
    */
   const cleanupMediaOnly = useCallback(async () => {
+    // Release the host's call first, so no capture restarts during teardown.
+    await callHost.endCall().catch(() => undefined);
     const [audioResult, videoResult] = await Promise.allSettled([
       audioCommands.disconnectRoom(),
       videoCommands.disconnectRoom(),
@@ -643,7 +649,7 @@ export function useRavenMediaAdapter(
     const released = await audioCommands.setCallActive(false).catch(() => null);
     if (released) setAudioState(released);
     else if (audioResult.status === "fulfilled") setAudioState(audioResult.value);
-  }, []);
+  }, [callHost]);
 
   const muteLocalMicrophones = useCallback(async () => {
     let state = await audioCommands.getState();
@@ -760,10 +766,11 @@ export function useRavenMediaAdapter(
     activeNestRef.current = null;
     if (nestId) void api.disconnectFromNest(nestId).catch(() => undefined);
     void Promise.allSettled([
+      callHost.endCall(),
       audioCommands.disconnectRoom().then(() => audioCommands.setCallActive(false)),
       videoCommands.disconnectRoom(),
     ]);
-  }, []);
+  }, [callHost]);
 
   useEffect(() => {
     if (!activeNestId) return;
@@ -889,6 +896,10 @@ export function useRavenMediaAdapter(
           await guard(applyVideoJoinDefaults());
           if (alwaysJoinMutedRef.current || options?.muted) await guard(muteLocalMicrophones());
 
+          // Only a user-initiated Nest entry opens the host's call. Reconnects reuse it
+          // and cannot revive a call the host ended.
+          await guard(callHost.beginCall());
+
           // Open local capture before connecting, so a microphone kept from an earlier
           // call is already running when its track is published. A device that fails to
           // open is reported on its strip and retried; it must not fail the join.
@@ -939,7 +950,7 @@ export function useRavenMediaAdapter(
       work.catch(() => undefined);
       return Promise.race([work, aborted]);
     },
-    [applyVideoJoinDefaults, cleanupMediaOnly, connectMedia, leaveMediaSession, muteLocalMicrophones, nestLabel, onStateChanged, refreshMediaDevices, refreshNativeState, resetSharedCallState, setSafeError],
+    [applyVideoJoinDefaults, callHost, cleanupMediaOnly, connectMedia, leaveMediaSession, muteLocalMicrophones, nestLabel, onStateChanged, refreshMediaDevices, refreshNativeState, resetSharedCallState, setSafeError],
   );
 
   const cancelMediaJoin = useCallback(() => {
@@ -949,6 +960,17 @@ export function useRavenMediaAdapter(
     // The teardown continues in the background; the call is already not "joining".
     setPhase((current) => (current === "joining" ? "idle" : current));
   }, []);
+
+  // The host can end the call itself (MobileNative going to the background), and a
+  // granted permission can reveal devices such as cameras.
+  useEffect(() => callHost.subscribe({
+    onEnded: () => {
+      cancelMediaJoin();
+      setReconnecting(false);
+      if (activeNestRef.current) void leaveMediaSession();
+    },
+    onChanged: () => void refreshMediaDevices(),
+  }), [callHost, cancelMediaJoin, leaveMediaSession, refreshMediaDevices]);
 
   // --- Session supervisor --------------------------------------------------------------
   // LiveKit retries a dropped connection by itself for a while. When it gives up, or the
@@ -1048,12 +1070,12 @@ export function useRavenMediaAdapter(
    * retained from an earlier session keeps whatever state it already had.
    */
   const prepareMicrophone = useCallback(async () => {
-    if (!audioCapabilities?.supportsMicrophone) return;
+    if (!audioCapabilities?.supportsMicrophone || !callHost.capturePermitted("microphone")) return;
     const mic = await ensureDefaultMic();
     if (mic.publishedTrack) return;
     if (!mic.channelStrip.mute.muted) await audioCommands.setLocalChannelMute(mic.id, true);
     setAudioState(await audioCommands.publishAudioSource(mic.id));
-  }, [audioCapabilities?.supportsMicrophone, ensureDefaultMic]);
+  }, [audioCapabilities?.supportsMicrophone, callHost, ensureDefaultMic]);
   prepareMicrophoneRef.current = prepareMicrophone;
 
   const publishMic = useCallback(async () => {
@@ -1063,6 +1085,10 @@ export function useRavenMediaAdapter(
       return;
     }
     try {
+      if (!(await callHost.requestCapture("microphone"))) {
+        setSafeError("Raven does not have microphone permission.", "permission_denied", "Allow microphone access in app permissions, or continue listening.");
+        return;
+      }
       const primaryMic = await ensureDefaultMic();
       const sources = micSources.length ? [primaryMic, ...micSources.slice(1)] : [primaryMic];
       let state: AudioMixerState | null = null;
@@ -1074,7 +1100,7 @@ export function useRavenMediaAdapter(
     } catch (err) {
       setSafeError(classifyMediaError(err, "Microphone could not be published").message, classifyMediaError(err).kind, "Check microphone permission or pick another input device.");
     }
-  }, [audioCapabilities?.supportsMicrophone, ensureDefaultMic, micSources, setSafeError]);
+  }, [audioCapabilities?.supportsMicrophone, callHost, ensureDefaultMic, micSources, setSafeError]);
 
   const unpublishMic = useCallback(async () => {
     setError("");
@@ -1136,6 +1162,19 @@ export function useRavenMediaAdapter(
     }
   }, [ensureDefaultMic, saveMediaSettings, setSafeError]);
 
+  /** Camera permission from the host. False means denied or failed, already reported. */
+  const requestCameraAccess = useCallback(async () => {
+    try {
+      const granted = await callHost.requestCapture("camera");
+      if (!granted) setSafeError("Raven does not have camera permission.", "permission_denied", "Allow camera access in app permissions, or continue without video.");
+      return granted;
+    } catch (err) {
+      const classified = classifyMediaError(err, "Camera permission could not be checked");
+      setSafeError(classified.message, classified.kind, "Check camera permission in app permissions.");
+      return false;
+    }
+  }, [callHost, setSafeError]);
+
   const startCamera = useCallback(async (camera: CameraDevice, profile: VideoQualityProfile = DEFAULT_VIDEO_PROFILE) => {
     setError("");
     setPreferredCameraId(camera.id);
@@ -1145,13 +1184,14 @@ export function useRavenMediaAdapter(
       return;
     }
     try {
+      if (!(await requestCameraAccess())) return;
       if (cameraSource) await videoCommands.stopSource(cameraSource.id);
       setVideoState(await videoCommands.startCamera(camera.id, camera.name || "Camera", profile));
     } catch (err) {
       const classified = classifyMediaError(err, "Camera could not be started");
       setSafeError(classified.message, classified.kind, "Check camera permission or choose another camera.");
     }
-  }, [cameraSource, setSafeError, videoCapabilities?.supportsCamera]);
+  }, [cameraSource, requestCameraAccess, setSafeError, videoCapabilities?.supportsCamera]);
 
   const setCameraDevice = useCallback(async (deviceId: string | null) => {
     setError("");
@@ -1199,6 +1239,8 @@ export function useRavenMediaAdapter(
       await stopCamera();
       return;
     }
+    // Ask before enumerating: MobileNative's CameraX may list no devices until granted.
+    if (!(await requestCameraAccess())) return;
     const listedCameras = cameras.length ? cameras : await videoCommands.listCameras();
     const camera = listedCameras.find((candidate) => candidate.id === preferredCameraId) ?? listedCameras[0];
     if (!camera) {
@@ -1206,7 +1248,7 @@ export function useRavenMediaAdapter(
       return;
     }
     await startCamera(camera, preferredCameraProfile);
-  }, [cameras, localCameraEnabled, preferredCameraId, preferredCameraProfile, setSafeError, startCamera, stopCamera]);
+  }, [cameras, localCameraEnabled, preferredCameraId, preferredCameraProfile, requestCameraAccess, setSafeError, startCamera, stopCamera]);
 
   const setRemoteAudioReceiving = useCallback(async (enabled: boolean) => {
     try {
