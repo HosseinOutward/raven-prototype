@@ -36,7 +36,7 @@ export function isNewerState(current: MobileNativeMediaState | null, next: Mobil
   return current === null || next.epoch >= current.epoch;
 }
 
-/** Lifecycle decisions: background teardown is terminal, return only refreshes. */
+/** Lifecycle decisions: only a call that ended (terminal background, new epoch) stops. A backgrounded call keeps running; return only refreshes. */
 export function stateTransition(previous: MobileNativeMediaState | null, next: MobileNativeMediaState) {
   return {
     stopCall: !next.callActive && (!next.foreground || Boolean(previous?.callActive && next.epoch > previous.epoch)),

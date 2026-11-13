@@ -10,8 +10,9 @@ import {
 } from "./media";
 
 /**
- * The MobileNative call host. Calls run only in the foreground while holding
- * communication audio focus, and OS permissions are asked when the user starts a capture.
+ * The MobileNative call host. A call starts in the foreground and, held by a foreground
+ * service, keeps its audio running in the background while it holds communication audio
+ * focus. OS permissions are asked when the user starts a capture.
  * It keeps the newest accepted native snapshot. The shell creates one per mounted app.
  */
 export function createMobileNativeCallHost(): CallHost {

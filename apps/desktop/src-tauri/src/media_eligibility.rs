@@ -1,6 +1,6 @@
 //! Whether the OS currently lets Raven run call media. Engines ask here instead of
 //! checking the platform. Desktop always allows. MobileNative ties media to the
-//! foreground call, audio focus and OS permissions owned by `crate::mobile_native`.
+//! call (audio continues in the background, the camera is foreground-only), audio focus and OS permissions owned by `crate::mobile_native`.
 //! On desktop every check is a constant, so the engines' guards compile away.
 
 pub use platform::*;
@@ -34,13 +34,13 @@ mod platform {
 
     use crate::mobile_native::media as host;
 
-    /// The active foreground call, or an error when none is open, so a reconnect in the
-    /// background cannot open a call.
+    /// The active call (it keeps running in the background), or an error when none is
+    /// open, so a reconnect after the call ended cannot open one.
     pub fn require_call(app: &AppHandle) -> Result<(), String> {
         host::require_call(app).map(|_| ())
     }
 
-    /// Foreground, in a call and holding communication audio focus.
+    /// In a call (foreground or not) and holding communication audio focus.
     pub fn audio_allowed(app: &AppHandle) -> bool {
         host::audio_allowed(app)
     }

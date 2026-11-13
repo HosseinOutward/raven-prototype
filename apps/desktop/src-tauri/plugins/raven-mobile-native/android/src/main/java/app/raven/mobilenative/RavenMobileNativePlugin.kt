@@ -9,7 +9,9 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.core.CameraSelector
@@ -69,6 +71,7 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
     private val audioManager = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null
     private var focused = false
+    private companion object { const val NOTIFICATION_REQUEST_CODE = 0x524E }
 
     init {
         // Initialize before frontend device queries; retain only the stable Application context.
@@ -204,13 +207,16 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
 
     override fun onStop() {
         super.onStop()
-        // Lifecycle-bound cameras otherwise restart automatically on Activity resume.
-        // Raven requires a fresh user action after backgrounding.
+        // Cameras stay foreground-only. Lifecycle-bound cameras would restart on their own on
+        // resume; Rust restarts a still-desired camera after `foregrounded` instead.
         cameras.values.forEach { release(it) }
-        emit("backgroundTerminal")
+        // A call keeps its audio through the foreground service; anything else ends on background.
+        emit(if (focusRequest != null) "backgrounded" else "backgroundTerminal")
     }
     override fun onResume() { super.onResume(); emit("foregrounded") }
     override fun onDestroy(activity: androidx.appcompat.app.AppCompatActivity) {
+        // The Activity is really going away (not a rotation), so the call cannot continue.
+        if (!activity.isChangingConfigurations) emit("backgroundTerminal")
         releaseFocus()
         super.onDestroy(activity)
     }
@@ -235,7 +241,22 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
         if (audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             focused = true
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            startCallService()
         } else releaseFocus()
+    }
+
+    /** Starts while Raven is foreground, as Android 14 requires; a failure leaves a foreground-only call. */
+    private fun startCallService() {
+        RavenCallService.onTaskRemovedListener = { emit("backgroundTerminal"); releaseFocus() }
+        try {
+            RavenCallService.start(activity)
+        } catch (error: Exception) { // ForegroundServiceStartNotAllowedException is an IllegalStateException
+            Log.w("RavenMobileNative", "Call service not started; audio stops in the background", error)
+        }
+        // Without this the service still runs but its notification is hidden. Not awaited.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_REQUEST_CODE)
+        }
     }
 
     /** The only place focus is released; does nothing when no call holds it. */
@@ -245,6 +266,8 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
         focusRequest = null
         focused = false
         audioManager.mode = AudioManager.MODE_NORMAL
+        RavenCallService.onTaskRemovedListener = null
+        RavenCallService.stop(activity)
     }
 
     private fun emitFocus() {

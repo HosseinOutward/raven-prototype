@@ -1,5 +1,7 @@
-//! MobileNative call eligibility. Calls run only in the foreground, so nothing owns a
-//! call in the background. Closing this gate invalidates pending starts before
+//! MobileNative call eligibility. A call starts only in the foreground, but a foreground
+//! service lets its audio keep running in the background, so `foreground` gates starting
+//! a call and the camera, not audio. Leaving for good (swipe-away, Activity destroy)
+//! ends the call. Closing this gate invalidates pending starts before
 //! asynchronous device/network teardown can take its locks. Kept apart from `media.rs`
 //! so its state machine is tested on the host.
 
@@ -49,13 +51,20 @@ impl MobileNativeGate {
         }
     }
 
+    /// The app left the screen during a call: only foreground-bound work (the camera)
+    /// stops. The call, its epoch and its audio continue.
     pub fn background(&mut self) {
         self.foreground = false;
+    }
+
+    /// The app left for good: the call ends and pending starts are invalidated.
+    pub fn terminate(&mut self) {
+        self.background();
         self.end();
     }
 
     pub fn audio_allowed(&self) -> bool {
-        self.foreground && self.call_active && self.focused
+        self.call_active && self.focused
     }
 }
 
@@ -70,7 +79,7 @@ mod tests {
         gate.begin(pending).unwrap();
         gate.focused = true;
         assert!(gate.audio_allowed());
-        gate.background();
+        gate.terminate();
         gate.foreground = true;
         assert!(!gate.audio_allowed());
         assert!(gate.begin(pending).is_err());
@@ -80,6 +89,33 @@ mod tests {
         assert!(!gate.audio_allowed());
         gate.focused = true;
         assert!(gate.audio_allowed());
+    }
+
+    #[test]
+    fn backgrounding_keeps_the_call_and_audio_until_terminal() {
+        let mut gate = MobileNativeGate::default();
+        gate.begin(0).unwrap();
+        gate.focused = true;
+        gate.background();
+        assert!(!gate.foreground && gate.call_active);
+        assert!(gate.audio_allowed());
+        assert_eq!((gate.epoch, gate.pending_stop), (0, None));
+        gate.foreground = true;
+        assert!(gate.call_active && gate.audio_allowed());
+        assert_eq!(gate.epoch, 0);
+        gate.background();
+        gate.terminate();
+        assert!(!gate.call_active && !gate.audio_allowed());
+        assert_eq!(gate.pending_stop, Some(1));
+        gate.foreground = true;
+        assert!(gate.begin(0).is_err());
+    }
+
+    #[test]
+    fn a_call_cannot_begin_while_backgrounded() {
+        let mut gate = MobileNativeGate::default();
+        gate.background();
+        assert!(gate.begin(0).is_err());
     }
 
     #[test]
@@ -99,7 +135,7 @@ mod tests {
     #[test]
     fn older_teardown_cannot_release_a_newer_stop_barrier() {
         let mut gate = MobileNativeGate::default();
-        gate.background();
+        gate.terminate();
         let old = gate.epoch;
         gate.end();
         gate.foreground = true;

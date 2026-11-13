@@ -99,23 +99,23 @@ pub fn microphone_permission(app: &AppHandle) -> PermissionStatus {
         .unwrap_or(PermissionStatus::Denied)
 }
 
+/// The open call's epoch. A call keeps running in the background, so this ignores the
+/// foreground; only leaving for good ends it.
 pub fn require_call(app: &AppHandle) -> Result<u64, String> {
-    let (active, epoch) = app.state::<MobileNativeMedia>().read(|inner| {
-        (
-            inner.gate.foreground && inner.gate.call_active,
-            inner.gate.epoch,
-        )
-    })?;
+    let (active, epoch) = app
+        .state::<MobileNativeMedia>()
+        .read(|inner| (inner.gate.call_active, inner.gate.epoch))?;
     if !active {
-        return Err("This foreground call has ended. Join again to continue.".into());
+        return Err("This call has ended. Join again to continue.".into());
     }
     Ok(epoch)
 }
 
 pub fn require_camera(app: &AppHandle) -> Result<u64, String> {
-    let (active, camera, epoch) = app.state::<MobileNativeMedia>().read(|inner| {
+    let (active, foreground, camera, epoch) = app.state::<MobileNativeMedia>().read(|inner| {
         (
-            inner.gate.foreground && inner.gate.call_active,
+            inner.gate.call_active,
+            inner.gate.foreground,
             inner.permissions.camera.clone(),
             inner.gate.epoch,
         )
@@ -123,12 +123,16 @@ pub fn require_camera(app: &AppHandle) -> Result<u64, String> {
     if !active {
         return Err("Join a call to use the camera.".into());
     }
+    if !foreground {
+        return Err("The camera is off while Raven is in the background.".into());
+    }
     if camera != PermissionStatus::Granted {
         return Err("Raven needs camera permission while in the foreground.".into());
     }
     Ok(epoch)
 }
 
+/// Whether a foreground-only action (the permission dialog) still belongs to `epoch`.
 pub fn epoch_matches(app: &AppHandle, epoch: u64) -> bool {
     app.state::<MobileNativeMedia>()
         .read(|inner| inner.gate.foreground && inner.gate.epoch == epoch)
@@ -199,7 +203,8 @@ pub fn initialize(app: &AppHandle) {
 
 /// Engine work that follows a lifecycle event once the gate has been updated.
 enum AfterEvent {
-    Background,
+    Terminated,
+    Backgrounded,
     Foregrounded,
     AudioFocus,
 }
@@ -215,9 +220,13 @@ fn handle_event(app: &AppHandle, event: MobileNativeEvent) {
                 inner.gate.foreground = true;
                 AfterEvent::Foregrounded
             }
-            MobileNativeEvent::BackgroundTerminal => {
+            MobileNativeEvent::Backgrounded => {
                 inner.gate.background();
-                AfterEvent::Background
+                AfterEvent::Backgrounded
+            }
+            MobileNativeEvent::BackgroundTerminal => {
+                inner.gate.terminate();
+                AfterEvent::Terminated
             }
             MobileNativeEvent::AudioFocus { focused } => {
                 inner.gate.focused = focused;
@@ -233,7 +242,7 @@ fn handle_event(app: &AppHandle, event: MobileNativeEvent) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         match after {
-            AfterEvent::Background => {
+            AfterEvent::Terminated => {
                 if let Err(error) = complete_pending_stop(&app).await {
                     eprintln!("[mobile-native] foreground call shutdown failed: {error}");
                 }
@@ -246,6 +255,8 @@ fn handle_event(app: &AppHandle, event: MobileNativeEvent) {
                 }
                 resync_video(&app).await;
             }
+            // Releases the camera; audio keeps running.
+            AfterEvent::Backgrounded => resync_video(&app).await,
             AfterEvent::AudioFocus => {}
         }
         crate::audio::state::resync_audio_eligibility(&app).await;
@@ -305,7 +316,7 @@ async fn acquire_focus(
 ) -> Result<bool, String> {
     let focus = raven_mobile_native::audio_focus(app, true).await;
     let mut inner = state.lock()?;
-    if inner.gate.epoch != epoch || !inner.gate.foreground || !inner.gate.call_active {
+    if inner.gate.epoch != epoch || !inner.gate.call_active {
         return Err("The call was cancelled while acquiring audio focus.".into());
     }
     let granted = focus?;

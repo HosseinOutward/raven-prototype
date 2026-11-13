@@ -24,7 +24,7 @@ check; the platform is chosen once, at a boundary:
 - **Frontend:** `isAndroid` (`src/mobileNative/platform.ts`, from Tauri's `TAURI_ENV_PLATFORM`)
   selects the shell in `App.tsx`. `useRavenMediaAdapter` takes an optional `CallHost`
   (`src/lib/callHost.ts`): desktop's default does nothing beyond the engines, and MobileNative's
-  (`src/mobileNative/callHost.ts`) owns foreground calls and OS permissions. The call
+  (`src/mobileNative/callHost.ts`) owns calls and OS permissions. The call
   supervisor delegates those steps to it and never branches on the platform. The one
   target check in a shared view hides microphone monitoring in the mixer.
 - **UI:** `src/mobileNative/` holds the MobileNative shell and everything only it
@@ -79,8 +79,10 @@ check; the platform is chosen once, at a boundary:
 
 `useRavenMediaAdapter` remains the one call supervisor. LiveKit roles, admission,
 entry defaults, session/presence and reconnect rules are shared with desktop.
-Background heartbeat and rejoin are not implemented; that ownership must move into
-Rust before a foreground call service is added.
+A foreground service keeps audio calls running in the background. Heartbeat and rejoin
+still run in the WebView, which Android may throttle while the app is away, so presence
+could lapse during a long background call. If the heartbeat drops, the follow-up is
+moving that ownership into Rust.
 
 `mobile_native/media.rs` turns OS events into media eligibility
 (`mobile_native/gate.rs` holds the host-tested state machine). Its state lock is never held across device or network
@@ -88,13 +90,15 @@ work. A terminal stop advances the epoch before waiting for engine locks. Each l
 focus or permission change stops output and reconciles the engines against eligibility,
 without involving JavaScript; connecting or activating a call requires an open one. Stops and begins are
 serialized, so an old shutdown cannot disconnect a new call or release its audio
-focus. Camera capture needs the same conditions as audio: foreground, an active call, the
-current epoch and OS permission (`camera_current`, `require_camera`). A running camera
-drops frames once its call's epoch has ended.
+focus. Audio needs an active call and focus. Camera capture also needs the foreground,
+the current epoch and OS permission (`camera_current`, `require_camera`). A running
+camera drops frames once its call's epoch has ended or the app is backgrounded.
 
-Activity stop ends the call. Kotlin unbinds the camera so Activity resume cannot
-restart it, and refuses to bind CameraX unless the Activity is at least STARTED; Rust closes microphone and playback eligibility, disconnects media and
-releases focus. On return, React cancels the old join or reconnect and reconciles
+Activity stop with a call keeps the call and its audio running (`Backgrounded`); Kotlin
+unbinds the camera and refuses to bind CameraX unless the Activity is at least STARTED,
+and Rust releases the camera. A camera that is still on restarts when the app returns.
+Swipe-away or Activity destroy ends the call (`BackgroundTerminal`): Rust closes
+microphone and playback eligibility, disconnects media and releases focus. On return, React cancels the old join or reconnect and reconciles
 server state, and it recognizes a stopped epoch even if JavaScript missed both
 lifecycle events. Server presence cleanup relies on timeout while the WebView is
 suspended.
@@ -170,7 +174,7 @@ Still to verify on a phone:
 - Two-way audio and video with a desktop peer, remote camera and share
   presentation, mute, deafen, moderation, cancellation and device release.
 - Microphone and camera denial, returning from settings, revocation, focus
-  interruption, and background teardown with no restart on resume.
+  interruption, and background audio, camera release and restart on return, and swipe-away teardown.
 - LAN and real servers, ICE reachability, TURN, and dev versus bundled origins.
 - Sustained CPU, heat and battery, Studio performance, and a 16 KB-page device.
 - Desktop startup and calls on Windows and macOS, including macOS linking.
@@ -180,6 +184,6 @@ names are possible, and choosing an output may not change the route while
 `MODE_IN_COMMUNICATION` is set. Real earpiece, speaker and Bluetooth routing needs
 `AudioManager.setCommunicationDevice` plugin commands, which are out of scope for now.
 
-Not in this step: screen and playback capture, background calls, full audio route
+Not in this step: screen and playback capture, full audio route
 selection, PiP, full feature parity, push, distribution, URI-aware file workflows
 and iOS.

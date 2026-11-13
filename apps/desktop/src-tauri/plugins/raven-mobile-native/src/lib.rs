@@ -37,6 +37,8 @@ pub enum PermissionStatus {
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum MobileNativeEvent {
     Foregrounded,
+    /// The Activity stopped while a call holds audio focus; the call keeps running.
+    Backgrounded,
     BackgroundTerminal,
     AudioFocus { focused: bool },
 }

@@ -18,6 +18,13 @@ describe("MobileNative lifecycle snapshots", () => {
     expect(stateTransition(call, resumed).stopCall).toBe(true);
     expect(stateTransition(resumed, resumed).stopCall).toBe(false);
   });
+  test("keeps a backgrounded call running and returns it with a refresh only", () => {
+    const call = snapshot(4, { callActive: true, microphone: "granted" });
+    const away = snapshot(4, { foreground: false, callActive: true, microphone: "granted" });
+    expect(stateTransition(call, away)).toEqual({ stopCall: false, refresh: false });
+    expect(stateTransition(away, call)).toEqual({ stopCall: false, refresh: true });
+  });
+
   test("discards an older query result after a newer lifecycle event", () => {
     const backgrounded = snapshot(8, { foreground: false, callActive: false });
     expect(isNewerState(backgrounded, snapshot(7))).toBe(false);
