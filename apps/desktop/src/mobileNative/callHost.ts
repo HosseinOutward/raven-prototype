@@ -1,6 +1,7 @@
 import type { CallHost, CaptureKind } from "@/lib/callHost";
+import { logUiError } from "@/lib/diagnostics";
 import {
-  captureAllowed,
+  capturePermissionGranted,
   isNewerState,
   mobileNativeCommands,
   stateTransition,
@@ -35,7 +36,7 @@ export function createMobileNativeCallHost(): CallHost {
       accept(state);
       const answered = state[kind] === "granted" ? state : await mobileNativeCommands.requestPermission(kind, state.epoch);
       accept(answered);
-      return captureAllowed(answered, kind);
+      return capturePermissionGranted(answered, kind);
     },
     capturePermitted: (kind: CaptureKind) => current?.[kind] === "granted",
     subscribe: (events) => {
@@ -57,7 +58,11 @@ export function createMobileNativeCallHost(): CallHost {
         unlisten = stop;
         // Register first, then read the current value. Monotonic epochs resolve the race.
         void mobileNativeCommands.getState().then(handle).catch(() => undefined);
-      }).catch(() => undefined);
+      }).catch((error) => {
+        // Without the listener no lifecycle or end-of-call event can arrive, so end the call.
+        logUiError("mobile_native_subscribe", error);
+        if (active) events.onEnded();
+      });
       return () => {
         active = false;
         unlisten?.();

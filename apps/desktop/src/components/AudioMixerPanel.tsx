@@ -68,7 +68,6 @@ import { Drawer } from "@/components/ui/drawer";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs } from "@/components/ui/tabs";
-import { isAndroid } from "@/mobileNative/platform";
 
 const GAIN_MIN_DB = -60;
 const GAIN_MAX_DB = 12;
@@ -604,6 +603,7 @@ export function AudioMixerPanel({ deafen }: { deafen?: { deafened: boolean; onTo
               inputDevices={inputDevices}
               outputDevices={outputDevices}
               busy={busySourceIds.has(source.id)}
+              supportsMonitoring={capabilities?.supportsMonitoring}
               draftGainDb={draftGains[source.id]}
               onGainChange={scheduleGain}
               onGainCommit={flushGain}
@@ -1286,6 +1286,7 @@ function ChannelStrip({
   inputDevices,
   outputDevices,
   busy = false,
+  supportsMonitoring = false,
   draftGainDb,
   onGainChange,
   onGainCommit,
@@ -1314,6 +1315,7 @@ function ChannelStrip({
   onProcessorParameterCommit,
   draftProcessorParams = {},
 }: {
+  supportsMonitoring?: boolean;
   strip: ChannelStripView;
   presets: AudioPresetDefinition[];
   inputDevices: AudioInputDevice[];
@@ -1367,8 +1369,7 @@ function ChannelStrip({
   // captured device straight to the local output so you can hear yourself. Enabling it mutes
   // the outgoing channel (so peers don't get a double / echo); disabling restores the prior
   // mute state captured at enable time.
-  // Android leaves microphone monitoring out.
-  const isMonitorable = !isAndroid && strip.mode === "local" && strip.sourceType === "microphone";
+  const isMonitorable = supportsMonitoring && strip.mode === "local" && strip.sourceType === "microphone";
   const monitorDeviceName = strip.mode === "local"
     ? strip.runtime.deviceName ?? strip.captureDeviceId
     : null;

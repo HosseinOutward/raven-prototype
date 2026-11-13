@@ -97,7 +97,14 @@ pub fn run() {
         .manage(ApiProcess(Mutex::new(None)))
         .manage(new_shared_audio_engine_state())
         .manage(video_state)
-        .manage(video_frames)
+        .manage(video_frames);
+    #[cfg(not(mobile))]
+    let builder = builder
+        .manage(new_voice_overlay_state())
+        .manage(new_media_hotkey_state())
+        .manage(push_to_talk::new_push_to_talk_state())
+        .manage(tray::new_tray_state());
+    let builder = builder
         .manage(workshop::new_workshop_state())
         .invoke_handler(tauri::generate_handler![
             #[cfg(mobile)]
@@ -110,6 +117,8 @@ pub fn run() {
             mobile_native::media::mobile_native_request_permission,
             #[cfg(mobile)]
             mobile_native::media::mobile_native_open_settings,
+            #[cfg(mobile)]
+            mobile_native::media::mobile_native_resume_audio,
             attachments::attachment_prepare,
             attachments::attachment_read,
             attachments::attachment_discard,
@@ -300,39 +309,12 @@ pub fn run() {
                 &app.state::<audio::state::SharedAudioEngineState>(),
             );
             #[cfg(not(mobile))]
-            if let Err(err) = overlay::initialize_voice_overlay(app.handle()) {
-                eprintln!("[raven] voice overlay initialization failed: {err}");
-            }
-            #[cfg(not(mobile))]
-            if let Err(err) = media_hotkeys::initialize(app.handle()) {
-                eprintln!("[raven] media hotkey initialization failed: {err}");
-            }
-            #[cfg(not(mobile))]
-            push_to_talk::initialize(app.handle());
-            #[cfg(not(mobile))]
-            audio::devices::spawn_device_watcher(app.handle().clone());
-            #[cfg(not(mobile))]
-            updater::initialize(app.handle());
-            #[cfg(not(mobile))]
-            let tray_ready = tray::initialize(app.handle()).unwrap_or_else(|err| {
-                eprintln!("[raven] tray initialization failed: {err}");
-                false
-            });
-            #[cfg(not(mobile))]
-            tray::show_main_at_launch(app.handle(), tray_ready);
-            #[cfg(not(mobile))]
-            diagnostics::watch_webview_processes(app.handle());
+            setup_desktop(app);
             Ok(())
-        })
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init());
+        });
 
     #[cfg(not(mobile))]
     let builder = builder
-        .manage(new_voice_overlay_state())
-        .manage(new_media_hotkey_state())
-        .manage(push_to_talk::new_push_to_talk_state())
-        .manage(tray::new_tray_state())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -345,6 +327,10 @@ pub fn run() {
                 .pubkey(updater::PUBLIC_KEY.trim())
                 .build(),
         );
+
+    let builder = builder
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init());
 
     #[cfg(mobile)]
     let builder = builder
@@ -398,6 +384,25 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(not(mobile))]
+fn setup_desktop(app: &tauri::App) {
+    if let Err(err) = overlay::initialize_voice_overlay(app.handle()) {
+        eprintln!("[raven] voice overlay initialization failed: {err}");
+    }
+    if let Err(err) = media_hotkeys::initialize(app.handle()) {
+        eprintln!("[raven] media hotkey initialization failed: {err}");
+    }
+    push_to_talk::initialize(app.handle());
+    audio::devices::spawn_device_watcher(app.handle().clone());
+    updater::initialize(app.handle());
+    let tray_ready = tray::initialize(app.handle()).unwrap_or_else(|err| {
+        eprintln!("[raven] tray initialization failed: {err}");
+        false
+    });
+    tray::show_main_at_launch(app.handle(), tray_ready);
+    diagnostics::watch_webview_processes(app.handle());
 }
 
 /// Say goodbye to LiveKit before the process ends, so the people in the room see this

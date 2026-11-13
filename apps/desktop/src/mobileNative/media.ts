@@ -12,7 +12,6 @@ export interface MobileNativeMediaState {
   microphone: MobileNativePermission;
   camera: MobileNativePermission;
   focus: boolean;
-  route: string;
 }
 
 export const MOBILE_NATIVE_MEDIA_STATE_CHANGED_EVENT = "mobile-native-media-state";
@@ -24,6 +23,7 @@ export const mobileNativeCommands = {
   endCall: () => invoke<MobileNativeMediaState>("mobile_native_end_call"),
   requestPermission: (kind: CaptureKind, expectedEpoch: number) =>
     invoke<MobileNativeMediaState>("mobile_native_request_permission", { kind, expectedEpoch }),
+  resumeAudio: () => invoke<MobileNativeMediaState>("mobile_native_resume_audio"),
   openSettings: () => invoke<void>("mobile_native_open_settings"),
 };
 
@@ -46,11 +46,10 @@ export function stateTransition(previous: MobileNativeMediaState | null, next: M
   };
 }
 
-/** Permission alone cannot authorize capture; microphone use also needs an active call. */
-export function captureAllowed(state: MobileNativeMediaState | null, kind: CaptureKind) {
-  return Boolean(
-    state?.foreground
-      && state[kind] === "granted"
-      && (kind !== "microphone" || state.callActive),
-  );
+/**
+ * Whether the OS permission is granted while the app is in the foreground. This is not
+ * a capture gate: the native engines also require an active call for microphone and camera.
+ */
+export function capturePermissionGranted(state: MobileNativeMediaState | null, kind: CaptureKind) {
+  return Boolean(state?.foreground && state[kind] === "granted");
 }

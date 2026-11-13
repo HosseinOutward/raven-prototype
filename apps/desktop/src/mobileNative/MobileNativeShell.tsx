@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { onBackButtonPress } from "@tauri-apps/api/app";
 import { Headphones, HeadphoneOff, Home, Loader2, MessageSquare, Mic, MicOff, PhoneOff, Settings, Video, VideoOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Toaster, toast } from "@/components/ui/toast";
 import { api, subscribeUpdateRequired } from "@/lib/api";
+import { logUiError } from "@/lib/diagnostics";
 import { accountsOffered } from "@/lib/invites";
 import { callVoteHeadline } from "@/lib/callVote";
 import type { RavenUpdater } from "@/lib/updater";
@@ -14,7 +15,8 @@ import { MainView } from "@/shells/ravenv1/views";
 import { RoomKnockToasts } from "@/shells/ravenv1/RoomKnockToasts";
 import { ChoosePassword, ShellLogin } from "@/shells/ravenv1/SignIn";
 import { createMobileNativeCallHost } from "./callHost";
-import { mobileNativeCommands } from "./media";
+import { isNewerState, mobileNativeCommands, subscribeMobileNativeMediaState, type MobileNativeMediaState } from "./media";
+import { useMobileNativeNavigation } from "./navigation";
 import { useMobileNativeApp } from "./useMobileNativeApp";
 
 /** The MobileNative layout over the same app, chat, entry and call owners as desktop.
@@ -22,31 +24,18 @@ import { useMobileNativeApp } from "./useMobileNativeApp";
  * that screen then moves into this folder. */
 export function MobileNativeShell() {
   const [callHost] = useState(createMobileNativeCallHost);
-  const { data, media, entry, chat, view, navigation, activeEntryNotices } = useMobileNativeApp(callHost);
+  const { data, media, entry, chat, activeEntryNotices } = useMobileNativeApp(callHost);
   const updater = useServerCompatibility();
-  useMessageNotifications(chat, data, view);
 
-  // System Back walks the in-app history while there is somewhere to go back to.
-  useEffect(() => {
-    if (!navigation.canGoBack) return;
-    const listener = onBackButtonPress(navigation.goBack);
-    void listener.catch((error: unknown) => toast({ title: "System Back is unavailable", description: String(error), tone: "error" }));
-    return () => {
-      void listener.then((subscription) => subscription.unregister()).catch(() => undefined);
-    };
-  }, [navigation.canGoBack, navigation.goBack]);
+  // Marks the document for Android-only styles without a module-level side effect.
+  useLayoutEffect(() => {
+    document.body.dataset.platform = "android";
+  }, []);
 
   // There is no in-app installer here, but the server can still refuse old clients.
   useEffect(() => {
     void updater.checkCompatibility().catch(() => undefined);
   }, [data.apiServerUrl, updater.checkCompatibility]);
-
-  const vote = media.callVote.vote;
-  useEffect(() => {
-    if (vote?.outcome === "open" && !(view.kind === "nest" && view.id === vote.nestId)) {
-      toast({ title: callVoteHeadline(vote, data.user?.id), description: "Open the call to see it." });
-    }
-  }, [vote?.id, vote?.outcome, vote?.nestId, view, data.user?.id]);
 
   if (data.loading) {
     return (
@@ -71,13 +60,42 @@ export function MobileNativeShell() {
     );
   }
 
+  // Keyed by user so each signed-in user starts at Home.
+  return <SignedInApp key={data.user.id} data={data} media={media} entry={entry} chat={chat} updater={updater} activeEntryNotices={activeEntryNotices} />;
+}
+
+type SignedInAppProps = Pick<ReturnType<typeof useMobileNativeApp>, "data" | "media" | "entry" | "chat" | "activeEntryNotices"> & { updater: RavenUpdater };
+
+/** The signed-in layout and its Back stack. */
+function SignedInApp({ data, media, entry, chat, updater, activeEntryNotices }: SignedInAppProps) {
+  const { view, navigation } = useMobileNativeNavigation();
+  useMessageNotifications(chat, data, view);
+
+  // System Back walks the in-app history while there is somewhere to go back to.
+  useEffect(() => {
+    if (!navigation.canGoBack) return;
+    const listener = onBackButtonPress(navigation.goBack);
+    void listener.catch((error: unknown) => toast({ title: "System Back is unavailable", description: String(error), tone: "error" }));
+    return () => {
+      void listener.then((subscription) => subscription.unregister()).catch(() => undefined);
+    };
+  }, [navigation.canGoBack, navigation.goBack]);
+
+  // Looking at something else, you still have to hear of a vote in the call.
+  const vote = media.callVote.vote;
+  const voteElsewhere = vote?.outcome === "open" && !(view.kind === "nest" && view.id === vote.nestId);
+  const voteHeadline = vote ? callVoteHeadline(vote, data.user?.id) : "";
+  useEffect(() => {
+    if (voteElsewhere) toast({ title: voteHeadline, description: "Open the call to see it." });
+  }, [vote?.id, voteElsewhere]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="ravenv1-scope flex h-[100dvh] flex-col overflow-hidden bg-background text-foreground">
       <header className="flex h-12 shrink-0 items-center px-4 text-body font-semibold">{data.serverProperties.name || "Raven"}</header>
       <MediaErrorBanner media={media} />
       <main className="min-h-0 flex-1 px-2 pb-1">
         <div className="flex h-full min-w-0 flex-col overflow-hidden rounded-card bg-surface">
-          <MainView view={view} data={data} media={media} entry={entry} updater={updater} chat={chat} onNavigate={navigation.navigate} onBack={navigation.leaveView} />
+          <MainView view={view} data={data} media={media} entry={entry} updater={updater} chat={chat} onNavigate={navigation.navigate} onBack={navigation.goBack} />
         </div>
       </main>
       <nav className="grid shrink-0 grid-cols-3 gap-1 px-2 pb-1" aria-label="Main navigation">
@@ -172,24 +190,62 @@ function MediaErrorBanner({ media }: { media: RavenMediaAdapterState }) {
   );
 }
 
+/** True while the OS has taken audio focus from an active call, until audio is resumed. */
+function useAudioPaused() {
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    let active = true;
+    let current: MobileNativeMediaState | null = null;
+    const apply = (state: MobileNativeMediaState) => {
+      if (!active || !isNewerState(current, state)) return;
+      current = state;
+      setPaused(state.callActive && state.foreground && !state.focus);
+    };
+    const listener = subscribeMobileNativeMediaState(apply);
+    // Register first, then read the current value, so focus lost before mount still shows.
+    listener
+      .then(() => mobileNativeCommands.getState().then(apply))
+      .catch((error: unknown) => logUiError("mobile_native_audio_paused", error));
+    return () => {
+      active = false;
+      void listener.then((unlisten) => unlisten()).catch(() => undefined);
+    };
+  }, []);
+  return paused;
+}
+
 /** Call controls stay on screen through every view while a call is active. */
 function CallControls({ media }: { media: RavenMediaAdapterState }) {
-  const micOn = media.localMicEnabled;
+  const audioPaused = useAudioPaused();
+  const micOn = media.localMicEnabled && !media.localServerMuted;
+  const deafened = media.localDeafened || media.localServerDeafened;
   const cameraOn = media.localCameraEnabled;
+  const micLabel = media.localServerMuted ? "Muted by a moderator" : micOn ? "Mute microphone" : "Unmute microphone";
+  const deafenLabel = media.localServerDeafened ? "Deafened by a moderator" : deafened ? "Undeafen" : "Deafen";
+  const resumeAudio = () =>
+    void mobileNativeCommands.resumeAudio().catch((error: unknown) => toast({ title: "Could not resume audio", description: String(error), tone: "error" }));
   return (
-    <footer className="flex shrink-0 items-center justify-center gap-2 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1" aria-label="Call controls">
-      <Button size="icon" variant={micOn ? "secondary" : "destructive"} aria-label={micOn ? "Mute microphone" : "Unmute microphone"} disabled={!media.audioSupported || media.busy} onClick={() => void media.toggleMic()}>
-        {micOn ? <Mic /> : <MicOff />}
-      </Button>
-      <Button size="icon" variant={media.localDeafened ? "destructive" : "secondary"} aria-label={media.localDeafened ? "Undeafen" : "Deafen"} disabled={!media.deafenSupported || media.busy} onClick={() => void media.toggleDeafen()}>
-        {media.localDeafened ? <HeadphoneOff /> : <Headphones />}
-      </Button>
-      <Button size="icon" variant={cameraOn ? "secondary" : "ghost"} aria-label={cameraOn ? "Turn camera off" : "Turn camera on"} disabled={!media.cameraSupported || media.busy} onClick={() => void media.toggleCamera()}>
-        {cameraOn ? <Video /> : <VideoOff />}
-      </Button>
-      <Button size="icon" variant="destructive" aria-label="Leave call" disabled={media.busy} onClick={() => void media.leaveMediaSession()}>
-        <PhoneOff />
-      </Button>
+    <footer className="shrink-0 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1" aria-label="Call controls">
+      {audioPaused ? (
+        <div className="mb-1 flex items-center justify-between gap-2 text-small text-muted-foreground" role="status">
+          <span>Audio paused by another app</span>
+          <Button size="sm" variant="secondary" onClick={resumeAudio}>Resume audio</Button>
+        </div>
+      ) : null}
+      <div className="flex items-center justify-center gap-2">
+        <Button size="icon" variant={micOn ? "secondary" : "destructive"} aria-label={micLabel} title={micLabel} disabled={media.localServerMuted || !media.audioSupported || media.busy} onClick={() => void media.toggleMic()}>
+          {micOn ? <Mic /> : <MicOff />}
+        </Button>
+        <Button size="icon" variant={deafened ? "destructive" : "secondary"} aria-label={deafenLabel} title={deafenLabel} disabled={media.localServerDeafened || !media.deafenSupported || media.busy} onClick={() => void media.toggleDeafen()}>
+          {deafened ? <HeadphoneOff /> : <Headphones />}
+        </Button>
+        <Button size="icon" variant={cameraOn ? "secondary" : "ghost"} aria-label={cameraOn ? "Turn camera off" : "Turn camera on"} disabled={!media.cameraSupported || media.busy} onClick={() => void media.toggleCamera()}>
+          {cameraOn ? <Video /> : <VideoOff />}
+        </Button>
+        <Button size="icon" variant="destructive" aria-label="Leave call" disabled={media.busy} onClick={() => void media.leaveMediaSession()}>
+          <PhoneOff />
+        </Button>
+      </div>
     </footer>
   );
 }
@@ -201,6 +257,9 @@ const noUpdaterCommand = async () => undefined;
 function useServerCompatibility(): RavenUpdater {
   const [updateRequired, setUpdateRequired] = useState(() => api.getUpdateRequired());
   useEffect(() => subscribeUpdateRequired(setUpdateRequired), []);
+  const checkCompatibility = useCallback(async () => {
+    await api.checkCompatibility();
+  }, []);
   return useMemo(() => ({
     state: null,
     loading: false,
@@ -210,8 +269,6 @@ function useServerCompatibility(): RavenUpdater {
     download: noUpdaterCommand,
     install: noUpdaterCommand,
     setBusy: noUpdaterCommand,
-    checkCompatibility: async () => {
-      await api.checkCompatibility();
-    },
-  }), [updateRequired]);
+    checkCompatibility,
+  }), [updateRequired, checkCompatibility]);
 }

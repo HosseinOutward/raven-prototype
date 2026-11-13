@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { captureAllowed, isNewerState, stateTransition, type MobileNativeMediaState } from "./media";
+import { capturePermissionGranted, isNewerState, stateTransition, type MobileNativeMediaState } from "./media";
 
 const snapshot = (epoch: number, patch: Partial<MobileNativeMediaState> = {}): MobileNativeMediaState => ({
   foreground: true,
@@ -8,7 +8,6 @@ const snapshot = (epoch: number, patch: Partial<MobileNativeMediaState> = {}): M
   microphone: "notRequested",
   camera: "notRequested",
   focus: true,
-  route: "speaker",
   ...patch,
 });
 
@@ -36,12 +35,14 @@ describe("MobileNative lifecycle snapshots", () => {
     expect(stateTransition(stopped, settingsReturn)).toEqual({ stopCall: false, refresh: true });
   });
 
-  test("keeps denied-mic joins receive-only and blocks stale background capture", () => {
+  test("reports permission before joining and blocks stale background capture", () => {
+    const preJoin = snapshot(1, { microphone: "granted" });
+    expect(capturePermissionGranted(preJoin, "microphone")).toBe(true);
     const deniedReceiveOnly = snapshot(2, { callActive: true, microphone: "denied", camera: "granted" });
     const background = snapshot(3, { foreground: false, callActive: false, microphone: "granted", camera: "granted" });
-    expect(captureAllowed(deniedReceiveOnly, "microphone")).toBe(false);
-    expect(captureAllowed(deniedReceiveOnly, "camera")).toBe(true);
-    expect(captureAllowed(background, "microphone")).toBe(false);
-    expect(captureAllowed(background, "camera")).toBe(false);
+    expect(capturePermissionGranted(deniedReceiveOnly, "microphone")).toBe(false);
+    expect(capturePermissionGranted(deniedReceiveOnly, "camera")).toBe(true);
+    expect(capturePermissionGranted(background, "microphone")).toBe(false);
+    expect(capturePermissionGranted(background, "camera")).toBe(false);
   });
 });

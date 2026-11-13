@@ -15,5 +15,4 @@ tauri = { version = "2", features = ["wry"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "=0.21.1"
-ndk-context = "0.1.1"
 livekit = { version = "0.7", features = ["rustls-tls-webpki-roots"] }

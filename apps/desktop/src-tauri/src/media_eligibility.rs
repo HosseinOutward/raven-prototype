@@ -22,8 +22,8 @@ mod platform {
         true
     }
 
-    pub fn camera_permitted(_app: &AppHandle) -> bool {
-        true
+    pub fn require_camera(_app: &AppHandle) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -50,8 +50,8 @@ mod platform {
         host::microphone_permission(app) == PermissionStatus::Granted
     }
 
-    /// Foreground with the OS camera permission.
-    pub fn camera_permitted(app: &AppHandle) -> bool {
-        host::require_camera(app).is_ok()
+    /// Foreground, in the current call, with the OS camera permission; the error says which is missing.
+    pub fn require_camera(app: &AppHandle) -> Result<(), String> {
+        host::require_camera(app).map(|_| ())
     }
 }

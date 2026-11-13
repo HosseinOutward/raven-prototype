@@ -3,7 +3,7 @@
 //! The app depends on this crate only for Android, so it compiles to nothing elsewhere.
 #![cfg(target_os = "android")]
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tauri::{
     plugin::{Builder, TauriPlugin},
     AppHandle, Manager, Runtime,
@@ -18,12 +18,18 @@ pub enum PermissionKind {
     Camera,
 }
 
+/// Serialized as `notRequested`/`granted`/`denied`/`requiresSettings` for JS, but
+/// deserialized from Tauri's permission states. Tauri reports a "don't ask again"
+/// denial as `denied`, which only Settings can undo.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionStatus {
+    #[serde(rename(deserialize = "prompt"))]
     NotRequested,
     Granted,
+    #[serde(rename(deserialize = "prompt-with-rationale"))]
     Denied,
+    #[serde(rename(deserialize = "denied"))]
     RequiresSettings,
 }
 
@@ -32,7 +38,7 @@ pub enum PermissionStatus {
 pub enum MobileNativeEvent {
     Foregrounded,
     BackgroundTerminal,
-    AudioFocus { focused: bool, route: String },
+    AudioFocus { focused: bool },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -42,18 +48,9 @@ pub struct PermissionSnapshot {
     pub camera: PermissionStatus,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionRequestResult {
-    pub request_id: u64,
-    pub status: PermissionStatus,
-}
-
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct RequestPermissionArgs {
-    kind: PermissionKind,
-    request_id: u64,
+    permissions: [PermissionKind; 1],
 }
 #[derive(Serialize)]
 struct ListenArgs {
@@ -63,12 +60,9 @@ struct ListenArgs {
 struct AudioFocusArgs {
     acquire: bool,
 }
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioFocusSnapshot {
-    pub focused: bool,
-    pub route: String,
+#[derive(Deserialize)]
+struct AudioFocusResult {
+    focused: bool,
 }
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
@@ -84,49 +78,53 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 
 pub struct MobileNativeHandle<R: Runtime>(tauri::plugin::PluginHandle<R>);
 
-fn call<R: Runtime, A: Serialize, T: for<'de> Deserialize<'de>>(
+async fn call<R: Runtime, A: Serialize, T: DeserializeOwned>(
     app: &AppHandle<R>,
     method: &str,
     args: A,
 ) -> Result<T, String> {
     app.state::<MobileNativeHandle<R>>()
         .0
-        .run_mobile_plugin(method, args)
+        .run_mobile_plugin_async(method, args)
+        .await
         .map_err(|e| e.to_string())
 }
 
-pub fn permission_status<R: Runtime>(app: &AppHandle<R>) -> Result<PermissionSnapshot, String> {
-    call(app, "permissionStatus", ())
+pub async fn permission_status<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<PermissionSnapshot, String> {
+    call(app, "checkPermissions", ()).await
 }
 
-pub fn request_permission<R: Runtime>(
+/// Callers must serialize requests: Tauri Android keeps a single pending permission callback.
+pub async fn request_permission<R: Runtime>(
     app: &AppHandle<R>,
     kind: PermissionKind,
-    request_id: u64,
-) -> Result<PermissionRequestResult, String> {
+) -> Result<PermissionSnapshot, String> {
     call(
         app,
-        "requestPermission",
-        RequestPermissionArgs { kind, request_id },
+        "requestPermissions",
+        RequestPermissionArgs {
+            permissions: [kind],
+        },
     )
+    .await
 }
 
-pub fn listen<R: Runtime>(
+pub async fn listen<R: Runtime>(
     app: &AppHandle<R>,
     events: tauri::ipc::Channel<MobileNativeEvent>,
 ) -> Result<(), String> {
-    call(app, "listen", ListenArgs { events })
+    call(app, "listen", ListenArgs { events }).await
 }
 
-pub fn audio_focus<R: Runtime>(
-    app: &AppHandle<R>,
-    acquire: bool,
-) -> Result<AudioFocusSnapshot, String> {
-    call(app, "audioFocus", AudioFocusArgs { acquire })
+pub async fn audio_focus<R: Runtime>(app: &AppHandle<R>, acquire: bool) -> Result<bool, String> {
+    let result: AudioFocusResult = call(app, "audioFocus", AudioFocusArgs { acquire }).await?;
+    Ok(result.focused)
 }
 
-pub fn open_settings<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    call(app, "openSettings", ())
+pub async fn open_settings<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    call(app, "openSettings", ()).await
 }
 
 #[no_mangle]
@@ -135,8 +133,9 @@ pub extern "system" fn Java_app_raven_mobilenative_RavenMobileNativePlugin_nativ
     _plugin: jni::objects::JObject<'_>,
     application_context: jni::objects::JObject<'_>,
 ) -> jni::sys::jboolean {
-    // CPAL/Oboe use ndk-context independently of WebRTC. Keep an Application
-    // global reference for the process lifetime, including Activity recreation.
+    // CPAL/Oboe read ndk-context, which tao already initializes with the Application
+    // context in Activity onCreate; initializing it again here panics. WebRTC gets its
+    // own Application global reference, kept for the process lifetime.
     static CONTEXT: std::sync::OnceLock<Result<jni::objects::GlobalRef, String>> =
         std::sync::OnceLock::new();
     let vm = match env.get_java_vm() {
@@ -144,18 +143,8 @@ pub extern "system" fn Java_app_raven_mobilenative_RavenMobileNativePlugin_nativ
         Err(_) => return jni::sys::JNI_FALSE,
     };
     let context = CONTEXT.get_or_init(|| {
-        let context = env
-            .new_global_ref(&application_context)
-            .map_err(|e| e.to_string())?;
-        // SAFETY: OnceLock serializes this single initialization before plugin
-        // registration completes. The VM and retained Application outlive audio.
-        unsafe {
-            ndk_context::initialize_android_context(
-                vm.get_java_vm_pointer().cast(),
-                context.as_obj().as_raw().cast(),
-            );
-        }
-        Ok(context)
+        env.new_global_ref(&application_context)
+            .map_err(|e| e.to_string())
     });
     match context {
         Ok(context)

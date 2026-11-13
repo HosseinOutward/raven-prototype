@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { RavenView } from "@/shells/ravenv1/state";
 
 const HOME: RavenView = { kind: "home" };
@@ -26,14 +26,12 @@ export function pushView(stack: RavenView[], next: RavenView): RavenView[] {
   return [...stack, next];
 }
 
-/** A Back stack for system Back; it starts over at Home for each signed-in user. */
-export function useMobileNativeNavigation(userId: string | undefined) {
+/** A Back stack for system Back. Key its owner by user to start over at Home. */
+export function useMobileNativeNavigation() {
   const [stack, setStack] = useState<RavenView[]>([HOME]);
-  useEffect(() => setStack([HOME]), [userId]);
   const navigate = useCallback((next: RavenView) => setStack((current) => pushView(current, next)), []);
   const goBack = useCallback(() => setStack((current) => (current.length > 1 ? current.slice(0, -1) : current)), []);
-  const leaveView = useCallback(() => setStack((current) => (current.length > 1 ? current.slice(0, -1) : [HOME])), []);
   const canGoBack = stack.length > 1;
-  const navigation = useMemo(() => ({ canGoBack, goBack, navigate, leaveView }), [canGoBack, goBack, navigate, leaveView]);
+  const navigation = useMemo(() => ({ canGoBack, goBack, navigate }), [canGoBack, goBack, navigate]);
   return { view: stack[stack.length - 1] ?? HOME, navigation };
 }

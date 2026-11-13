@@ -47,24 +47,32 @@ process.env.NDK_HOME = ndkPath;
 process.env.ANDROID_NDK_HOME = ndkPath;
 
 if (tauriCommand !== "init") {
-  const apiEndpoint = process.env.RAVEN_MOBILE_NATIVE_API_URL ?? process.env.VITE_RAVEN_API_URL;
+  // Release builds ship the network security config that forbids cleartext HTTP.
+  const isRelease = tauriCommand === "build" && !tauriArgs.includes("--debug") && !tauriArgs.includes("-d");
+  const apiVariable = process.env.RAVEN_MOBILE_NATIVE_API_URL === undefined ? "VITE_RAVEN_API_URL" : "RAVEN_MOBILE_NATIVE_API_URL";
+  const apiEndpoint = process.env[apiVariable];
   if (!apiEndpoint) {
     fail("Set RAVEN_MOBILE_NATIVE_API_URL or VITE_RAVEN_API_URL to the phone's Raven API URL before Android dev/build.");
   }
+  let protocol = "";
   let host = "";
   try {
     const url = new URL(apiEndpoint);
-    if (url.protocol === "http:" || url.protocol === "https:") host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      protocol = url.protocol;
+      host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    }
   } catch {}
   if (!host) fail("The Android API URL must be an absolute HTTP(S) URL.");
+  if (isRelease && protocol !== "https:") {
+    fail(`${apiVariable} must be an https:// URL for release Android builds; release builds block cleartext http:// API traffic. Use https:, or use mobile-native:dev or mobile-native:phone for a debug build.`);
+  }
   // Loopback and wildcard addresses point at the phone itself, not at the API.
   if (["localhost", "::1", "::", "0.0.0.0"].includes(host) || host.startsWith("127.")) {
     fail("The Android API URL must be reachable from the phone; loopback and wildcard addresses are not valid.");
   }
   // Overrides the desktop URL from .env for this build; Vite prefers process values.
   process.env.VITE_RAVEN_API_URL = apiEndpoint;
-  // The phone always talks to a remote API; there is no sidecar on Android.
-  process.env.RAVEN_DESKTOP_API_MODE = "remote";
 }
 
 const adb = path.join(sdkPath, "platform-tools", process.platform === "win32" ? "adb.exe" : "adb");

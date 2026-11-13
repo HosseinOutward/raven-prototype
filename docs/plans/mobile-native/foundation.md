@@ -49,20 +49,30 @@ check; the platform is chosen once, at a boundary:
   controls on screen while a call is active, handles system Back, and keeps the
   server compatibility check without the desktop updater.
 - The `raven-mobile-native` plugin owns OS permission requests, communication audio focus,
-  route notifications, Activity lifecycle and CameraX. The existing Rust engines
+  Activity lifecycle and CameraX. The existing Rust engines
   still own capture processing, mixing, publication, subscription and video
   presentation. There is no browser media fallback and no separate Android room.
-- Microphone and camera permission live in the MobileNative state snapshot, which the
-  call host reads. Queries never prompt; explicit capture actions do. A denied
-  microphone still allows a receive-only call, and the shell offers the app settings
-  page. The mixer hides microphone monitoring on MobileNative. The camera button asks for
-  permission before listing cameras, because CameraX may list none until granted.
+- Kotlin keeps no permission state. Rust calls Tauri's built-in `checkPermissions` and
+  `requestPermissions` and maps the result into the MobileNative state snapshot, which
+  the call host reads: prompt is `notRequested`, prompt with rationale is `denied`,
+  denied is `requiresSettings`. Requests are serialized because Tauri Android keeps one
+  pending permission callback. Queries never prompt; explicit capture actions do. The
+  pre-join microphone and camera chips only ask for OS permission
+  (`requestCapture` resolves on permission alone). A denied microphone still allows a
+  receive-only call, and the shell offers the app settings page. Microphone monitoring
+  is unsupported on Android (the native `supports_monitoring` capability), so the mixer
+  hides it. The camera button asks for permission before listing cameras, because
+  CameraX may list none until granted.
 - Camera frames travel through JNI into the existing capture and sink pipeline.
-  CameraX delivers upright RGBA frames; `mobile_native/camera.rs` converts them with the
-  shared `packed_to_i420`, keeps at most one pending frame, and reports observed dimensions and measured frame rate.
-  Front-facing cameras are listed first. Stopping a camera drains CameraX callbacks
-  before Rust frees their handle; if draining fails, the handle is kept rather than
-  freeing memory a callback may still use.
+  There is no Rust worker: the CameraX analyzer thread reads CameraX's direct RGBA plane
+  buffer in place over JNI, and `KEEP_ONLY_LATEST` drops frames while it is busy.
+  `mobile_native/camera.rs` converts them with the shared `packed_to_i420` and reports
+  observed dimensions and measured frame rate. Front-facing cameras are listed first.
+  Stopping a camera drains the analyzer executor with a marker task, so the main thread
+  never blocks, before Rust frees the callback handle; if draining fails, the handle is
+  kept rather than freeing memory a callback may still use.
+- Plugin calls are async (`run_mobile_plugin_async`), except camera start, stop and
+  list, which the video engine calls synchronously.
 
 ## Foreground lifecycle
 
@@ -77,18 +87,22 @@ work. A terminal stop advances the epoch before waiting for engine locks. Each l
 focus or permission change stops output and reconciles the engines against eligibility,
 without involving JavaScript; connecting or activating a call requires an open one. Stops and begins are
 serialized, so an old shutdown cannot disconnect a new call or release its audio
-focus. A running camera drops frames once its call's epoch has ended.
+focus. Camera capture needs the same conditions as audio: foreground, an active call, the
+current epoch and OS permission (`camera_current`, `require_camera`). A running camera
+drops frames once its call's epoch has ended.
 
 Activity stop ends the call. Kotlin unbinds the camera so Activity resume cannot
-restart it; Rust closes microphone and playback eligibility, disconnects media and
+restart it, and refuses to bind CameraX unless the Activity is at least STARTED; Rust closes microphone and playback eligibility, disconnects media and
 releases focus. On return, React cancels the old join or reconnect and reconciles
 server state, and it recognizes a stopped epoch even if JavaScript missed both
 lifecycle events. Server presence cleanup relies on timeout while the WebView is
 suspended.
 
-Permission dialogs do not count as Activity stop. A transient focus loss suspends
-audio while keeping desired settings and publication intent; recovery continues the
-same admitted call. Mute, deafen and server moderation keep their meanings.
+Permission dialogs do not count as Activity stop. Losing audio focus keeps the call:
+playback (gated in `OutputMixer::start`, stopped by reconcile) and capture stop, desired
+settings and publication intent are kept, and the call controls show "Audio paused by
+another app" with a Resume audio button (`mobile_native_resume_audio`) that requests
+focus again. Mute, deafen and server moderation keep their meanings.
 
 ## Native startup and packaging
 
@@ -104,7 +118,9 @@ paths from `ravenWebrtcJar` and `ravenNativeLibs`; no binaries are checked in. J
 classes and invoke arguments have R8 keep rules. Native libraries use 16 KB ELF
 alignment, set in the app's `build.rs`.
 
-Desktop tray, updater, sidecar and window setup are compiled only for desktop. The
+Desktop tray, updater and window setup are compiled only for desktop. The API sidecar
+code and the audio sidecar participant are shared; the API sidecar starts only when
+`RAVEN_DESKTOP_API_MODE` is `sidecar` or `local`, which Android never sets. The
 `macos-private-api` Tauri feature stays enabled on every target because Tauri
 validates it against the shared configuration; it has no effect on Android.
 
@@ -130,7 +146,11 @@ bun run mobile-native:check   # frontend tests, then the arm64 debug APK build
 ```
 
 Set `RAVEN_MOBILE_NATIVE_API_URL` or `VITE_RAVEN_API_URL` to an API address
-the phone can reach; the script passes it to Vite in place of the desktop URL from `.env`.
+the phone can reach; the script passes it to Vite in place of the desktop URL. The
+wrapper `scripts/tauri.ts` loads the repository `.env` into `process.env` by plain
+assignment, so a nonempty `.env` value wins over the same variable set in the shell;
+edit or clear it there. Release builds require an `https:` URL; debug builds keep the
+http rules below.
 
 The APK is written under
 `src-tauri/gen/android/app/build/outputs/apk/universal/debug/`. Despite the

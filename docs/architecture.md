@@ -54,7 +54,7 @@ Rules the engines are built around:
 
 MobileNative, the native Android app, uses these same Rust media engines and React
 app state. A local Tauri plugin under `src-tauri/plugins/raven-mobile-native` adapts
-Android permissions, audio focus and routes, Activity lifecycle and CameraX frames.
+Android permissions, audio focus, Activity lifecycle and CameraX frames.
 Engines ask `media_eligibility` whether media may run, which stops pending capture
 when the app goes to the background or leaves a call; on desktop it always allows.
 React remains the call supervisor, through a per-shell `CallHost`, so calls run only

@@ -1,18 +1,12 @@
 //! The MobileNative camera backend. The raven-mobile-native plugin runs CameraX, which
-//! delivers upright RGBA frames; a worker converts them to I420 with the shared
-//! converter, off the CameraX analyzer thread. Reporting is host-tested; capture
-//! compiles only for Android.
+//! delivers upright RGBA frames. Conversion to I420 with the shared converter runs inline
+//! on CameraX's analyzer thread, which drops frames while it is busy, so memory and latency
+//! stay bounded. Reporting is host-tested; capture compiles only for Android.
 
+#[cfg(mobile)]
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
-#[cfg(mobile)]
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    sync::mpsc::{sync_channel, Receiver, RecvTimeoutError},
-    sync::Arc,
-    thread::{self, JoinHandle},
-    time::Duration,
-};
 
 #[cfg(mobile)]
 use raven_mobile_native::camera::CameraFrame;
@@ -31,7 +25,7 @@ use crate::video::{
 /// The cameras CameraX reports, front-facing first.
 #[cfg(mobile)]
 pub fn list_cameras(app: &tauri::AppHandle) -> Result<Vec<CameraDevice>, String> {
-    let mut cameras = raven_mobile_native::camera::CameraHandle::new(app).list_cameras()?;
+    let mut cameras = raven_mobile_native::camera::list_cameras(app)?;
     cameras.sort_by_key(|camera| !camera.front_facing);
     Ok(cameras
         .into_iter()
@@ -49,8 +43,6 @@ struct CameraRuntime {
     signature: VideoCaptureSignature,
     report: Arc<Mutex<RuntimeReport>>,
     session: raven_mobile_native::camera::CameraSession<tauri::Wry>,
-    worker: Option<JoinHandle<()>>,
-    stopping: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -111,10 +103,6 @@ impl VideoSourceRuntime for CameraRuntime {
         if let Err(error) = self.session.stop() {
             eprintln!("[video] Android camera stop failed: {error}");
         }
-        self.stopping.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
         if let Ok(mut report) = self.report.lock() {
             report.state = VideoSourceRuntimeState::default();
         }
@@ -142,79 +130,47 @@ pub(crate) fn start(
 ) -> Result<Box<dyn VideoSourceRuntime>, VideoCaptureError> {
     let epoch = crate::mobile_native::media::require_camera(&app)
         .map_err(|message| VideoCaptureError::StreamFailed { message })?;
-    // One pending frame bounds memory and latency: CameraX closes its ImageProxy after
-    // copying, and the analyzer never waits for conversion or LiveKit publication.
-    let (sender, receiver) = sync_channel::<CameraFrame>(1);
-    let stopping = Arc::new(AtomicBool::new(false));
     let report = Arc::new(Mutex::new(RuntimeReport::starting()));
-    let timing = Arc::new(Mutex::new(FrameTiming::default()));
-
-    let worker_stopping = Arc::clone(&stopping);
-    let worker_report = Arc::clone(&report);
-    let worker_timing = Arc::clone(&timing);
+    let timing = Mutex::new(FrameTiming::default());
     let source_id = source.id;
-    let worker = thread::Builder::new()
-        .name(format!("raven-camera-{source_id}"))
-        .spawn(move || {
-            while let Some(frame) = receive_frame(&receiver, &worker_stopping) {
-                if !sink.frame_due() {
-                    continue;
-                }
-                let Some(frame) = to_i420(frame) else {
-                    continue;
-                };
-                let fps = worker_timing
-                    .lock()
-                    .ok()
-                    .and_then(|timing| timing.measured_fps);
-                if report_frame(&worker_report, frame.width, frame.height, fps) {
-                    if let Some(events) = &events {
-                        events.notify(source_id, CaptureEvent::StateChanged);
-                    }
-                }
-                sink.push_frame(frame);
-            }
-        })
-        .map_err(|error| VideoCaptureError::StreamFailed {
-            message: format!("could not start Android camera worker: {error}"),
-        })?;
-
     let callback_app = app.clone();
-    let callback: Arc<dyn Fn(CameraFrame) + Send + Sync> = Arc::new(move |frame| {
-        // A leave, background or revoked permission ends delivery immediately.
-        if !crate::mobile_native::media::epoch_matches(&callback_app, epoch)
-            || crate::mobile_native::media::require_camera(&callback_app).is_err()
-        {
-            return;
-        }
-        if let Ok(mut timing) = timing.lock() {
-            timing.observe(frame.timestamp_ns);
-        }
-        // Drop the frame while the worker is busy, or after the runtime stopped.
-        let _ = sender.try_send(frame);
-    });
-    let session = match raven_mobile_native::camera::CameraHandle::new(&app).start_camera(
+    let callback_report = Arc::clone(&report);
+    let callback: Arc<dyn for<'a> Fn(CameraFrame<'a>) + Send + Sync + 'static> =
+        Arc::new(move |frame: CameraFrame<'_>| {
+            // A leave, background or revoked permission ends delivery immediately.
+            if !crate::mobile_native::media::camera_current(&callback_app, epoch) {
+                return;
+            }
+            let fps = timing.lock().ok().and_then(|mut timing| {
+                timing.observe(frame.timestamp_ns);
+                timing.measured_fps
+            });
+            if !sink.frame_due() {
+                return;
+            }
+            let Some(converted) = to_i420(&frame) else {
+                return;
+            };
+            if report_frame(&callback_report, converted.width, converted.height, fps) {
+                if let Some(events) = &events {
+                    events.notify(source_id, CaptureEvent::StateChanged);
+                }
+            }
+            sink.push_frame(converted);
+        });
+    let session = raven_mobile_native::camera::start_camera(
+        &app,
         &source.target_id,
         source.profile.width,
         source.profile.height,
         callback,
-    ) {
-        Ok(session) => session,
-        Err(message) => {
-            // A failed start may leave the callback, and its sender, with the plugin, so
-            // the flag rather than a disconnect ends the worker.
-            stopping.store(true, Ordering::Release);
-            let _ = worker.join();
-            return Err(VideoCaptureError::StreamFailed { message });
-        }
-    };
+    )
+    .map_err(|message| VideoCaptureError::StreamFailed { message })?;
     Ok(Box::new(CameraRuntime {
         source_id,
         signature,
         report,
         session,
-        worker: Some(worker),
-        stopping,
     }))
 }
 
@@ -253,26 +209,9 @@ fn report_frame(
 }
 
 #[cfg(mobile)]
-fn receive_frame(receiver: &Receiver<CameraFrame>, stopping: &AtomicBool) -> Option<CameraFrame> {
-    while !stopping.load(Ordering::Acquire) {
-        match receiver.recv_timeout(Duration::from_millis(20)) {
-            Ok(frame) => return Some(frame),
-            Err(RecvTimeoutError::Disconnected) => return None,
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-    }
-    None
-}
-
-/// CameraX may leave the last RGBA row unpadded; the converter expects whole rows.
-#[cfg(mobile)]
-fn to_i420(mut frame: CameraFrame) -> Option<I420Frame> {
-    let rows = frame.row_stride.checked_mul(frame.height as usize)?;
-    if frame.rgba.len() < rows {
-        frame.rgba.resize(rows, 0);
-    }
+fn to_i420(frame: &CameraFrame<'_>) -> Option<I420Frame> {
     packed_to_i420(
-        &frame.rgba,
+        frame.rgba,
         frame.width,
         frame.height,
         frame.row_stride,

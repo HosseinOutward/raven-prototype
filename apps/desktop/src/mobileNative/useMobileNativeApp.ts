@@ -4,10 +4,9 @@ import { useChat } from "@/shells/ravenv1/useChat";
 import { useNestEntry } from "@/shells/ravenv1/useNestEntry";
 import { useRavenMediaAdapter } from "@/shells/ravenv1/useRavenMediaAdapter";
 import { useRavenShellData } from "@/shells/ravenv1/useRavenShellData";
-import { useMobileNativeNavigation } from "./navigation";
 
 /** The same data, media, Nest entry and chat owners the desktop shell composes, with the
- * MobileNative call host and a Back-stack navigation. */
+ * MobileNative call host. */
 export function useMobileNativeApp(callHost: CallHost) {
   const data = useRavenShellData();
   const media = useRavenMediaAdapter(data.refresh, {
@@ -23,7 +22,6 @@ export function useMobileNativeApp(callHost: CallHost) {
   });
   const entry = useNestEntry(data.joinNest, media.joinMediaSession, media.cancelMediaJoin);
   const chat = useChat(data);
-  const { view, navigation } = useMobileNativeNavigation(data.user?.id);
   const activeEntryNotices = useMemo(
     () => data.entryNotices.filter((notice) => notice.nestId === media.activeNestId),
     [data.entryNotices, media.activeNestId],
@@ -36,5 +34,5 @@ export function useMobileNativeApp(callHost: CallHost) {
     void media.leaveMediaSession().catch(() => undefined);
   }, [signedIn, media.activeNestId, media.leaveMediaSession]);
 
-  return { data, media, entry, chat, view, navigation, activeEntryNotices };
+  return { data, media, entry, chat, activeEntryNotices };
 }

@@ -700,8 +700,14 @@ pub fn window_share_size(target_id: &str) -> Option<(u32, u32)> {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(mobile))]
-pub fn list_cameras() -> Result<Vec<CameraDevice>, VideoCaptureError> {
+pub fn list_cameras(_app: &tauri::AppHandle) -> Result<Vec<CameraDevice>, VideoCaptureError> {
     camera::list()
+}
+
+#[cfg(mobile)]
+pub fn list_cameras(app: &tauri::AppHandle) -> Result<Vec<CameraDevice>, VideoCaptureError> {
+    crate::mobile_native::camera::list_cameras(app)
+        .map_err(|message| VideoCaptureError::StreamFailed { message })
 }
 
 pub fn list_displays() -> Result<Vec<DisplayTarget>, VideoCaptureError> {

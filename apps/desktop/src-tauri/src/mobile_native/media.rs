@@ -22,13 +22,11 @@ pub struct MobileNativeSnapshot {
     pub microphone: PermissionStatus,
     pub camera: PermissionStatus,
     pub focus: bool,
-    pub route: String,
 }
 
 struct MobileNativeInner {
     gate: MobileNativeGate,
     permissions: PermissionSnapshot,
-    route: String,
 }
 
 impl MobileNativeInner {
@@ -40,7 +38,6 @@ impl MobileNativeInner {
             microphone: self.permissions.microphone.clone(),
             camera: self.permissions.camera.clone(),
             focus: self.gate.focused,
-            route: self.route.clone(),
         }
     }
 }
@@ -50,6 +47,10 @@ pub struct MobileNativeMedia {
     state: Mutex<MobileNativeInner>,
     /// Serializes begin/end transitions, so a new call waits for a pending stop.
     transition: tokio::sync::Mutex<()>,
+    /// Tauri Android passes callback 0 for every invoke and keeps one pending permission
+    /// callback, so overlapping requests would leave the first one unresolved forever.
+    /// `mobile_native_request_permission` holds this across the plugin call.
+    permission_request: tokio::sync::Mutex<()>,
 }
 
 impl Default for MobileNativeMedia {
@@ -61,9 +62,9 @@ impl Default for MobileNativeMedia {
                     microphone: PermissionStatus::NotRequested,
                     camera: PermissionStatus::NotRequested,
                 },
-                route: String::new(),
             }),
             transition: tokio::sync::Mutex::new(()),
+            permission_request: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -75,44 +76,75 @@ impl MobileNativeMedia {
             .map_err(|_| "MobileNative media state is unavailable.".into())
     }
 
+    /// Reads fields under one lock without cloning the whole snapshot.
+    fn read<T>(&self, read: impl FnOnce(&MobileNativeInner) -> T) -> Result<T, String> {
+        self.lock().map(|inner| read(&inner))
+    }
+
     pub fn snapshot(&self) -> Result<MobileNativeSnapshot, String> {
-        self.lock().map(|inner| inner.snapshot())
+        self.read(MobileNativeInner::snapshot)
     }
 }
 
 pub fn audio_allowed(app: &AppHandle) -> bool {
     app.state::<MobileNativeMedia>()
-        .lock()
-        .is_ok_and(|inner| inner.gate.audio_allowed())
+        .read(|inner| inner.gate.audio_allowed())
+        .unwrap_or(false)
 }
 
 /// The OS microphone permission, or `Denied` when the state cannot be read.
 pub fn microphone_permission(app: &AppHandle) -> PermissionStatus {
     app.state::<MobileNativeMedia>()
-        .snapshot()
-        .map_or(PermissionStatus::Denied, |s| s.microphone)
+        .read(|inner| inner.permissions.microphone.clone())
+        .unwrap_or(PermissionStatus::Denied)
 }
 
 pub fn require_call(app: &AppHandle) -> Result<u64, String> {
-    let snapshot = app.state::<MobileNativeMedia>().snapshot()?;
-    if !snapshot.foreground || !snapshot.call_active {
+    let (active, epoch) = app.state::<MobileNativeMedia>().read(|inner| {
+        (
+            inner.gate.foreground && inner.gate.call_active,
+            inner.gate.epoch,
+        )
+    })?;
+    if !active {
         return Err("This foreground call has ended. Join again to continue.".into());
     }
-    Ok(snapshot.epoch)
+    Ok(epoch)
 }
 
 pub fn require_camera(app: &AppHandle) -> Result<u64, String> {
-    let snapshot = app.state::<MobileNativeMedia>().snapshot()?;
-    if !snapshot.foreground || snapshot.camera != PermissionStatus::Granted {
+    let (active, camera, epoch) = app.state::<MobileNativeMedia>().read(|inner| {
+        (
+            inner.gate.foreground && inner.gate.call_active,
+            inner.permissions.camera.clone(),
+            inner.gate.epoch,
+        )
+    })?;
+    if !active {
+        return Err("Join a call to use the camera.".into());
+    }
+    if camera != PermissionStatus::Granted {
         return Err("Raven needs camera permission while in the foreground.".into());
     }
-    Ok(snapshot.epoch)
+    Ok(epoch)
 }
 
 pub fn epoch_matches(app: &AppHandle, epoch: u64) -> bool {
     app.state::<MobileNativeMedia>()
-        .snapshot()
-        .is_ok_and(|s| s.foreground && s.epoch == epoch)
+        .read(|inner| inner.gate.foreground && inner.gate.epoch == epoch)
+        .unwrap_or(false)
+}
+
+/// Whether camera capture for this call epoch may still run. Called once per frame.
+pub fn camera_current(app: &AppHandle, epoch: u64) -> bool {
+    app.state::<MobileNativeMedia>()
+        .read(|inner| {
+            inner.gate.foreground
+                && inner.gate.call_active
+                && inner.gate.epoch == epoch
+                && inner.permissions.camera == PermissionStatus::Granted
+        })
+        .unwrap_or(false)
 }
 
 fn emit(app: &AppHandle) -> Result<MobileNativeSnapshot, String> {
@@ -125,6 +157,14 @@ fn emit(app: &AppHandle) -> Result<MobileNativeSnapshot, String> {
 fn store_permissions(app: &AppHandle, permissions: PermissionSnapshot) {
     if let Ok(mut inner) = app.state::<MobileNativeMedia>().lock() {
         inner.permissions = permissions;
+    }
+}
+
+/// Reloads the OS permissions. A failure is logged and keeps the last known values.
+async fn refresh_permissions(app: &AppHandle) {
+    match raven_mobile_native::permission_status(app).await {
+        Ok(permissions) => store_permissions(app, permissions),
+        Err(error) => eprintln!("[mobile-native] permission_status refresh failed: {error}"),
     }
 }
 
@@ -144,58 +184,71 @@ pub fn initialize(app: &AppHandle) {
         Ok(())
     });
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = raven_mobile_native::listen(&app, channel) {
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = raven_mobile_native::listen(&app, channel).await {
             eprintln!("[mobile-native] could not subscribe to native lifecycle: {error}");
             handle_event(&app, MobileNativeEvent::BackgroundTerminal);
             return;
         }
-        if let Ok(permissions) = raven_mobile_native::permission_status(&app) {
-            store_permissions(&app, permissions);
+        refresh_permissions(&app).await;
+        if let Err(error) = emit(&app) {
+            eprintln!("[mobile-native] initialize emit failed: {error}");
         }
-        let _ = emit(&app);
     });
 }
 
+/// Engine work that follows a lifecycle event once the gate has been updated.
+enum AfterEvent {
+    Background,
+    Foregrounded,
+    AudioFocus,
+}
+
 fn handle_event(app: &AppHandle, event: MobileNativeEvent) {
-    let background = matches!(event, MobileNativeEvent::BackgroundTerminal);
-    let foregrounded = matches!(event, MobileNativeEvent::Foregrounded);
-    let focus_lost = matches!(event, MobileNativeEvent::AudioFocus { focused: false, .. });
-    {
+    let after = {
         let state = app.state::<MobileNativeMedia>();
         let Ok(mut inner) = state.lock() else {
             return;
         };
         match event {
-            MobileNativeEvent::Foregrounded => inner.gate.foreground = true,
-            MobileNativeEvent::BackgroundTerminal => inner.gate.background(),
-            MobileNativeEvent::AudioFocus { focused, route } => {
+            MobileNativeEvent::Foregrounded => {
+                inner.gate.foreground = true;
+                AfterEvent::Foregrounded
+            }
+            MobileNativeEvent::BackgroundTerminal => {
+                inner.gate.background();
+                AfterEvent::Background
+            }
+            MobileNativeEvent::AudioFocus { focused } => {
                 inner.gate.focused = focused;
-                inner.route = route;
+                AfterEvent::AudioFocus
             }
         }
-    }
+    };
     // This callback closes the gate before waiting for any engine operation. Device
     // workers also observe it while a connect/reconcile is holding the ops lock.
-    let _ = emit(app);
+    if let Err(error) = emit(app) {
+        eprintln!("[mobile-native] handle_event emit failed: {error}");
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if background {
-            if let Err(error) = complete_pending_stop(&app).await {
-                eprintln!("[mobile-native] foreground call shutdown failed: {error}");
+        match after {
+            AfterEvent::Background => {
+                if let Err(error) = complete_pending_stop(&app).await {
+                    eprintln!("[mobile-native] foreground call shutdown failed: {error}");
+                }
+                return;
             }
-            return;
-        }
-        if foregrounded {
-            if let Ok(permissions) =
-                tokio::task::block_in_place(|| raven_mobile_native::permission_status(&app))
-            {
-                store_permissions(&app, permissions);
-                let _ = emit(&app);
+            AfterEvent::Foregrounded => {
+                refresh_permissions(&app).await;
+                if let Err(error) = emit(&app) {
+                    eprintln!("[mobile-native] foregrounded emit failed: {error}");
+                }
+                resync_video(&app).await;
             }
-            resync_video(&app).await;
+            AfterEvent::AudioFocus => {}
         }
-        crate::audio::state::resync_audio_eligibility(&app, focus_lost).await;
+        crate::audio::state::resync_audio_eligibility(&app).await;
     });
 }
 
@@ -208,7 +261,10 @@ async fn stop_native_media(app: &AppHandle) -> Result<(), String> {
         .state::<crate::video::state::SharedVideoEngineState>()
         .inner()
         .clone();
-    if let Ok(mut engine) = audio.write() {
+    {
+        let mut engine = audio
+            .write()
+            .map_err(|_| "Native audio state is unavailable.".to_string())?;
         engine.capture_demand.call_active = false;
         engine.capture_demand.monitoring = false;
     }
@@ -235,9 +291,26 @@ async fn drain_pending_stop(app: &AppHandle, state: &MobileNativeMedia) -> Resul
             return Ok(());
         };
         stop_native_media(app).await?;
-        tokio::task::block_in_place(|| raven_mobile_native::audio_focus(app, false))?;
+        raven_mobile_native::audio_focus(app, false).await?;
         state.lock()?.gate.finish_stop(epoch);
     }
+}
+
+/// Requests communication audio focus for the call `epoch` and records the result in
+/// the gate. Errors when the call ended while waiting, or when the plugin failed.
+async fn acquire_focus(
+    app: &AppHandle,
+    state: &MobileNativeMedia,
+    epoch: u64,
+) -> Result<bool, String> {
+    let focus = raven_mobile_native::audio_focus(app, true).await;
+    let mut inner = state.lock()?;
+    if inner.gate.epoch != epoch || !inner.gate.foreground || !inner.gate.call_active {
+        return Err("The call was cancelled while acquiring audio focus.".into());
+    }
+    let granted = focus?;
+    inner.gate.focused = granted;
+    Ok(granted)
 }
 
 #[tauri::command]
@@ -245,10 +318,8 @@ pub async fn mobile_native_get_state(
     app: AppHandle,
     state: State<'_, MobileNativeMedia>,
 ) -> Result<MobileNativeSnapshot, String> {
-    let permissions = tokio::task::block_in_place(|| raven_mobile_native::permission_status(&app))?;
+    let permissions = raven_mobile_native::permission_status(&app).await?;
     state.lock()?.permissions = permissions;
-    crate::audio::state::resync_audio_eligibility(&app, false).await;
-    resync_video(&app).await;
     emit(&app)
 }
 
@@ -261,26 +332,31 @@ pub async fn mobile_native_begin_call(
     let _transition = state.transition.lock().await;
     drain_pending_stop(&app, &state).await?;
     state.lock()?.gate.begin(expected_epoch)?;
-    let focus = tokio::task::block_in_place(|| raven_mobile_native::audio_focus(&app, true));
+    let error = match acquire_focus(&app, &state, expected_epoch).await {
+        Ok(true) => return emit(&app),
+        Ok(false) => "Another app currently owns communication audio.".to_string(),
+        Err(error) => error,
+    };
+    // A cancelled call was already ended; only end this one.
     let mut inner = state.lock()?;
-    if inner.gate.epoch != expected_epoch || !inner.gate.foreground || !inner.gate.call_active {
-        return Err("The call was cancelled while acquiring audio focus.".into());
+    if inner.gate.epoch == expected_epoch {
+        inner.gate.end();
     }
-    match focus {
-        Ok(focus) if focus.focused => {
-            inner.gate.focused = true;
-            inner.route = focus.route;
-        }
-        Ok(_) => {
-            inner.gate.end();
-            return Err("Another app currently owns communication audio.".into());
-        }
-        Err(error) => {
-            inner.gate.end();
-            return Err(error);
-        }
+    Err(error)
+}
+
+#[tauri::command]
+pub async fn mobile_native_resume_audio(
+    app: AppHandle,
+    state: State<'_, MobileNativeMedia>,
+) -> Result<MobileNativeSnapshot, String> {
+    let _transition = state.transition.lock().await;
+    let epoch = require_call(&app)?;
+    let granted = acquire_focus(&app, &state, epoch).await?;
+    crate::audio::state::resync_audio_eligibility(&app).await;
+    if !granted {
+        return Err("Another app is still using call audio.".into());
     }
-    drop(inner);
     emit(&app)
 }
 
@@ -302,26 +378,25 @@ pub async fn mobile_native_request_permission(
     kind: PermissionKind,
     expected_epoch: u64,
 ) -> Result<MobileNativeSnapshot, String> {
+    let _request = state.permission_request.lock().await;
     if !epoch_matches(&app, expected_epoch) {
         return Err("The device action was cancelled.".into());
     }
-    let result = tokio::task::block_in_place(|| {
-        raven_mobile_native::request_permission(&app, kind.clone(), expected_epoch)
-    })?;
-    if result.request_id != expected_epoch || !epoch_matches(&app, expected_epoch) {
+    let permissions = raven_mobile_native::request_permission(&app, kind.clone()).await?;
+    // The answer is OS truth even when the action that asked was cancelled.
+    state.lock()?.permissions = permissions;
+    if !epoch_matches(&app, expected_epoch) {
+        emit(&app)?;
         return Err("The device action was cancelled while requesting permission.".into());
     }
-    {
-        let mut inner = state.lock()?;
-        match kind {
-            PermissionKind::Microphone => inner.permissions.microphone = result.status,
-            PermissionKind::Camera => inner.permissions.camera = result.status,
-        }
+    match kind {
+        PermissionKind::Microphone => crate::audio::state::resync_audio_eligibility(&app).await,
+        PermissionKind::Camera => resync_video(&app).await,
     }
     emit(&app)
 }
 
 #[tauri::command]
 pub async fn mobile_native_open_settings(app: AppHandle) -> Result<(), String> {
-    tokio::task::block_in_place(|| raven_mobile_native::open_settings(&app))
+    raven_mobile_native::open_settings(&app).await
 }

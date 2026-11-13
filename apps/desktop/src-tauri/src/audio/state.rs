@@ -65,6 +65,7 @@ pub struct NativeAudioCapabilityReport {
     pub issues: Vec<String>,
     pub supported_source_types: Vec<AudioSourceType>,
     pub supports_microphone: bool,
+    pub supports_monitoring: bool,
     pub supports_system_audio: bool,
     pub supports_app_audio: bool,
     pub supports_screen_audio: bool,
@@ -1893,6 +1894,7 @@ pub fn audio_get_capabilities() -> NativeAudioCapabilityReport {
         issues,
         supported_source_types,
         supports_microphone: true,
+        supports_monitoring: cfg!(not(mobile)),
         supports_system_audio: system_audio_available,
         supports_app_audio: cfg!(any(target_os = "windows", target_os = "macos")),
         supports_screen_audio: false,
@@ -3088,10 +3090,12 @@ async fn reconcile_media(
     if !media_eligibility::audio_allowed(app) {
         demand.call_active = false;
         demand.monitoring = false;
+        tokio::task::block_in_place(|| ops.engine.output_mixer().stop());
     }
     // A denied microphone never prevents receiving or publishing other eligible
     // sources, and checking the permission never opens an OS prompt.
-    if !media_eligibility::microphone_permitted(app) {
+    let microphone_denied = !media_eligibility::microphone_permitted(app);
+    if microphone_denied {
         for source in &mut sources {
             if source.source_type == AudioSourceType::Microphone {
                 source.enabled = false;
@@ -3121,7 +3125,7 @@ async fn reconcile_media(
             render_reference,
         )
     });
-    if !outcome.runtime_updates.is_empty() {
+    if !outcome.runtime_updates.is_empty() || microphone_denied {
         let mut guard = state.write().map_err(|_| AudioStateError::StatePoisoned)?;
         for (source_id, runtime) in outcome.runtime_updates {
             if let Some(source) = guard
@@ -3136,20 +3140,27 @@ async fn reconcile_media(
                 source.runtime = runtime;
             }
         }
+        // The user's desired `enabled` stays; only the reported runtime says it is blocked.
+        if microphone_denied {
+            for source in &mut guard.mixer.local_sources {
+                if source.source_type == AudioSourceType::Microphone && source.enabled {
+                    source.runtime.status = AudioSourceRuntimeStatus::Error;
+                    source.runtime.error =
+                        Some("Raven does not have microphone permission.".to_string());
+                }
+            }
+        }
     }
     Ok(publication_error.or(outcome.first_error))
 }
 
 /// Re-apply eligibility after a MobileNative lifecycle, focus or permission change.
 #[cfg(mobile)]
-pub(crate) async fn resync_audio_eligibility(app: &AppHandle, stop_output: bool) {
+pub(crate) async fn resync_audio_eligibility(app: &AppHandle) {
     let shared = app.state::<SharedAudioEngineState>().inner().clone();
     let Ok(runtime) = audio_runtime(&shared) else {
         return;
     };
-    if stop_output || !media_eligibility::audio_allowed(app) {
-        tokio::task::block_in_place(|| runtime.output.stop());
-    }
     let mut ops = runtime.ops.lock().await;
     if let Err(error) = reconcile_media(app, &shared, &mut ops).await {
         eprintln!("[mobile-native] audio interruption reconcile failed: {error}");

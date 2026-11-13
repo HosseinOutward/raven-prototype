@@ -30,16 +30,15 @@ use crate::audio::state::{
     resolve_app_identity, AudioStateError, SharedAudioEngineState,
 };
 use crate::media_eligibility;
-#[cfg(not(mobile))]
-use crate::video::capture::list_cameras;
 use crate::video::capture::{
-    list_displays, list_windows, screen_capture_runtime_readiness, window_share_size, CaptureEvent,
-    CaptureEvents, VideoCaptureError, VideoCaptureManager,
+    list_cameras, list_displays, list_windows, screen_capture_runtime_readiness, window_share_size,
+    CaptureEvent, CaptureEvents, VideoCaptureError, VideoCaptureManager,
 };
 use crate::video::domain::{
     CameraDevice, DisplayTarget, PublishedVideoTrack, PublishedVideoTrackId, SelfPreviewMode,
     VideoMixerState, VideoPresentationProfile, VideoPresentationSettings, VideoQualityProfile,
-    VideoSourceId, VideoSourceKind, VideoSourceState, VideoTrackSource, WindowTarget,
+    VideoSourceId, VideoSourceKind, VideoSourceRuntimeStatus, VideoSourceState, VideoTrackSource,
+    WindowTarget,
 };
 use crate::video::engine::{
     measure_video_network_totals, measure_video_quality_report, measure_video_stream_stats,
@@ -395,15 +394,8 @@ pub async fn video_set_remote_video_receiving(
 }
 
 #[tauri::command]
-pub fn video_list_cameras(
-    #[allow(unused_variables)] app: AppHandle,
-) -> Result<Vec<CameraDevice>, VideoStateError> {
-    #[cfg(mobile)]
-    let cameras = crate::mobile_native::camera::list_cameras(&app)
-        .map_err(|message| VideoCaptureError::StreamFailed { message })?;
-    #[cfg(not(mobile))]
-    let cameras = list_cameras()?;
-    Ok(cameras)
+pub fn video_list_cameras(app: AppHandle) -> Result<Vec<CameraDevice>, VideoStateError> {
+    Ok(list_cameras(&app)?)
 }
 
 #[tauri::command]
@@ -748,7 +740,8 @@ async fn finish_video_mutation(
         let guard = state.read().map_err(|_| VideoStateError::StatePoisoned)?;
         (guard.mixer.local_sources.clone(), guard.preview.clone())
     };
-    if !media_eligibility::camera_permitted(app) {
+    let camera_blocked = media_eligibility::require_camera(app).err();
+    if camera_blocked.is_some() {
         for source in &mut sources {
             if source.kind == VideoSourceKind::Camera {
                 source.enabled = false;
@@ -787,6 +780,13 @@ async fn finish_video_mutation(
                 .find(|source| source.id == reconciled.id)
             {
                 source.runtime = reconciled.runtime;
+                // The user's desired `enabled` stays; only the reported runtime says it is blocked.
+                if let Some(reason) = &camera_blocked {
+                    if source.kind == VideoSourceKind::Camera && source.enabled {
+                        source.runtime.status = VideoSourceRuntimeStatus::Error;
+                        source.runtime.error = Some(reason.clone());
+                    }
+                }
             }
         }
         guard.snapshot()
