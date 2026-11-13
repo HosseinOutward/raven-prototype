@@ -1363,7 +1363,7 @@ function SwitchRow({
   );
 }
 
-function MicMenu({ media }: { media: RavenMediaAdapterState }) {
+export function MicMenu({ media }: { media: RavenMediaAdapterState }) {
   const processing = media.localAudioProcessing;
   const updateProcessing = (patch: Partial<NonNullable<typeof processing>>) => {
     if (!processing) return;
@@ -1403,7 +1403,7 @@ function MicMenu({ media }: { media: RavenMediaAdapterState }) {
   );
 }
 
-function CameraMenu({ media }: { media: RavenMediaAdapterState }) {
+export function CameraMenu({ media }: { media: RavenMediaAdapterState }) {
   const currentCameraProfile = media.activeCameraProfile ?? media.preferredCameraProfile;
   const [cameraQuality, setCameraQuality] = useState<VideoQualityProfileId>(currentCameraProfile.profileId);
   const [customVideoDraft, setCustomVideoDraft] = useState(() => customDraftFromProfile(currentCameraProfile));
@@ -1450,7 +1450,7 @@ function CameraMenu({ media }: { media: RavenMediaAdapterState }) {
   );
 }
 
-function OutputMenu({ media }: { media: RavenMediaAdapterState }) {
+export function OutputMenu({ media }: { media: RavenMediaAdapterState }) {
   const supported = Boolean(media.audioCapabilities?.supportsOutputDevices);
   const selected = media.selectedOutput ?? "";
   return (

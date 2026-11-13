@@ -741,6 +741,10 @@ async fn finish_video_mutation(
         (guard.mixer.local_sources.clone(), guard.preview.clone())
     };
     let camera_blocked = media_eligibility::require_camera(app).err();
+    // Blocked before a call is not a fault: the runtime stays idle and joining starts the camera.
+    let camera_error = camera_blocked
+        .clone()
+        .filter(|_| media_eligibility::require_call(app).is_ok());
     if camera_blocked.is_some() {
         for source in &mut sources {
             if source.kind == VideoSourceKind::Camera {
@@ -781,7 +785,7 @@ async fn finish_video_mutation(
             {
                 source.runtime = reconciled.runtime;
                 // The user's desired `enabled` stays; only the reported runtime says it is blocked.
-                if let Some(reason) = &camera_blocked {
+                if let Some(reason) = &camera_error {
                     if source.kind == VideoSourceKind::Camera && source.enabled {
                         source.runtime.status = VideoSourceRuntimeStatus::Error;
                         source.runtime.error = Some(reason.clone());

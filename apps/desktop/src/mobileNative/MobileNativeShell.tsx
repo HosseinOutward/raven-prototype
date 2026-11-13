@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { onBackButtonPress } from "@tauri-apps/api/app";
-import { Headphones, HeadphoneOff, Home, Loader2, MessageSquare, Mic, MicOff, PhoneOff, Settings, Video, VideoOff } from "lucide-react";
+import { ChevronUp, Headphones, HeadphoneOff, Home, Loader2, MessageSquare, Mic, MicOff, PhoneOff, Settings, SlidersHorizontal, Video, VideoOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Toaster, toast } from "@/components/ui/toast";
 import { api, subscribeUpdateRequired } from "@/lib/api";
 import { logUiError } from "@/lib/diagnostics";
 import { accountsOffered } from "@/lib/invites";
 import { callVoteHeadline } from "@/lib/callVote";
 import type { RavenUpdater } from "@/lib/updater";
-import type { RavenShellData } from "@/shells/ravenv1/state";
+import { CameraMenu, MicMenu, OutputMenu } from "@/shells/ravenv1/DeviceDock";
+import type { RavenShellData, RavenView } from "@/shells/ravenv1/state";
 import type { RavenMediaAdapterState } from "@/shells/ravenv1/useRavenMediaAdapter";
 import { useMessageNotifications } from "@/shells/ravenv1/useMessageNotifications";
 import { MainView } from "@/shells/ravenv1/views";
@@ -109,7 +111,7 @@ function SignedInApp({ data, media, entry, chat, updater, activeEntryNotices }: 
           <Settings className="h-4 w-4" />Settings
         </Button>
       </nav>
-      {media.activeNestId ? <CallControls media={media} /> : null}
+      {media.activeNestId ? <CallControls media={media} onNavigate={navigation.navigate} /> : null}
       <RoomKnockToasts data={data} media={media} />
       {activeEntryNotices.length ? <div className="sr-only" role="status" aria-live="polite">{activeEntryNotices.length} people are joining</div> : null}
       <Toaster />
@@ -215,7 +217,7 @@ function useAudioPaused() {
 }
 
 /** Call controls stay on screen through every view while a call is active. */
-function CallControls({ media }: { media: RavenMediaAdapterState }) {
+function CallControls({ media, onNavigate }: { media: RavenMediaAdapterState; onNavigate: (view: RavenView) => void }) {
   const audioPaused = useAudioPaused();
   const micOn = media.localMicEnabled && !media.localServerMuted;
   const deafened = media.localDeafened || media.localServerDeafened;
@@ -232,21 +234,47 @@ function CallControls({ media }: { media: RavenMediaAdapterState }) {
           <Button size="sm" variant="secondary" onClick={resumeAudio}>Resume audio</Button>
         </div>
       ) : null}
-      <div className="flex items-center justify-center gap-2">
-        <Button size="icon" variant={micOn ? "secondary" : "destructive"} aria-label={micLabel} title={micLabel} disabled={media.localServerMuted || !media.audioSupported || media.busy} onClick={() => void media.toggleMic()}>
-          {micOn ? <Mic /> : <MicOff />}
-        </Button>
-        <Button size="icon" variant={deafened ? "destructive" : "secondary"} aria-label={deafenLabel} title={deafenLabel} disabled={media.localServerDeafened || !media.deafenSupported || media.busy} onClick={() => void media.toggleDeafen()}>
-          {deafened ? <HeadphoneOff /> : <Headphones />}
-        </Button>
-        <Button size="icon" variant={cameraOn ? "secondary" : "ghost"} aria-label={cameraOn ? "Turn camera off" : "Turn camera on"} disabled={!media.cameraSupported || media.busy} onClick={() => void media.toggleCamera()}>
-          {cameraOn ? <Video /> : <VideoOff />}
+      <div className="flex items-center justify-center gap-1.5">
+        <div className="inline-flex items-center">
+          <Button size="icon" className="rounded-r-none" variant={micOn ? "secondary" : "destructive"} aria-label={micLabel} title={micLabel} disabled={media.localServerMuted || !media.audioSupported || media.busy} onClick={() => void media.toggleMic()}>
+            {micOn ? <Mic /> : <MicOff />}
+          </Button>
+          <MenuChevron label="Microphone options" menu={<MicMenu media={media} />} />
+        </div>
+        <div className="inline-flex items-center">
+          <Button size="icon" className="rounded-r-none" variant={deafened ? "destructive" : "secondary"} aria-label={deafenLabel} title={deafenLabel} disabled={media.localServerDeafened || !media.deafenSupported || media.busy} onClick={() => void media.toggleDeafen()}>
+            {deafened ? <HeadphoneOff /> : <Headphones />}
+          </Button>
+          <MenuChevron label="Output options" menu={<OutputMenu media={media} />} />
+        </div>
+        <div className="inline-flex items-center">
+          <Button size="icon" className="rounded-r-none" variant={cameraOn ? "secondary" : "ghost"} aria-label={cameraOn ? "Turn camera off" : "Turn camera on"} disabled={!media.cameraSupported || media.busy} onClick={() => void media.toggleCamera()}>
+            {cameraOn ? <Video /> : <VideoOff />}
+          </Button>
+          <MenuChevron label="Camera options" menu={<CameraMenu media={media} />} />
+        </div>
+        <Button size="icon" variant="ghost" aria-label="Mixer" title="Mixer" onClick={() => onNavigate({ kind: "mixer" })}>
+          <SlidersHorizontal />
         </Button>
         <Button size="icon" variant="destructive" aria-label="Leave call" disabled={media.busy} onClick={() => void media.leaveMediaSession()}>
           <PhoneOff />
         </Button>
       </div>
     </footer>
+  );
+}
+
+/** A compact chevron attached to a call button that opens its device menu above it. */
+function MenuChevron({ label, menu }: { label: string; menu: ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button size="icon" variant="secondary" className="h-9 w-6 rounded-l-none border-l border-background/60" aria-label={label} title={label}>
+          <ChevronUp className="h-3.5 w-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent side="top" className="w-[min(360px,calc(100vw-2rem))] p-2">{menu}</PopoverContent>
+    </Popover>
   );
 }
 

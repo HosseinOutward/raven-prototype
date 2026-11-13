@@ -43,7 +43,8 @@ check; the platform is chosen once, at a boundary:
   It generates the ignored `src-tauri/gen/android` project through Tauri. All
   authored Kotlin, Gradle, resources and manifest inputs live in
   `src-tauri/plugins/raven-mobile-native`. Launcher icons are generated from the desktop
-  `icons/icon.png` into ignored output.
+  `icons/icon.png` into ignored output; the plugin's adaptive icon XML insets that
+  foreground into the launcher mask.
 - The build target is chosen at composition (`isAndroid`), not from screen
   width or user agent. The MobileNative shell reuses sign-in and feature views, keeps call
   controls on screen while a call is active, handles system Back, and keeps the
@@ -173,6 +174,11 @@ Still to verify on a phone:
 - LAN and real servers, ICE reachability, TURN, and dev versus bundled origins.
 - Sustained CPU, heat and battery, Studio performance, and a 16 KB-page device.
 - Desktop startup and calls on Windows and macOS, including macOS linking.
+
+Android device lists come from cpal/Oboe and are identified by name, so duplicate
+names are possible, and choosing an output may not change the route while
+`MODE_IN_COMMUNICATION` is set. Real earpiece, speaker and Bluetooth routing needs
+`AudioManager.setCommunicationDevice` plugin commands, which are out of scope for now.
 
 Not in this step: screen and playback capture, background calls, full audio route
 selection, PiP, full feature parity, push, distribution, URI-aware file workflows

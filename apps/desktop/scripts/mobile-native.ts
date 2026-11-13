@@ -2,7 +2,7 @@
 // repository .env first, so this script owns Android orchestration without a second env loader.
 // `phone` is Raven's own command: a debug APK build installed on a phone over wireless debugging.
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, statSync } from "node:fs";
+import { cpSync, existsSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 
 const desktopDir = path.resolve(import.meta.dir, "..");
@@ -118,7 +118,14 @@ function stageIcons() {
   });
   if (generated.error) fail(generated.error.message);
   if (generated.status !== 0) fail(generated.stderr || "Could not generate Android launcher icons.");
-  cpSync(path.join(output, "android"), path.join(desktopDir, "src-tauri", "gen", "android", "app", "src", "main", "res"), { recursive: true });
+  // The plugin supplies the adaptive icon (an inset that fits the launcher mask); app resources
+  // override library ones, so the generated adaptive XML must not reach the app.
+  const res = path.join(desktopDir, "src-tauri", "gen", "android", "app", "src", "main", "res");
+  rmSync(path.join(res, "mipmap-anydpi-v26"), { recursive: true, force: true });
+  cpSync(path.join(output, "android"), res, {
+    recursive: true,
+    filter: (source) => path.basename(source) !== "mipmap-anydpi-v26",
+  });
 }
 
 if (tauriCommand === "dev" || tauriCommand === "build") stageIcons();
