@@ -225,7 +225,9 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
         activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     private fun acquireFocus() {
-        releaseFocus()
+        // Re-acquiring during a call swaps only the focus request; mode and service stay as they are.
+        val replacing = focusRequest != null
+        abandonRequest()
         // The listener identifies its own request, which does not exist until built.
         lateinit var request: AudioFocusRequest
         request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -234,15 +236,29 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setOnAudioFocusChangeListener { change ->
                 if (focusRequest !== request) return@setOnAudioFocusChangeListener
-                focused = change == AudioManager.AUDIOFOCUS_GAIN
+                val held = when (change) {
+                    AudioManager.AUDIOFOCUS_GAIN -> true
+                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> false
+                    // Permanent loss means another media app took over; Raven keeps its call running beside it.
+                    else -> focused
+                }
+                if (held == focused) return@setOnAudioFocusChangeListener
+                focused = held
                 emitFocus()
             }.build()
         focusRequest = request
         if (audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             focused = true
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            startCallService()
+            // Setting the mode again would reconnect the open input stream, so only set it when needed.
+            if (audioManager.mode != AudioManager.MODE_IN_COMMUNICATION) audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (!replacing) startCallService()
         } else releaseFocus()
+    }
+
+    /** Gives up the current request without touching the audio mode or the call service. */
+    private fun abandonRequest() {
+        focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+        focusRequest = null
     }
 
     /** Starts while Raven is foreground, as Android 14 requires; a failure leaves a foreground-only call. */
@@ -259,11 +275,10 @@ class RavenMobileNativePlugin(private val activity: Activity) : Plugin(activity)
         }
     }
 
-    /** The only place focus is released; does nothing when no call holds it. */
+    /** The only place a call ends its focus, resetting the mode and stopping the service; re-acquiring only swaps the request. Does nothing when no call holds focus. */
     private fun releaseFocus() {
-        val request = focusRequest ?: return
-        audioManager.abandonAudioFocusRequest(request)
-        focusRequest = null
+        if (focusRequest == null) return
+        abandonRequest()
         focused = false
         audioManager.mode = AudioManager.MODE_NORMAL
         RavenCallService.onTaskRemovedListener = null

@@ -210,7 +210,7 @@ export function TreeLobbyView({
               {summaryNest && summary.kind === "here" ? (
                 <Button size="sm" variant="secondary" onClick={() => onNavigate(nestView(summaryNest))}>Return</Button>
               ) : summaryNest && summary.kind === "live" ? (
-                <Button size="sm" disabled={!canJoin} onClick={() => onNavigate(nestView(summaryNest))}>Join {summaryNest.name}…</Button>
+                <Button size="sm" disabled={!canJoin} aria-label={`Join ${summaryNest.name}…`} onClick={() => onNavigate(nestView(summaryNest))}>Join…</Button>
               ) : null}
             </div>
             {tree.description ? <p className="max-w-prose text-small text-muted-foreground">{tree.description}</p> : null}

@@ -11,7 +11,6 @@ export interface MobileNativeMediaState {
   callActive: boolean;
   microphone: MobileNativePermission;
   camera: MobileNativePermission;
-  focus: boolean;
 }
 
 export const MOBILE_NATIVE_MEDIA_STATE_CHANGED_EVENT = "mobile-native-media-state";
@@ -23,7 +22,6 @@ export const mobileNativeCommands = {
   endCall: () => invoke<MobileNativeMediaState>("mobile_native_end_call"),
   requestPermission: (kind: CaptureKind, expectedEpoch: number) =>
     invoke<MobileNativeMediaState>("mobile_native_request_permission", { kind, expectedEpoch }),
-  resumeAudio: () => invoke<MobileNativeMediaState>("mobile_native_resume_audio"),
   openSettings: () => invoke<void>("mobile_native_open_settings"),
 };
 

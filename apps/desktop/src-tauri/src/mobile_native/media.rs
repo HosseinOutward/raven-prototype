@@ -21,7 +21,6 @@ pub struct MobileNativeSnapshot {
     pub call_active: bool,
     pub microphone: PermissionStatus,
     pub camera: PermissionStatus,
-    pub focus: bool,
 }
 
 struct MobileNativeInner {
@@ -37,7 +36,6 @@ impl MobileNativeInner {
             call_active: self.gate.call_active,
             microphone: self.permissions.microphone.clone(),
             camera: self.permissions.camera.clone(),
-            focus: self.gate.focused,
         }
     }
 }
@@ -354,21 +352,6 @@ pub async fn mobile_native_begin_call(
         inner.gate.end();
     }
     Err(error)
-}
-
-#[tauri::command]
-pub async fn mobile_native_resume_audio(
-    app: AppHandle,
-    state: State<'_, MobileNativeMedia>,
-) -> Result<MobileNativeSnapshot, String> {
-    let _transition = state.transition.lock().await;
-    let epoch = require_call(&app)?;
-    let granted = acquire_focus(&app, &state, epoch).await?;
-    crate::audio::state::resync_audio_eligibility(&app).await;
-    if !granted {
-        return Err("Another app is still using call audio.".into());
-    }
-    emit(&app)
 }
 
 #[tauri::command]

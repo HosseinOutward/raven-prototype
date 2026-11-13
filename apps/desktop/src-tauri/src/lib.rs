@@ -118,7 +118,6 @@ pub fn run() {
             #[cfg(mobile)]
             mobile_native::media::mobile_native_open_settings,
             #[cfg(mobile)]
-            mobile_native::media::mobile_native_resume_audio,
             attachments::attachment_prepare,
             attachments::attachment_read,
             attachments::attachment_discard,

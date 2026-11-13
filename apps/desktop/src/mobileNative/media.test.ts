@@ -7,7 +7,6 @@ const snapshot = (epoch: number, patch: Partial<MobileNativeMediaState> = {}): M
   callActive: false,
   microphone: "notRequested",
   camera: "notRequested",
-  focus: true,
   ...patch,
 });
 

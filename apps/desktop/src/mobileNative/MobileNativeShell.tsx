@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Toaster, toast } from "@/components/ui/toast";
 import { api, subscribeUpdateRequired } from "@/lib/api";
-import { logUiError } from "@/lib/diagnostics";
 import { accountsOffered } from "@/lib/invites";
 import { callVoteHeadline } from "@/lib/callVote";
 import type { RavenUpdater } from "@/lib/updater";
@@ -17,7 +16,7 @@ import { MainView } from "@/shells/ravenv1/views";
 import { RoomKnockToasts } from "@/shells/ravenv1/RoomKnockToasts";
 import { ChoosePassword, ShellLogin } from "@/shells/ravenv1/SignIn";
 import { createMobileNativeCallHost } from "./callHost";
-import { isNewerState, mobileNativeCommands, subscribeMobileNativeMediaState, type MobileNativeMediaState } from "./media";
+import { mobileNativeCommands } from "./media";
 import { useMobileNativeNavigation } from "./navigation";
 import { useMobileNativeApp } from "./useMobileNativeApp";
 
@@ -192,48 +191,15 @@ function MediaErrorBanner({ media }: { media: RavenMediaAdapterState }) {
   );
 }
 
-/** True while the OS has taken audio focus from an active call, until audio is resumed. */
-function useAudioPaused() {
-  const [paused, setPaused] = useState(false);
-  useEffect(() => {
-    let active = true;
-    let current: MobileNativeMediaState | null = null;
-    const apply = (state: MobileNativeMediaState) => {
-      if (!active || !isNewerState(current, state)) return;
-      current = state;
-      setPaused(state.callActive && state.foreground && !state.focus);
-    };
-    const listener = subscribeMobileNativeMediaState(apply);
-    // Register first, then read the current value, so focus lost before mount still shows.
-    listener
-      .then(() => mobileNativeCommands.getState().then(apply))
-      .catch((error: unknown) => logUiError("mobile_native_audio_paused", error));
-    return () => {
-      active = false;
-      void listener.then((unlisten) => unlisten()).catch(() => undefined);
-    };
-  }, []);
-  return paused;
-}
-
 /** Call controls stay on screen through every view while a call is active. */
 function CallControls({ media, onNavigate }: { media: RavenMediaAdapterState; onNavigate: (view: RavenView) => void }) {
-  const audioPaused = useAudioPaused();
   const micOn = media.localMicEnabled && !media.localServerMuted;
   const deafened = media.localDeafened || media.localServerDeafened;
   const cameraOn = media.localCameraEnabled;
   const micLabel = media.localServerMuted ? "Muted by a moderator" : micOn ? "Mute microphone" : "Unmute microphone";
   const deafenLabel = media.localServerDeafened ? "Deafened by a moderator" : deafened ? "Undeafen" : "Deafen";
-  const resumeAudio = () =>
-    void mobileNativeCommands.resumeAudio().catch((error: unknown) => toast({ title: "Could not resume audio", description: String(error), tone: "error" }));
   return (
     <footer className="shrink-0 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1" aria-label="Call controls">
-      {audioPaused ? (
-        <div className="mb-1 flex items-center justify-between gap-2 text-small text-muted-foreground" role="status">
-          <span>Audio paused by another app</span>
-          <Button size="sm" variant="secondary" onClick={resumeAudio}>Resume audio</Button>
-        </div>
-      ) : null}
       <div className="flex items-center justify-center gap-1.5">
         <div className="inline-flex items-center">
           <Button size="icon" className="rounded-r-none" variant={micOn ? "secondary" : "destructive"} aria-label={micLabel} title={micLabel} disabled={media.localServerMuted || !media.audioSupported || media.busy} onClick={() => void media.toggleMic()}>

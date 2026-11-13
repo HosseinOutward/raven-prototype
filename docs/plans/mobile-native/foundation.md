@@ -103,11 +103,12 @@ server state, and it recognizes a stopped epoch even if JavaScript missed both
 lifecycle events. Server presence cleanup relies on timeout while the WebView is
 suspended.
 
-Permission dialogs do not count as Activity stop. Losing audio focus keeps the call:
-playback (gated in `OutputMixer::start`, stopped by reconcile) and capture stop, desired
-settings and publication intent are kept, and the call controls show "Audio paused by
-another app" with a Resume audio button (`mobile_native_resume_audio`) that requests
-focus again. Mute, deafen and server moderation keep their meanings.
+Permission dialogs do not count as Activity stop. Audio focus loss keeps the call.
+Permanent loss to a media app leaves the call running alongside it. Transient loss (a phone
+call, an assistant) pauses call audio: playback (gated in `OutputMixer::start`, stopped by
+reconcile) and capture stop while desired settings and publication intent are kept, and
+audio resumes automatically when focus returns. Starting a call while focus is denied (a
+phone call is active) still fails. Mute, deafen and server moderation keep their meanings.
 
 ## Native startup and packaging
 
